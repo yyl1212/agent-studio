@@ -1,7 +1,9 @@
 # 轻量化 Agent Studio 设计规格
 
-**日期：** 2026-08-17  
-**状态：** 已完成分章节确认  
+**日期：** 2026-08-17
+
+**状态：** 阻塞项已修订，待书面复核
+
 **目标版本：** 单用户本地 MVP
 
 ## 1. 背景与目标
@@ -23,7 +25,7 @@
 - 内置开始、提示词模板、LLM、条件、HTTP、代码、结束七类节点。
 - 开始节点支持单行文本、多行文本、数字、布尔值、单选和 JSON 字段。
 - 字段支持标题、说明、必填、默认值、占位符和选项。
-- OpenAI 兼容模型接口支持配置 `baseUrl`、`apiKey` 和 `model`。
+- OpenAI 兼容模型接口通过环境变量配置 `baseUrl` 和 `apiKey`，LLM 节点配置 `model`。
 - 未提供模型密钥时使用内置 Mock 模型，保证零配置演示。
 - PostgreSQL 通过 Docker Compose 启动；应用前后端在本地进程运行。
 - 草稿、发布快照、运行记录和节点运行记录持久化到 PostgreSQL。
@@ -72,6 +74,13 @@
 - 所有 Go 调试、构建和测试命令使用 `CGO_ENABLED=0`。
 - 所有用户可见文档与核心界面文案使用中文。
 - 不使用来源不明的图片、视频或其他素材；首版 UI 使用代码绘制图标和开源图标库。
+
+### 4.1 实施前置条件
+
+- `apps/api/go.mod` 使用 `go 1.26.0`，并以 `toolchain` 指令锁定实施时验证通过的 Go 1.26 补丁版本；当前主机的 `GOTOOLCHAIN=auto` 负责按需下载该工具链。
+- 根 `package.json` 使用 `packageManager` 字段锁定实施时验证通过的 pnpm 10 补丁版本；当前主机通过已有 Corepack 安装和激活该版本。
+- 首次依赖与工具链下载需要网络权限，下载后使用 lockfile 和 Go checksum 保证可复现。
+- 当前仓库没有远程地址。开始代码实施前必须获得远程仓库并同步 `master`，或由用户明确批准以本地 `master` 基线继续。
 
 ## 5. 总体架构
 
@@ -190,12 +199,14 @@ flowchart LR
 
 - 端口类型为 `string`、`number`、`boolean`、`json` 或 `any`。
 - 一个输出端口可以连接多个下游。
-- 一个普通输入端口最多接受一条边，防止非确定性覆盖。
+- 输入端口声明 `cardinality`，首版支持 `one` 和 `single-active`。
+- 普通输入端口使用 `one`，最多接受一条边，防止非确定性覆盖。
+- 结束节点的 `result` 使用 `single-active`，允许多条条件分支入边，但一次运行必须恰有一条活跃入边。
 - `any` 可以连接任意端口；其他类型必须一致。
 - 节点在所有必需输入就绪后执行，因此独立分支可以并行。
 - 条件节点仅激活 `true` 或 `false` 出边，并沿选中端口传递原始输入。
-- 未被条件激活且没有其他活跃入边的路径标记为 `skipped`。
-- 工作流必须恰有一个开始节点、至少一个结束节点。
+- 当节点的全部上游已进入终态，而任一必需 `one` 端口仍没有活跃值时，该节点标记为 `skipped`，并向下游继续传播终态，调度器不得继续等待。
+- 工作流必须恰有一个开始节点和一个结束节点。
 - 所有节点必须从开始节点可达，每条可能执行路径必须能够到达结束节点。
 - 工作流禁止循环边和自连接。
 
@@ -218,7 +229,7 @@ type NodeType interface {
 }
 ```
 
-- `Definition` 返回类型、版本、名称、分类、说明、配置 JSON Schema 和静态端口。
+- `Definition` 返回类型、版本、名称、分类、说明、配置 JSON Schema，以及包含类型、必填性和 cardinality 的静态端口。
 - `Resolve` 校验配置并计算最终端口。
 - `Execute` 接收解析后的输入和配置，返回端口输出及被激活的控制端口。
 - Registry 使用 `type + version` 作为唯一键，重复注册立即失败。
@@ -235,7 +246,7 @@ type NodeType interface {
 | 条件 | `value` | `true` 或 `false` | 运算符、比较值 |
 | HTTP | 可选 `body` | `status`、`headers`、`body` | URL、方法、Header、超时 |
 | 代码 | `input` | `result` | Starlark `main(input)` |
-| 结束 | `result` | 最终结果 | 文本或 JSON 模式 |
+| 结束 | `result`（`single-active`） | 最终结果 | 文本或 JSON 模式 |
 
 条件节点首版支持 `equals`、`notEquals`、`contains`、`greaterThan`、`lessThan` 和 `isEmpty`。类型不适用时返回稳定的节点配置或执行错误。
 
@@ -249,7 +260,7 @@ type NodeType interface {
 - `description text not null default ''`
 - `draft_graph jsonb not null`
 - `draft_revision bigint not null`
-- `published_version integer null`
+- `published_version_id uuid null`
 - `created_at timestamptz not null`
 - `updated_at timestamptz not null`
 
@@ -262,13 +273,17 @@ type NodeType interface {
 - `input_schema jsonb not null`
 - `created_at timestamptz not null`
 - 唯一约束：`workflow_id, version`
+- 唯一约束：`workflow_id, id`，用于运行记录的组合外键
+
+创建 `workflow_versions` 后，迁移通过 `ALTER TABLE` 为 `workflows(id, published_version_id)` 增加指向 `workflow_versions(workflow_id, id)` 的组合外键，确保当前发布版本属于同一工作流。
 
 ### 9.3 `runs`
 
 - `id uuid primary key`
 - `workflow_id uuid not null references workflows(id)`
-- `workflow_version integer null`
+- `workflow_version_id uuid null`
 - `draft_revision bigint null`
+- `graph_snapshot jsonb null`
 - `mode text not null`，值为 `test` 或 `published`
 - `status text not null`
 - `input jsonb not null`
@@ -277,7 +292,12 @@ type NodeType interface {
 - `started_at timestamptz not null`
 - `ended_at timestamptz null`
 
-测试运行使用 `draft_revision`，正式运行使用 `workflow_version`，两者必须恰有一个非空。
+正式运行通过组合外键 `(workflow_id, workflow_version_id)` 引用 `workflow_versions(workflow_id, id)`。测试运行保存 `draft_revision` 和当次执行的 `graph_snapshot`，使草稿继续修改后仍能复现历史测试。
+
+数据库检查约束：
+
+- `mode = 'published'` 时，`workflow_version_id` 非空，`draft_revision` 与 `graph_snapshot` 为空。
+- `mode = 'test'` 时，`workflow_version_id` 为空，`draft_revision` 与 `graph_snapshot` 非空。
 
 ### 9.4 `node_runs`
 
@@ -299,10 +319,14 @@ type NodeType interface {
 - 不完整草稿可以保存，但不能发布或测试运行。
 - 更新草稿必须携带客户端持有的 `draftRevision`。
 - revision 不一致时返回 `409 WORKFLOW_REVISION_CONFLICT`，前端提示重新加载，不静默覆盖。
+- 前端自动保存采用单飞队列：同一时刻只允许一个保存请求，期间产生的修改合并为下一次请求，禁止旧响应覆盖新 revision。
 - 发布在一个数据库事务内完成：加载最新草稿、完整校验、派生输入 Schema、创建递增版本、更新当前发布版本。
+- 发布操作必须等待自动保存队列清空，并携带最终 `draftRevision`；服务端只发布完全一致的 revision。
 - 发布版本不可修改；修改草稿不会影响 `/agents/{slug}`。
 - 再次发布创建新版本，历史运行继续引用原版本。
 - 首版不提供删除历史版本和回滚按钮；旧版本保留用于审计和复现。
+- 首版不提供删除工作流 API，避免草稿、发布版本和历史运行的级联删除语义进入 MVP。
+- Agent manifest 返回 `workflowVersionId` 和显示版本号。Agent 运行请求必须回传 `workflowVersionId`，服务端验证该版本属于当前 slug 对应的工作流，并执行该不可变版本；即使期间已发布新版本，本次提交仍使用页面加载时的版本。
 
 ## 11. DAG 编译与执行
 
@@ -314,7 +338,7 @@ type NodeType interface {
 2. 通过 Registry 解析每个 `type + version`。
 3. 验证节点配置和动态端口。
 4. 验证节点、边、端口引用和端口类型。
-5. 验证唯一开始节点、结束节点、可达性和终止性。
+5. 验证唯一开始节点、唯一结束节点、可达性和终止性。
 6. 使用拓扑排序检测环路并生成执行计划。
 
 失败返回 `422 WORKFLOW_INVALID`，错误项包含可选的 `nodeId`、`edgeId` 和字段 `path`。
@@ -325,6 +349,8 @@ type NodeType interface {
 - 引擎维护节点依赖计数和活跃边集合。
 - 输入就绪的节点进入执行队列，默认最大并发数为 4。
 - 条件节点完成后只激活一个控制输出端口。
+- 全部上游进入终态后，缺少必需活跃输入的普通节点立即标记为 `skipped`，并触发下游重新判定，确保条件分支不会造成调度死锁。
+- 结束节点等待其所有潜在上游进入终态：没有活跃结果时运行失败并返回 `END_RESULT_MISSING`；存在多个活跃结果时运行失败并返回 `END_MULTIPLE_RESULTS`；恰有一个时产生最终输出。
 - 任一节点失败后取消其依赖链，未开始节点标记为 `skipped` 或 `cancelled`。
 - 已完成节点记录保留，运行整体标记为 `failed`，不生成部分最终输出。
 - 首版不自动重试，避免 HTTP 节点重复产生副作用。
@@ -354,7 +380,7 @@ type NodeType interface {
 - `OPENAI_API_KEY`
 - `OPENAI_DEFAULT_MODEL`
 
-Mock Provider 返回确定性结果，供本地演示和自动化测试使用。OpenAI 兼容 Provider 使用 Chat Completions 风格接口，并允许 LLM 节点覆盖模型名称，不允许节点配置覆盖 API Key。
+Mock Provider 返回确定性结果，供本地演示和自动化测试使用。OpenAI 兼容 Provider 使用 Chat Completions 风格接口，并允许 LLM 节点覆盖模型名称，不允许节点配置覆盖 API Key。`OPENAI_BASE_URL` 定义为包含版本前缀的 API 根地址，例如 `https://api.openai.com/v1`；客户端去除末尾 `/` 后固定追加 `/chat/completions`。
 
 ### 12.2 资源限制
 
@@ -362,11 +388,19 @@ Mock Provider 返回确定性结果，供本地演示和自动化测试使用。
 - LLM 节点最长 60 秒。
 - HTTP 节点最长 30 秒、最大响应 1 MiB、最多三次重定向。
 - HTTP URL 只允许 HTTP(S)，禁止 URL 内嵌用户名和密码。
-- HTTP 节点默认阻止环回、链路本地和私网地址；`HTTP_NODE_ALLOW_PRIVATE_NETWORK=true` 可为本地开发显式开启。
+- HTTP 节点默认阻止环回、链路本地和私网地址；执行器在自定义 Dialer 中检查 DNS 解析得到的每个地址，并对每次重定向重新解析和检查。`HTTP_NODE_ALLOW_PRIVATE_NETWORK=true` 可为本地开发显式开启。
 - Starlark 源码最大 64 KiB、最多 100,000 执行步、最长 2 秒、输出最大 1 MiB。
 - Starlark 不提供文件、网络、Shell、模块加载或宿主对象访问。
+- Starlark 节点是面向单用户可信代码的受限解释器，不是进程级安全边界；输出大小限制不等于内存上限。未来接收不可信用户代码时必须迁移到独立进程或容器沙箱。
 
-### 12.3 脱敏
+### 12.3 HTTP 密钥引用
+
+- HTTP Header 配置由 `name`、`valueSource`、`value` 和 `envName` 组成，`valueSource` 只能为 `literal` 或 `env`。
+- `env` 模式只持久化环境变量名称，执行时读取实际值；API 和运行记录不返回解析后的密钥。
+- `authorization`、`proxy-authorization`、`cookie`、`x-api-key` 和 `api-key` 等敏感 Header 禁止使用 `literal`，必须使用 `env`。
+- 首版 Schema 表单不提供持久化密码控件，不建设数据库密钥存储。
+
+### 12.4 脱敏
 
 API、结构化日志和运行记录递归脱敏大小写不敏感的 `authorization`、`proxy-authorization`、`cookie`、`set-cookie`、`api-key`、`apikey`、`token` 和 `secret` 字段。错误响应不包含堆栈和底层连接字符串。
 
@@ -387,7 +421,7 @@ API、结构化日志和运行记录递归脱敏大小写不敏感的 `authoriza
 - 测试事件和结果使用底部抽屉。
 - 未操作时三个抽屉均收起，最大化画布区域。
 - 画布提供缩放、适应视图、缩略图、拖拽、连线和删除能力。
-- 草稿变化 800ms 后自动保存；发布会等待最后一次保存完成。
+- 草稿变化 800ms 后进入串行自动保存队列；发布会等待队列清空并校验最终 revision。
 - 连线时前端即时检查类型，后端仍执行权威校验。
 - 校验错误可以点击并聚焦对应节点或边。
 
@@ -401,7 +435,7 @@ API、结构化日志和运行记录递归脱敏大小写不敏感的 `authoriza
 - 对象数组和标量数组
 - `required`、`default`、`title`、`description`
 - `minimum`、`maximum`、`minLength`、`maxLength`、`pattern`
-- `x-ui-widget`：`text`、`textarea`、`select`、`code`、`json`、`password`
+- `x-ui-widget`：`text`、`textarea`、`select`、`code`、`json`
 - `x-ui-placeholder` 和 `x-ui-order`
 
 编辑器节点配置和 Agent 开始表单复用同一渲染核心，仅使用不同布局样式。
@@ -424,7 +458,6 @@ GET    /api/workflows
 POST   /api/workflows
 GET    /api/workflows/{id}
 PUT    /api/workflows/{id}
-DELETE /api/workflows/{id}
 POST   /api/workflows/{id}/validate
 POST   /api/workflows/{id}/test-runs
 POST   /api/workflows/{id}/publish
@@ -439,6 +472,9 @@ GET    /readyz
 ```
 
 除运行接口外均返回 JSON。统一错误结构：
+
+- `GET /api/agents/{slug}` 的成功响应包含 `workflowVersionId`、版本号、页面元数据和输入 Schema。
+- `POST /api/agents/{slug}/runs` 的请求体包含 `workflowVersionId` 与 `input`；服务端执行请求指定的不可变版本，不隐式切换到最新版本。
 
 ```json
 {
@@ -466,10 +502,10 @@ GET    /readyz
 ### 16.1 Go
 
 - Registry：重复注册、未知版本、动态端口和配置错误。
-- Validator：环路、自连接、悬空边、类型错误、不可达节点和缺失结束节点。
-- Engine：串行、并行、条件路由、跳过、失败传播、取消和超时。
+- Validator：环路、自连接、悬空边、类型错误、不可达节点、多个结束节点和缺失结束节点。
+- Engine：串行、并行、条件路由、缺失活跃输入的跳过传播、结束节点零个/多个活跃结果、失败传播、取消和超时。
 - Nodes：七种节点正常路径、边界值和错误路径。
-- Store：迁移、CRUD、revision 冲突、事务发布和版本隔离。
+- Store：迁移、创建、读取、更新、revision 冲突、事务发布、组合外键、测试图快照和版本隔离。
 - HTTP API：状态码、错误结构、NDJSON 顺序和脱敏。
 
 ### 16.2 Web
@@ -478,6 +514,7 @@ GET    /readyz
 - 画布加载、节点添加、配置抽屉、连线类型检查和保存状态。
 - NDJSON 分块解析，包括一行跨多个网络 chunk 的情况。
 - Agent 页面参数校验、运行进度、文本结果和 JSON 结果。
+- Agent 页面在新版本发布后仍使用页面已加载的 `workflowVersionId` 完成本次运行。
 
 ### 16.3 端到端
 
@@ -490,6 +527,7 @@ Playwright 覆盖：
 5. 发布并打开 `/agents/{slug}`。
 6. 提交参数并看到确定性结果。
 7. 修改草稿后验证已发布页面仍使用旧版本。
+8. 页面加载后发布新版本，验证原页面提交仍执行其携带的旧 `workflowVersionId`。
 
 ### 16.4 扩展性证明
 
@@ -532,8 +570,10 @@ pnpm build
 6. 环路、悬空边、类型错误和不可达节点能定位到画布元素。
 7. 条件路由、并行分支、失败取消和运行记录行为确定。
 8. 新增普通节点只需实现并注册 Go 节点包，前端无需新增节点组件。
-9. `make verify` 与 Playwright 核心链路测试通过。
-10. README 能让新开发者从空环境启动 PostgreSQL、API 和 Web。
+9. 历史正式运行通过版本外键、历史测试运行通过图快照可复现其执行定义。
+10. Agent 页面提交始终执行其加载时绑定的不可变版本，不受并发发布影响。
+11. `make verify` 与 Playwright 核心链路测试通过。
+12. README 能让新开发者从空环境启动 PostgreSQL、API 和 Web。
 
 ## 19. 可行性与风险审查
 
@@ -549,13 +589,18 @@ pnpm build
 
 - **动态端口导致边失效：** 配置变更后立即重新解析，失效边可视化标记，发布前强制修复。
 - **条件分支调度复杂：** 编译计划区分数据依赖与活跃控制边，并以独立单元测试覆盖跳过传播。
+- **条件分支汇聚结果不确定：** 唯一结束节点使用 `single-active` 端口，零个或多个活跃结果均显式失败。
+- **发布页与运行版本竞态：** 页面携带 `workflowVersionId`，运行指定不可变版本。
+- **历史测试无法复现：** 测试运行持久化完整 `graph_snapshot`。
 - **HTTP SSRF：** 默认阻止私网与环回地址，限制协议、重定向、超时和响应大小。
-- **代码节点资源滥用：** 不执行宿主语言，限制 Starlark 步数、时间、源码和输出。
+- **HTTP 密钥进入草稿：** 敏感 Header 强制使用环境变量引用，数据库只保存变量名。
+- **代码节点资源滥用：** 不执行宿主语言，限制 Starlark 步数、时间、源码和输出，并明确它不是不可信多租户代码的进程级隔离方案。
 - **历史节点行为漂移：** 发布图固定 `typeVersion`，旧版本实现不可破坏性修改。
 - **前后端契约漂移：** OpenAPI 生成 TypeScript 类型，并在质量门检查生成差异。
-- **空仓库无远程：** 已建立本地 `master` 基线和 `codex/agent-studio` 分支；远程接入后再执行同步与发布流程。
+- **工具链与当前主机不一致：** Go 使用自动工具链下载，pnpm 使用 Corepack 按仓库锁定版本激活。
+- **空仓库无远程：** 已建立本地 `master` 基线和 `codex/agent-studio` 分支；开始代码实施仍需远程仓库，或用户明确批准以本地基线继续。
 
-审查结论：首版边界完整、依赖可用、数据与执行语义明确，没有阻塞实施的问题。
+审查结论：结束节点、条件跳过、版本竞态、运行引用和密钥持久化等技术阻塞项已在规格中消除。当前唯一外部流程阻塞项是仓库没有远程地址；获得远程或本地基线继续授权后可以编写并执行实施计划。
 
 ## 20. 参考资料
 
