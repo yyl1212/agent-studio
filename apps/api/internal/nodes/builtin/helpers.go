@@ -71,3 +71,10 @@ func classifyExternalError(err error) error {
 	}
 	return nodeExecutionError(err)
 }
+
+func checkContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return classifyExternalError(err)
+	}
+	return nil
+}

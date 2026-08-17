@@ -85,7 +85,10 @@ func (*startNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, erro
 	return agentnode.ResolvedPorts{Outputs: outputs}, nil
 }
 
-func (*startNode) Execute(_ context.Context, request agentnode.Request) (agentnode.Result, error) {
+func (*startNode) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
+	if err := checkContext(ctx); err != nil {
+		return agentnode.Result{}, err
+	}
 	parsed, err := parseStartConfig(request.Config)
 	if err != nil {
 		return agentnode.Result{}, nodeConfigError(err)

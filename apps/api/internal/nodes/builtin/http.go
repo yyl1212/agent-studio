@@ -113,11 +113,17 @@ func (node *httpNode) Execute(ctx context.Context, request agentnode.Request) (a
 	if err != nil {
 		return agentnode.Result{}, nodeConfigError(err)
 	}
-	if _, err := node.validateURL(ctx, config.URL); err != nil {
+	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
+	requestContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if _, err := node.validateURL(requestContext, config.URL); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return agentnode.Result{}, classifyExternalError(err)
 		}
-		return agentnode.Result{}, nodeConfigError(err)
+		if errors.Is(err, ErrInvalidHTTPURL) || errors.Is(err, ErrPrivateAddressBlocked) {
+			return agentnode.Result{}, nodeConfigError(err)
+		}
+		return agentnode.Result{}, nodeExecutionError(err)
 	}
 
 	var body io.Reader
@@ -132,9 +138,6 @@ func (node *httpNode) Execute(ctx context.Context, request agentnode.Request) (a
 		body = bytes.NewReader(encoded)
 	}
 
-	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
-	requestContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(requestContext, config.Method, config.URL, body)
 	if err != nil {
 		return agentnode.Result{}, nodeConfigError(fmt.Errorf("create HTTP request: %w", err))
@@ -142,6 +145,7 @@ func (node *httpNode) Execute(ctx context.Context, request agentnode.Request) (a
 	if body != nil {
 		httpRequest.Header.Set("Content-Type", "application/json")
 	}
+	secretValues := make([]string, 0, len(config.Headers))
 	for _, header := range config.Headers {
 		value := header.Value
 		if header.ValueSource == "env" {
@@ -149,6 +153,9 @@ func (node *httpNode) Execute(ctx context.Context, request agentnode.Request) (a
 			value, exists = node.lookupEnv(header.EnvName)
 			if !exists {
 				return agentnode.Result{}, nodeExecutionError(fmt.Errorf("%w: %s", ErrEnvironmentValueMissing, header.EnvName))
+			}
+			if value != "" {
+				secretValues = append(secretValues, value)
 			}
 		}
 		httpRequest.Header.Set(header.Name, value)
@@ -175,9 +182,48 @@ func (node *httpNode) Execute(ctx context.Context, request agentnode.Request) (a
 	}
 	return agentnode.Result{Outputs: map[string]any{
 		"status":  float64(response.StatusCode),
-		"headers": map[string][]string(response.Header),
-		"body":    decodedBody,
+		"headers": redactHTTPSecrets(map[string][]string(response.Header), secretValues),
+		"body":    redactHTTPSecrets(decodedBody, secretValues),
 	}}, nil
+}
+
+func redactHTTPSecrets(value any, secrets []string) any {
+	switch typed := value.(type) {
+	case string:
+		redacted := typed
+		for _, secret := range secrets {
+			if secret != "" {
+				redacted = strings.ReplaceAll(redacted, secret, "[REDACTED]")
+			}
+		}
+		return redacted
+	case []string:
+		redacted := make([]string, len(typed))
+		for index, item := range typed {
+			redacted[index] = redactHTTPSecrets(item, secrets).(string)
+		}
+		return redacted
+	case []any:
+		redacted := make([]any, len(typed))
+		for index, item := range typed {
+			redacted[index] = redactHTTPSecrets(item, secrets)
+		}
+		return redacted
+	case map[string][]string:
+		redacted := make(map[string][]string, len(typed))
+		for key, item := range typed {
+			redacted[key] = redactHTTPSecrets(item, secrets).([]string)
+		}
+		return redacted
+	case map[string]any:
+		redacted := make(map[string]any, len(typed))
+		for key, item := range typed {
+			redacted[key] = redactHTTPSecrets(item, secrets)
+		}
+		return redacted
+	default:
+		return value
+	}
 }
 
 func (node *httpNode) parseConfig(raw json.RawMessage) (httpConfig, error) {

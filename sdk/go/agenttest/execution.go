@@ -34,6 +34,9 @@ func validateExecutionCase(node agentnode.Node, execution ExecutionCase, maxOutp
 		if kind := agentnode.KindOf(err); kind != *execution.WantErrorKind {
 			return fmt.Errorf("error kind %q, want %q: %w", kind, *execution.WantErrorKind, err)
 		}
+		if len(result.Outputs) > 0 || len(result.ActivePorts) > 0 {
+			return fmt.Errorf("execute returned outputs or active ports together with an error")
+		}
 		return nil
 	}
 	if err != nil {

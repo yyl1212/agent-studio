@@ -59,7 +59,10 @@ func (n *conditionNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts
 	return agentnode.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
 }
 
-func (*conditionNode) Execute(_ context.Context, request agentnode.Request) (agentnode.Result, error) {
+func (*conditionNode) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
+	if err := checkContext(ctx); err != nil {
+		return agentnode.Result{}, err
+	}
 	config, err := parseConditionConfig(request.Config)
 	if err != nil {
 		return agentnode.Result{}, nodeConfigError(err)

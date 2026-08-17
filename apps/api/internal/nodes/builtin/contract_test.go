@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -261,6 +262,33 @@ func TestIntegrationNodeContracts(t *testing.T) {
 	})
 }
 
+func TestCoreNodesClassifyPreCanceledContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		node    agentnode.Node
+		request agentnode.Request
+	}{
+		{name: "start", node: NewStart(), request: agentnode.Request{Config: json.RawMessage(`{"fields":[]}`)}},
+		{name: "template", node: NewTemplate(), request: agentnode.Request{Config: json.RawMessage(`{"template":"static"}`)}},
+		{name: "condition", node: NewCondition(), request: agentnode.Request{
+			Config: json.RawMessage(`{"operator":"equals","compareValue":"yes"}`),
+			Inputs: map[string][]any{"value": {"yes"}},
+		}},
+		{name: "end", node: NewEnd(), request: agentnode.Request{
+			Config: json.RawMessage(`{}`),
+			Inputs: map[string][]any{"result": {"done"}},
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := test.node.Execute(ctx, test.request)
+			assertNodeError(t, err, agentnode.ErrorKindCanceled, "run_canceled")
+		})
+	}
+}
+
 func TestIntegrationNodeCapabilities(t *testing.T) {
 	tests := []struct {
 		name string
@@ -317,7 +345,8 @@ func TestHTTPSecretDoesNotEnterOutputs(t *testing.T) {
 			t.Errorf("Authorization = %q, want injected secret", got)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"ok":true}`))
+		writer.Header().Set("X-Echo-Authorization", secret)
+		_, _ = writer.Write([]byte(fmt.Sprintf(`{"echo":%q}`, secret)))
 	}))
 	defer server.Close()
 	node := NewHTTP(HTTPOptions{
@@ -341,6 +370,40 @@ func TestHTTPSecretDoesNotEnterOutputs(t *testing.T) {
 	if strings.Contains(string(encoded), "top-secret") {
 		t.Fatalf("secret leaked into outputs: %s", encoded)
 	}
+	if !strings.Contains(string(encoded), "[REDACTED]") {
+		t.Fatalf("echoed secret was not redacted: %s", encoded)
+	}
+}
+
+func TestHTTPTimeoutCoversDNSResolution(t *testing.T) {
+	lookup := func(ctx context.Context, _, _ string) ([]net.IP, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			return nil, errors.New("DNS lookup did not receive timeout context")
+		}
+	}
+	node := NewHTTP(HTTPOptions{LookupIP: lookup})
+	started := time.Now()
+	_, err := node.Execute(context.Background(), agentnode.Request{Config: json.RawMessage(
+		`{"method":"GET","url":"https://slow-dns.example","headers":[],"timeoutMs":5}`,
+	)})
+	assertNodeError(t, err, agentnode.ErrorKindTemporary, "upstream_timeout")
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("DNS timeout took %s, want <= 50ms", elapsed)
+	}
+}
+
+func TestHTTPClassifiesDNSFailureAsInternal(t *testing.T) {
+	lookup := func(context.Context, string, string) ([]net.IP, error) {
+		return nil, errors.New("resolver unavailable")
+	}
+	node := NewHTTP(HTTPOptions{LookupIP: lookup})
+	_, err := node.Execute(context.Background(), agentnode.Request{Config: json.RawMessage(
+		`{"method":"GET","url":"https://dns-failure.example","headers":[]}`,
+	)})
+	assertNodeError(t, err, agentnode.ErrorKindInternal, "execution_failed")
 }
 
 func TestBuiltinSchemasDoNotExposePlaintextSecretFields(t *testing.T) {
@@ -366,9 +429,15 @@ func findPlaintextSecretField(value any) (string, bool) {
 	}
 	if properties, ok := object["properties"].(map[string]any); ok {
 		for key := range properties {
-			normalized := strings.ToLower(strings.ReplaceAll(key, "_", ""))
-			switch normalized {
-			case "apikey", "token", "password", "cookie", "authorization":
+			normalized := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(key))
+			for _, marker := range []string{"apikey", "secret", "password", "cookie", "authorization"} {
+				if strings.Contains(normalized, marker) {
+					return key, true
+				}
+			}
+			if normalized == "token" || strings.Contains(normalized, "accesstoken") ||
+				strings.Contains(normalized, "refreshtoken") || strings.Contains(normalized, "authtoken") ||
+				strings.Contains(normalized, "bearertoken") {
 				return key, true
 			}
 		}

@@ -47,7 +47,10 @@ func (n *endNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, erro
 	return agentnode.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
 }
 
-func (*endNode) Execute(_ context.Context, request agentnode.Request) (agentnode.Result, error) {
+func (*endNode) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
+	if err := checkContext(ctx); err != nil {
+		return agentnode.Result{}, err
+	}
 	var parsed struct{}
 	if err := decodeConfig(request.Config, &parsed); err != nil {
 		return agentnode.Result{}, nodeConfigError(err)

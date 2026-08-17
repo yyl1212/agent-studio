@@ -152,6 +152,25 @@ func TestValidateExecutionChecksExpectedOutputsAndErrorKind(t *testing.T) {
 	}
 }
 
+func TestValidateExecutionRejectsOutputsReturnedWithExpectedError(t *testing.T) {
+	wantKind := agentnode.ErrorKindInput
+	node := fixtureNode{
+		definition: validDefinition(),
+		execute: func(context.Context, agentnode.Request) (agentnode.Result, error) {
+			return agentnode.Result{Outputs: map[string]any{"other": make(chan int)}}, agentnode.NewError(
+				agentnode.ErrorKindInput,
+				"invalid_input",
+				errors.New("bad input"),
+				nil,
+			)
+		},
+	}
+	err := validateExecutionCase(node, ExecutionCase{Name: "error with output", WantErrorKind: &wantKind}, 0)
+	if err == nil {
+		t.Fatal("expected outputs returned with an error to violate the contract")
+	}
+}
+
 func TestValidateCancellationRejectsNodeThatIgnoresContext(t *testing.T) {
 	release := make(chan struct{})
 	node := fixtureNode{definition: validDefinition(), execute: func(context.Context, agentnode.Request) (agentnode.Result, error) {

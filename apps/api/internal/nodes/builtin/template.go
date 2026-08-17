@@ -64,7 +64,10 @@ func (*templateNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, e
 	return agentnode.ResolvedPorts{Inputs: inputs, Outputs: NewTemplate().Definition().Outputs}, nil
 }
 
-func (*templateNode) Execute(_ context.Context, request agentnode.Request) (agentnode.Result, error) {
+func (*templateNode) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
+	if err := checkContext(ctx); err != nil {
+		return agentnode.Result{}, err
+	}
 	config, variables, err := parseTemplateConfig(request.Config)
 	if err != nil {
 		return agentnode.Result{}, nodeConfigError(err)
