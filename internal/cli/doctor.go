@@ -2,13 +2,18 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/yyl1212/agent-studio/internal/nodemanifest"
 )
 
 const (
@@ -32,7 +37,7 @@ type CheckResult struct {
 
 func Diagnose(ctx context.Context, root string, deps DoctorDeps) []CheckResult {
 	_ = root
-	results := make([]CheckResult, 0, 9)
+	results := make([]CheckResult, 0, 10)
 	results = append(results, checkVersion(ctx, deps, "go", []string{"version"}, 1, 26, goVersion))
 	results = append(results, checkVersion(ctx, deps, "node", []string{"--version"}, 24, 0, nodeVersion))
 	results = append(results, checkAvailable(ctx, deps, "corepack", []string{"--version"}))
@@ -44,12 +49,29 @@ func Diagnose(ctx context.Context, root string, deps DoctorDeps) []CheckResult {
 		compose = checkCompose(ctx, deps)
 	}
 	results = append(results, compose)
+	results = append(results, checkManifest(root, deps))
 	results = append(results, checkPostgres(ctx, deps, docker.Status == checkOK && compose.Status == checkOK))
 
 	for _, port := range []string{"5432", "8080", "5173"} {
 		results = append(results, checkPort(deps, port))
 	}
 	return results
+}
+
+func checkManifest(root string, deps DoctorDeps) CheckResult {
+	path := filepath.Join(root, "agent-studio.nodes.yaml")
+	data, err := deps.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return CheckResult{Name: "manifest", Status: checkWarn, Detail: "agent-studio.nodes.yaml not found"}
+	}
+	if err != nil {
+		return CheckResult{Name: "manifest", Status: checkFail, Detail: err.Error()}
+	}
+	manifest, err := nodemanifest.Parse(path, data)
+	if err != nil {
+		return CheckResult{Name: "manifest", Status: checkFail, Detail: err.Error()}
+	}
+	return CheckResult{Name: "manifest", Status: checkOK, Detail: fmt.Sprintf("%s; %d node packages", manifest.APIVersion, len(manifest.Nodes))}
 }
 
 func checkVersion(ctx context.Context, deps DoctorDeps, name string, args []string, minimumMajor, minimumMinor int, parse func(string) (int, int, bool)) CheckResult {

@@ -59,6 +59,30 @@ func TestDiagnoseReportsOccupiedPortAndStoppedDatabaseAsWarnings(t *testing.T) {
 	assertCheck(t, results, "postgres", checkWarn)
 }
 
+func TestDiagnoseChecksNodeManifestWhenPresent(t *testing.T) {
+	tests := []struct {
+		name     string
+		readFile func(string) ([]byte, error)
+		status   string
+	}{
+		{name: "missing", readFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }, status: checkWarn},
+		{name: "valid", readFile: func(string) ([]byte, error) {
+			return []byte("apiVersion: agent-studio.dev/v1alpha1\nnodes: []\n"), nil
+		}, status: checkOK},
+		{name: "invalid", readFile: func(string) ([]byte, error) {
+			return []byte("apiVersion: v2\nnodes: []\n"), nil
+		}, status: checkFail},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deps, _ := healthyDoctorDeps()
+			deps.ReadFile = test.readFile
+			results := Diagnose(context.Background(), "/repo", deps)
+			assertCheck(t, results, "manifest", test.status)
+		})
+	}
+}
+
 func healthyDoctorDeps() (DoctorDeps, []*doctorTestListener) {
 	listeners := make([]*doctorTestListener, 0, 3)
 	return DoctorDeps{

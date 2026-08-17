@@ -1,0 +1,3 @@
+apiVersion: agent-studio.dev/v1alpha1
+nodes:
+  - package: example.com/project/extensions/echo
