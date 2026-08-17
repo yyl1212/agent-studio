@@ -64,6 +64,16 @@ func NormalizeDefinition(definition agentnode.Definition) (agentnode.Definition,
 	if err != nil {
 		return agentnode.Definition{}, err
 	}
+	seenCapabilities := make(map[agentnode.Capability]struct{}, len(definition.Capabilities))
+	for _, capability := range definition.Capabilities {
+		if !validCapability(capability) {
+			return agentnode.Definition{}, fmt.Errorf("%w: unknown capability %q", ErrInvalidDefinition, capability)
+		}
+		if _, exists := seenCapabilities[capability]; exists {
+			return agentnode.Definition{}, fmt.Errorf("%w: duplicate capability %q", ErrInvalidDefinition, capability)
+		}
+		seenCapabilities[capability] = struct{}{}
+	}
 	definition.Inputs = inputs
 	definition.Outputs = outputs
 	definition.ConfigSchema = append(json.RawMessage(nil), definition.ConfigSchema...)
@@ -122,10 +132,43 @@ func normalizePorts(ports []agentnode.Port, sentinel error, kind string) ([]agen
 		if _, ok := seen[port.Key]; ok {
 			return nil, fmt.Errorf("%w: duplicate %s port %q", sentinel, kind, port.Key)
 		}
+		if !validDataType(port.Type) {
+			return nil, fmt.Errorf("%w: %s port %q has unknown data type %q", sentinel, kind, port.Key, port.Type)
+		}
+		if !validCardinality(port.Cardinality) {
+			return nil, fmt.Errorf("%w: %s port %q has unknown cardinality %q", sentinel, kind, port.Key, port.Cardinality)
+		}
 		seen[port.Key] = struct{}{}
 		normalized = append(normalized, port)
 	}
 	return normalized, nil
+}
+
+func validDataType(value agentnode.DataType) bool {
+	switch value {
+	case agentnode.DataTypeString, agentnode.DataTypeNumber, agentnode.DataTypeBoolean, agentnode.DataTypeJSON, agentnode.DataTypeAny:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCardinality(value agentnode.Cardinality) bool {
+	switch value {
+	case agentnode.CardinalityOne, agentnode.CardinalitySingleActive:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCapability(value agentnode.Capability) bool {
+	switch value {
+	case agentnode.CapabilityNetwork, agentnode.CapabilitySecrets, agentnode.CapabilityFilesystemRead, agentnode.CapabilityFilesystemWrite:
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneDefinition(definition agentnode.Definition) agentnode.Definition {

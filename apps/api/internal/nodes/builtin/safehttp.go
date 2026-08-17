@@ -132,10 +132,11 @@ func (node *httpNode) newClient() *http.Client {
 }
 
 func sensitiveHeader(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "authorization", "proxy-authorization", "cookie", "x-api-key", "api-key":
-		return true
-	default:
-		return false
+	normalized := strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(strings.TrimSpace(name)))
+	for _, marker := range []string{"auth", "cookie", "token", "secret", "password", "apikey", "credential"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
 	}
+	return false
 }

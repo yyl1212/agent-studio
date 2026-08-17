@@ -18,6 +18,8 @@ type Engine struct {
 	timeout     time.Duration
 }
 
+const cancelledEventTimeout = time.Second
+
 func New(options Options) *Engine {
 	if options.MaxParallel <= 0 {
 		options.MaxParallel = 4
@@ -115,7 +117,9 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 				}
 			}
 			ended := finishResult(result)
-			_ = emitWithContext(context.WithoutCancel(runContext), observer, &sequence, runID, Event{Type: "run.cancelled", Error: domain.NewPublicRunError(runContext.Err())})
+			cancelledEventContext, cancelCancelledEvent := context.WithTimeout(context.WithoutCancel(runContext), cancelledEventTimeout)
+			_ = emitWithContext(cancelledEventContext, observer, &sequence, runID, Event{Type: "run.cancelled", Error: domain.NewPublicRunError(runContext.Err())})
+			cancelCancelledEvent()
 			return ended, runContext.Err()
 		case worker := <-workerResults:
 			running--

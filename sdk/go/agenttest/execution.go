@@ -5,17 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
-const defaultMaxOutputBytes = 1 << 20
+const (
+	defaultMaxOutputBytes   = 1 << 20
+	defaultExecutionTimeout = time.Second
+)
 
 type ExecutionCase struct {
 	Name          string
 	Request       agentnode.Request
 	WantOutputs   map[string]any
 	WantErrorKind *agentnode.ErrorKind
+	Timeout       time.Duration
 }
 
 func validateExecutionCase(node agentnode.Node, execution ExecutionCase, maxOutputBytes int) error {
@@ -26,7 +31,28 @@ func validateExecutionCase(node agentnode.Node, execution ExecutionCase, maxOutp
 	if err := validatePorts("resolved output", ports.Outputs); err != nil {
 		return err
 	}
-	result, err := node.Execute(context.Background(), execution.Request)
+	timeout := execution.Timeout
+	if timeout <= 0 {
+		timeout = defaultExecutionTimeout
+	}
+	executionContext, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	type executionResult struct {
+		result agentnode.Result
+		err    error
+	}
+	completed := make(chan executionResult, 1)
+	go func() {
+		result, err := node.Execute(executionContext, execution.Request)
+		completed <- executionResult{result: result, err: err}
+	}()
+	var result agentnode.Result
+	select {
+	case outcome := <-completed:
+		result, err = outcome.result, outcome.err
+	case <-executionContext.Done():
+		return fmt.Errorf("execute did not return within %s: %w", timeout, executionContext.Err())
+	}
 	if execution.WantErrorKind != nil {
 		if err == nil {
 			return fmt.Errorf("expected error kind %q, got nil", *execution.WantErrorKind)

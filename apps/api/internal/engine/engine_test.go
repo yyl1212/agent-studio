@@ -25,6 +25,16 @@ type memoryObserver struct {
 	err    error
 }
 
+type cancellationBlockingObserver struct{}
+
+func (cancellationBlockingObserver) Observe(ctx context.Context, event Event) error {
+	if event.Type == "run.cancelled" {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+
 func (observer *memoryObserver) Observe(_ context.Context, event Event) error {
 	observer.mu.Lock()
 	defer observer.mu.Unlock()
@@ -344,6 +354,33 @@ func TestEngineStopsWhenCallerCancels(t *testing.T) {
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation error=%v", err)
+	}
+}
+
+func TestEngineBoundsCancelledEventObservation(t *testing.T) {
+	tracker := newConcurrencyTracker()
+	plan, _ := compileJoinedRuntimeFixture(t, tracker, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := New(Options{MaxParallel: 2}).Run(ctx, "run-cancel-observer", plan, map[string]any{"value": "x"}, cancellationBlockingObserver{})
+		done <- err
+	}()
+	for range 2 {
+		select {
+		case <-tracker.started:
+		case <-time.After(time.Second):
+			t.Fatal("parallel nodes did not start before cancellation")
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation error=%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("engine remained blocked while emitting run.cancelled")
 	}
 }
 

@@ -444,6 +444,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PortDefinition"
+        capabilities:
+          type: array
+          items:
+            type: string
+            enum: [network, secrets, filesystem-read, filesystem-write]
     ValidationIssue:
       type: object
       required: [code, message]

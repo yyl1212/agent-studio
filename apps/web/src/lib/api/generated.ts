@@ -283,6 +283,7 @@ export interface components {
             };
             inputs: components["schemas"]["PortDefinition"][];
             outputs: components["schemas"]["PortDefinition"][];
+            capabilities?: ("network" | "secrets" | "filesystem-read" | "filesystem-write")[];
         };
         ValidationIssue: {
             code: string;

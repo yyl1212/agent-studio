@@ -62,3 +62,24 @@ func TestRedactMatchesSensitiveKeyFragments(t *testing.T) {
 		t.Fatalf("redacted = %#v, want %#v", got, want)
 	}
 }
+
+func TestRedactCoversNamedMapsAndSlices(t *testing.T) {
+	type namedStringMap map[string]string
+	type namedSlice []namedStringMap
+	type namedDetails map[string]any
+
+	input := namedDetails{
+		"nested": namedSlice{{"api_token": "top-secret", "safe": "visible"}},
+	}
+	encoded := reflect.ValueOf(Redact(input))
+	if encoded.Kind() != reflect.Map {
+		t.Fatalf("redacted kind=%s", encoded.Kind())
+	}
+	got := Redact(input)
+	want := map[string]any{
+		"nested": []any{map[string]any{"api_token": "[REDACTED]", "safe": "visible"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("redacted=%#v, want %#v", got, want)
+	}
+}

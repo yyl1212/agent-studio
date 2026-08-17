@@ -212,13 +212,21 @@ func redactHTTPSecrets(value any, secrets []string) any {
 	case map[string][]string:
 		redacted := make(map[string][]string, len(typed))
 		for key, item := range typed {
-			redacted[key] = redactHTTPSecrets(item, secrets).([]string)
+			if sensitiveHeader(key) {
+				redacted[key] = []string{"[REDACTED]"}
+			} else {
+				redacted[key] = redactHTTPSecrets(item, secrets).([]string)
+			}
 		}
 		return redacted
 	case map[string]any:
 		redacted := make(map[string]any, len(typed))
 		for key, item := range typed {
-			redacted[key] = redactHTTPSecrets(item, secrets)
+			if sensitiveHeader(key) {
+				redacted[key] = "[REDACTED]"
+			} else {
+				redacted[key] = redactHTTPSecrets(item, secrets)
+			}
 		}
 		return redacted
 	default:

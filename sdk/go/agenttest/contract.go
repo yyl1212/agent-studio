@@ -65,6 +65,9 @@ func validateDefinition(definition agentnode.Definition) error {
 	}
 	seenCapabilities := make(map[agentnode.Capability]struct{}, len(definition.Capabilities))
 	for _, capability := range definition.Capabilities {
+		if !validCapability(capability) {
+			return fmt.Errorf("unknown capability %q", capability)
+		}
 		if _, exists := seenCapabilities[capability]; exists {
 			return fmt.Errorf("duplicate capability %q", capability)
 		}
@@ -110,9 +113,42 @@ func validatePorts(kind string, ports []agentnode.Port) error {
 		if _, exists := seen[port.Key]; exists {
 			return fmt.Errorf("duplicate %s port %q", kind, port.Key)
 		}
+		if !validDataType(port.Type) {
+			return fmt.Errorf("%s port %q has unknown data type %q", kind, port.Key, port.Type)
+		}
+		if !validCardinality(port.Cardinality) {
+			return fmt.Errorf("%s port %q has unknown cardinality %q", kind, port.Key, port.Cardinality)
+		}
 		seen[port.Key] = struct{}{}
 	}
 	return nil
+}
+
+func validDataType(value agentnode.DataType) bool {
+	switch value {
+	case agentnode.DataTypeString, agentnode.DataTypeNumber, agentnode.DataTypeBoolean, agentnode.DataTypeJSON, agentnode.DataTypeAny:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCardinality(value agentnode.Cardinality) bool {
+	switch value {
+	case agentnode.CardinalityOne, agentnode.CardinalitySingleActive:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCapability(value agentnode.Capability) bool {
+	switch value {
+	case agentnode.CapabilityNetwork, agentnode.CapabilitySecrets, agentnode.CapabilityFilesystemRead, agentnode.CapabilityFilesystemWrite:
+		return true
+	default:
+		return false
+	}
 }
 
 func compileSchema(raw json.RawMessage) error {

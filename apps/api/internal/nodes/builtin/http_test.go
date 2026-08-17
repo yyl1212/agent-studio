@@ -44,9 +44,45 @@ func TestHTTPRejectsHostnameResolvingToPrivateAddress(t *testing.T) {
 
 func TestHTTPRequiresEnvForSensitiveHeader(t *testing.T) {
 	node := NewHTTP(HTTPOptions{})
-	config := json.RawMessage(`{"method":"GET","url":"https://example.com","headers":[{"name":"Authorization","valueSource":"literal","value":"secret"}]}`)
-	if _, err := node.Resolve(config); !errors.Is(err, ErrSensitiveHeaderMustUseEnv) {
-		t.Fatalf("error=%v", err)
+	for _, header := range []string{"Authorization", "X-Auth-Token", "Private-Token", "X-Secret", "X-API-Key"} {
+		t.Run(header, func(t *testing.T) {
+			config := json.RawMessage(fmt.Sprintf(`{"method":"GET","url":"https://example.com","headers":[{"name":%q,"valueSource":"literal","value":"secret"}]}`, header))
+			if _, err := node.Resolve(config); !errors.Is(err, ErrSensitiveHeaderMustUseEnv) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestHTTPRedactsSensitiveResponseFields(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type":  []string{"application/json"},
+				"Set-Cookie":    []string{"session=new-secret"},
+				"Private-Token": []string{"new-secret"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"api_token":"new-secret","safe":"visible"}`)),
+		}, nil
+	})}
+	node := NewHTTP(HTTPOptions{AllowPrivateNetwork: true, Client: client})
+	result, err := node.Execute(context.Background(), domain.NodeRequest{Config: json.RawMessage(`{"method":"GET","url":"https://example.com","headers":[]}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result.Outputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "new-secret") {
+		t.Fatalf("sensitive response leaked: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), "[REDACTED]") {
+		t.Fatalf("redaction marker missing: %s", encoded)
+	}
+	if got := result.Outputs["body"].(map[string]any)["safe"]; got != "visible" {
+		t.Fatalf("safe body value=%v", got)
 	}
 }
 

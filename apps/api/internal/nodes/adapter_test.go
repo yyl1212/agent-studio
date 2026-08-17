@@ -79,6 +79,37 @@ func TestNormalizeDefinitionRejectsDuplicatePortKeys(t *testing.T) {
 	}
 }
 
+func TestNormalizeDefinitionRejectsUnknownEnums(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*agentnode.Definition)
+	}{
+		{name: "data type", mutate: func(definition *agentnode.Definition) { definition.Outputs[0].Type = "mystery" }},
+		{name: "cardinality", mutate: func(definition *agentnode.Definition) { definition.Outputs[0].Cardinality = "many" }},
+		{name: "capability", mutate: func(definition *agentnode.Definition) { definition.Capabilities = []agentnode.Capability{"shell"} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			definition := validAdapterDefinition()
+			test.mutate(&definition)
+			if _, err := NormalizeDefinition(definition); !errors.Is(err, ErrInvalidDefinition) {
+				t.Fatalf("error=%v, want ErrInvalidDefinition", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeResolvedPortsRejectsUnknownEnums(t *testing.T) {
+	_, err := NormalizeResolvedPorts(agentnode.ResolvedPorts{Outputs: []agentnode.Port{{
+		Key:         "result",
+		Type:        "mystery",
+		Cardinality: agentnode.CardinalityOne,
+	}}})
+	if !errors.Is(err, ErrInvalidResolvedPorts) {
+		t.Fatalf("error=%v, want ErrInvalidResolvedPorts", err)
+	}
+}
+
 func TestAdaptNormalizesResolvedPorts(t *testing.T) {
 	node, err := Adapt(adapterFixtureNode{
 		definition: validAdapterDefinition(),
@@ -111,7 +142,7 @@ func TestNormalizeResolvedPortsUsesIndependentJSONArrays(t *testing.T) {
 		t.Fatalf("ports JSON = %s, want %s", got, want)
 	}
 
-	original := agentnode.ResolvedPorts{Outputs: []agentnode.Port{{Key: "result"}}}
+	original := agentnode.ResolvedPorts{Outputs: []agentnode.Port{{Key: "result", Type: agentnode.DataTypeString, Cardinality: agentnode.CardinalityOne}}}
 	normalized, err := NormalizeResolvedPorts(original)
 	if err != nil {
 		t.Fatal(err)

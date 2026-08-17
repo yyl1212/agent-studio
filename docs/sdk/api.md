@@ -181,4 +181,6 @@ agenttest.Run(t, agenttest.Contract{
 })
 ```
 
-契约工具会检查身份、Schema、端口、配置错误分类、输出 JSON/大小、活动端口和可选取消行为。
+契约工具会检查身份、Schema、端口、配置错误分类、输出 JSON/大小、活动端口和可选取消行为。单个执行用例默认最多等待 1 秒，可通过 `ExecutionCase.Timeout` 调整。
+
+当前 v0.2 节点运行在宿主 Go 进程内，没有进程级隔离。契约工具可以在 deadline 后停止等待并报告失败，但 Go 无法强制终止一个忽略 `context` 的节点 goroutine；这类实现仍可能遗留 goroutine，必须由节点作者修复。需要强制终止保证的场景应把第三方节点放到独立进程或容器中运行。

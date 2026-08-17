@@ -53,6 +53,15 @@ func TestValidateDefinitionRejectsInvalidIdentityAndDuplicates(t *testing.T) {
 		{name: "duplicate capability", mutate: func(definition *agentnode.Definition) {
 			definition.Capabilities = []agentnode.Capability{agentnode.CapabilityNetwork, agentnode.CapabilityNetwork}
 		}},
+		{name: "unknown capability", mutate: func(definition *agentnode.Definition) {
+			definition.Capabilities = []agentnode.Capability{"shell"}
+		}},
+		{name: "unknown input type", mutate: func(definition *agentnode.Definition) {
+			definition.Inputs[0].Type = agentnode.DataType("mystery")
+		}},
+		{name: "unknown output cardinality", mutate: func(definition *agentnode.Definition) {
+			definition.Outputs[0].Cardinality = agentnode.Cardinality("many")
+		}},
 	}
 
 	for _, test := range tests {
@@ -84,9 +93,12 @@ func TestValidateConfigCasesRequiresConfigErrorsAndValidDynamicPorts(t *testing.
 		resolve: func(config json.RawMessage) (agentnode.ResolvedPorts, error) {
 			switch string(config) {
 			case `{"valid":true}`:
-				return agentnode.ResolvedPorts{Outputs: []agentnode.Port{{Key: "result"}}}, nil
+				return agentnode.ResolvedPorts{Outputs: []agentnode.Port{{Key: "result", Type: agentnode.DataTypeString, Cardinality: agentnode.CardinalityOne}}}, nil
 			case `{"duplicate":true}`:
-				return agentnode.ResolvedPorts{Outputs: []agentnode.Port{{Key: "result"}, {Key: "result"}}}, nil
+				return agentnode.ResolvedPorts{Outputs: []agentnode.Port{
+					{Key: "result", Type: agentnode.DataTypeString, Cardinality: agentnode.CardinalityOne},
+					{Key: "result", Type: agentnode.DataTypeString, Cardinality: agentnode.CardinalityOne},
+				}}, nil
 			default:
 				return agentnode.ResolvedPorts{}, agentnode.NewError(agentnode.ErrorKindConfig, "invalid_config", errors.New("bad config"), nil)
 			}
@@ -181,6 +193,27 @@ func TestValidateCancellationRejectsNodeThatIgnoresContext(t *testing.T) {
 	close(release)
 	if err == nil {
 		t.Fatal("expected cancellation contract error")
+	}
+}
+
+func TestValidateExecutionTimesOutNodeThatNeverReturns(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	node := fixtureNode{definition: validDefinition(), execute: func(context.Context, agentnode.Request) (agentnode.Result, error) {
+		<-release
+		return agentnode.Result{}, nil
+	}}
+	done := make(chan error, 1)
+	go func() {
+		done <- validateExecutionCase(node, ExecutionCase{Name: "blocked", Timeout: 5 * time.Millisecond}, 0)
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected execution timeout error")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("execution contract validation did not return within its timeout")
 	}
 }
 
