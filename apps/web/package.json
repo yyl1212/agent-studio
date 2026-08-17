@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "generate:api": "openapi-typescript ../../contracts/openapi.yaml -o src/lib/api/generated.ts",
     "lint": "tsc --noEmit",
     "test": "vitest",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
     "@xyflow/react": "12.11.2",
+    "ajv": "8.17.1",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "react-router-dom": "7.8.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "7.0.1",
@@ -21,7 +24,8 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "jsdom": "30.0.1",
-    "typescript": "7.0.2",
+    "openapi-typescript": "7.9.1",
+    "typescript": "5.9.3",
     "vite": "8.2.0",
     "vitest": "4.1.10"
   }
