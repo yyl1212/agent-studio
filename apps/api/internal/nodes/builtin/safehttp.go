@@ -1,0 +1,134 @@
+package builtin
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
+)
+
+var (
+	ErrInvalidHTTPURL        = errors.New("invalid HTTP URL")
+	ErrPrivateAddressBlocked = errors.New("private network address blocked")
+	ErrTooManyRedirects      = errors.New("too many HTTP redirects")
+)
+
+type lookupIPFunc func(context.Context, string, string) ([]net.IP, error)
+
+func (node *httpNode) validateURL(ctx context.Context, rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" {
+		return nil, fmt.Errorf("%w: malformed URL", ErrInvalidHTTPURL)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("%w: unsupported scheme", ErrInvalidHTTPURL)
+	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("%w: userinfo is not allowed", ErrInvalidHTTPURL)
+	}
+	if node.allowPrivateNetwork {
+		return parsed, nil
+	}
+	addresses, err := node.resolveHost(ctx, parsed.Hostname())
+	if err != nil {
+		return nil, err
+	}
+	for _, address := range addresses {
+		if isRestrictedAddress(address) {
+			return nil, fmt.Errorf("%w: %s", ErrPrivateAddressBlocked, parsed.Hostname())
+		}
+	}
+	return parsed, nil
+}
+
+func (node *httpNode) resolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
+	if address, err := netip.ParseAddr(host); err == nil {
+		return []netip.Addr{address.Unmap()}, nil
+	}
+	resolved, err := node.lookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve HTTP host: %w", err)
+	}
+	if len(resolved) == 0 {
+		return nil, fmt.Errorf("resolve HTTP host: no addresses")
+	}
+	addresses := make([]netip.Addr, 0, len(resolved))
+	for _, ip := range resolved {
+		address, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			return nil, fmt.Errorf("resolve HTTP host: invalid address")
+		}
+		addresses = append(addresses, address.Unmap())
+	}
+	return addresses, nil
+}
+
+func isRestrictedAddress(address netip.Addr) bool {
+	return address.IsLoopback() ||
+		address.IsPrivate() ||
+		address.IsLinkLocalUnicast() ||
+		address.IsLinkLocalMulticast() ||
+		address.IsMulticast() ||
+		address.IsUnspecified()
+}
+
+func (node *httpNode) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("split HTTP dial address: %w", err)
+	}
+	addresses, err := node.resolveHost(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if !node.allowPrivateNetwork {
+		for _, resolved := range addresses {
+			if isRestrictedAddress(resolved) {
+				return nil, fmt.Errorf("%w: %s", ErrPrivateAddressBlocked, host)
+			}
+		}
+	}
+	dialer := &net.Dialer{}
+	var lastErr error
+	for _, resolved := range addresses {
+		connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(resolved.String(), port))
+		if err == nil {
+			return connection, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("dial HTTP host: %w", lastErr)
+}
+
+func (node *httpNode) newClient() *http.Client {
+	var client http.Client
+	if node.client != nil {
+		client = *node.client
+	} else {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyFromEnvironment
+		transport.DialContext = node.dialContext
+		client.Transport = transport
+	}
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return ErrTooManyRedirects
+		}
+		_, err := node.validateURL(request.Context(), request.URL.String())
+		return err
+	}
+	return &client
+}
+
+func sensitiveHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "authorization", "proxy-authorization", "cookie", "x-api-key", "api-key":
+		return true
+	default:
+		return false
+	}
+}

@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	"time"
+
 	"agentstudio.local/api/internal/modelprovider"
 	"agentstudio.local/api/internal/nodes"
 )
@@ -21,4 +23,15 @@ func RegisterCore(registry *nodes.Registry) error {
 
 func RegisterLLM(registry *nodes.Registry, provider modelprovider.Provider, defaultModel string) error {
 	return registry.Register(NewLLM(provider, defaultModel))
+}
+
+func RegisterIntegrationNodes(registry *nodes.Registry, httpOptions HTTPOptions) error {
+	if err := registry.Register(NewHTTP(httpOptions)); err != nil {
+		return err
+	}
+	return registry.Register(NewCode(CodeOptions{
+		MaxSteps:       100000,
+		Timeout:        2 * time.Second,
+		MaxOutputBytes: 1 << 20,
+	}))
 }
