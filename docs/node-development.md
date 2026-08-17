@@ -1,112 +1,37 @@
 # 节点扩展开发指南
 
-Agent Studio 的普通节点由 Go 后端注册表驱动。节点通过 `Definition` 暴露名称、分类、配置 JSON Schema 和静态端口，通过 `Resolve` 解析动态端口，通过 `Execute` 执行业务。前端从 `/api/node-types` 获取定义并使用通用 Schema 表单渲染配置，因此新增普通节点不需要修改前端。
+Agent Studio 的普通节点由 Go 注册表驱动。节点通过 `Definition` 暴露配置 Schema 和静态端口，通过 `Resolve` 推导动态端口，通过 `Execute` 处理输入。画布从 `/api/node-types` 获取定义并渲染通用 Schema 表单，因此新增普通节点不需要修改前端。
 
-## 完整 Echo 节点
+## 第三方节点
 
-创建 `apps/api/internal/nodes/builtin/echo.go`：
+第三方作者只使用公开包：
 
 ```go
-package builtin
-
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-
-    "agentstudio.local/api/internal/domain"
+    "github.com/yyl1212/agent-studio/sdk/go/agentnode"
+    "github.com/yyl1212/agent-studio/sdk/go/agenttest"
 )
-
-type echoNode struct{}
-
-type echoConfig struct {
-    Prefix string `json:"prefix,omitempty"`
-}
-
-func NewEcho() *echoNode { return &echoNode{} }
-
-func (*echoNode) Definition() domain.NodeDefinition {
-    return domain.NodeDefinition{
-        Type: "echo", Version: "1", Title: "Echo",
-        Description: "为输入文本增加前缀", Category: "文本",
-        ConfigSchema: json.RawMessage(`{
-          "type":"object",
-          "properties":{"prefix":{"type":"string","title":"前缀","x-ui-placeholder":"Echo: "}},
-          "additionalProperties":false
-        }`),
-        Inputs: []domain.PortDefinition{{
-            Key: "text", Title: "文本", Type: domain.TypeString,
-            Required: true, Cardinality: domain.CardinalityOne,
-        }},
-        Outputs: []domain.PortDefinition{{
-            Key: "text", Title: "文本", Type: domain.TypeString,
-            Cardinality: domain.CardinalityOne,
-        }},
-    }
-}
-
-func (node *echoNode) Resolve(config json.RawMessage) (domain.ResolvedPorts, error) {
-    var parsed echoConfig
-    if err := decodeConfig(config, &parsed); err != nil {
-        return domain.ResolvedPorts{}, err
-    }
-    definition := node.Definition()
-    return domain.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
-}
-
-func (*echoNode) Execute(_ context.Context, request domain.NodeRequest) (domain.NodeResult, error) {
-    var config echoConfig
-    if err := decodeConfig(request.Config, &config); err != nil {
-        return domain.NodeResult{}, err
-    }
-    value, err := exactlyOneInput(request.Inputs, "text")
-    if err != nil { return domain.NodeResult{}, err }
-    text, ok := value.(string)
-    if !ok { return domain.NodeResult{}, fmt.Errorf("%w: text", ErrInputTypeMismatch) }
-    return domain.NodeResult{Outputs: map[string]any{"text": config.Prefix + text}}, nil
-}
 ```
 
-在 `apps/api/internal/nodes/builtin/register.go` 的 `RegisterCore` 列表中加入 `NewEcho()`：
+完整接口、Echo 示例、错误分类和取消规则见 [Go 节点 SDK API](sdk/api.md)，版本承诺见 [SDK 兼容性策略](sdk/compatibility.md)。建议先实现 `agentnode.Node`，再通过 `agenttest.Run` 验证配置、端口、输出和取消契约。
 
-```go
-for _, node := range []nodes.NodeType{
-    NewStart(), NewTemplate(), NewEcho(), NewCondition(), NewEnd(),
-} {
-    if err := registry.Register(node); err != nil { return err }
-}
-```
+扩展节点必须使用命名空间 Type，例如 `acme.search`；版本使用 `1`、`1.0` 或 `1.0.0`。配置 Schema 应设置 `additionalProperties: false`，密钥只能使用环境变量名或宿主引用，不能提供明文 API Key、Token、Cookie 或 Authorization 字段。
 
-添加 `apps/api/internal/nodes/builtin/echo_test.go`：
+## 内置节点维护
 
-```go
-func TestEchoResolveAndExecute(t *testing.T) {
-    node := NewEcho()
-    ports, err := node.Resolve(json.RawMessage(`{"prefix":"回答："}`))
-    if err != nil { t.Fatal(err) }
-    if len(ports.Inputs) != 1 || ports.Inputs[0].Key != "text" { t.Fatalf("ports=%+v", ports) }
+官方内置节点位于 `apps/api/internal/nodes/builtin`，但这里是宿主实现而不是第三方 SDK。维护内置节点时仍应直接实现 `agentnode.Node`，并在 `contract_test.go` 中加入 `agenttest.Contract`，不能通过内部 wrapper 绕过公开契约。
 
-    result, err := node.Execute(context.Background(), domain.NodeRequest{
-        Config: json.RawMessage(`{"prefix":"回答："}`),
-        Inputs: map[string][]any{"text": {"你好"}},
-    })
-    if err != nil { t.Fatal(err) }
-    if result.Outputs["text"] != "回答：你好" { t.Fatalf("outputs=%+v", result.Outputs) }
-}
-```
+注册入口接受 `agentnode.Registrar`。核心节点保持 Start、Template、Condition、End 的顺序；集成节点保持 LLM、HTTP、Code 的既有注入与注册方式。
 
-运行验证：
+## 验证
+
+从仓库根目录运行：
 
 ```bash
-cd apps/api
-CGO_ENABLED=0 go test ./internal/nodes/builtin -run TestEcho -v
+CGO_ENABLED=0 go test ./sdk/go/... -count=1
+CGO_ENABLED=0 go test ./apps/api/internal/nodes/builtin -count=1
 CGO_ENABLED=0 go test ./... -count=1
+CGO_ENABLED=0 go vet ./...
 ```
 
-## 扩展约束
-
-- `type + version` 必须唯一；行为或契约不兼容时增加版本，不覆盖旧版本。
-- 配置 Schema 应设置 `additionalProperties: false`，标题使用中文，并尽量使用标准 JSON Schema 约束。
-- 动态端口必须由配置稳定推导；端口消失时前端会保留并标红旧连线，服务端编译器仍是最终裁决者。
-- 节点只返回稳定、可序列化的数据；不要把密钥、Authorization 或底层异常写入输出和公开错误。
-- 网络节点需沿用 SSRF 防护；长任务必须尊重 `context.Context` 取消和超时。
+发布前还应运行 `make verify` 和 `make test-e2e`，确认画布、Agent 页面和存量工作流兼容。

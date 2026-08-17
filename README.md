@@ -55,6 +55,18 @@ make dev-web
 
 健康检查：`GET http://localhost:8080/healthz`；就绪检查还会验证 PostgreSQL 与最新 migration：`GET http://localhost:8080/readyz`。
 
+## Go 节点 SDK
+
+第三方节点只需导入：
+
+```go
+import "github.com/yyl1212/agent-studio/sdk/go/agentnode"
+```
+
+公开 SDK 当前为 v0.2 / `agent-studio.dev/v1alpha1`。完整生命周期与可编译示例见 [Go 节点 SDK API](docs/sdk/api.md)，版本承诺见 [兼容性策略](docs/sdk/compatibility.md)，开发入口见 [节点扩展指南](docs/node-development.md)。
+
+节点仍在 API 进程内运行。Capability 只用于展示和审计，不提供沙箱隔离；生产环境只应加载可信扩展，并用容器、系统权限和网络策略建立安全边界。
+
 ## 模型配置
 
 默认配置：
@@ -103,6 +115,7 @@ corepack pnpm@10.34.5 build
 
 - `apps/api`：Go API、DAG 编译/执行、节点、PostgreSQL store 和 migration。
 - `apps/web`：React 工作流列表、画布 Studio、通用 Schema 表单、Agent 页与运行记录。
+- `sdk/go/agentnode`：公开节点协议；`sdk/go/agenttest`：第三方节点契约测试工具。
 - `contracts/openapi.yaml`：前后端唯一 HTTP 契约来源。
 - `docs/node-development.md`：无需修改前端的节点扩展示例。
 
