@@ -20,7 +20,6 @@ func TestRunTopLevelCommands(t *testing.T) {
 		{name: "unknown", args: []string{"missing"}, wantCode: 2, wantErr: "unknown command \"missing\"\n"},
 		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires init or test\n"},
 		{name: "unknown node subcommand", args: []string{"node", "missing"}, wantCode: 2, wantErr: "unknown node command \"missing\"\n"},
-		{name: "reserved doctor", args: []string{"doctor"}, wantCode: 1, wantErr: "doctor is not implemented\n"},
 		{name: "reserved generate", args: []string{"generate"}, wantCode: 1, wantErr: "generate is not implemented\n"},
 		{name: "reserved node init", args: []string{"node", "init"}, wantCode: 1, wantErr: "node init is not implemented\n"},
 		{name: "reserved node test", args: []string{"node", "test"}, wantCode: 1, wantErr: "node test is not implemented\n"},
@@ -35,5 +34,28 @@ func TestRunTopLevelCommands(t *testing.T) {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunDoctorPrintsChecksAndReturnsFailure(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"doctor"}, &stdout, &stderr, appDependencies{
+		workingDir: func() (string, error) { return "/repo", nil },
+		diagnose: func(context.Context, string) []CheckResult {
+			return []CheckResult{
+				{Name: "go", Status: checkOK, Detail: "go1.26.5"},
+				{Name: "docker", Status: checkFail, Detail: "daemon unavailable"},
+			}
+		},
+	})
+	if code != 1 {
+		t.Fatalf("code=%d", code)
+	}
+	if got, want := stdout.String(), "[ok] go: go1.26.5\n[fail] docker: daemon unavailable\n"; got != want {
+		t.Fatalf("stdout=%q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr=%q", stderr.String())
 	}
 }

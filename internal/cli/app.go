@@ -4,13 +4,28 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 const helpText = "doctor\ngenerate\nnode init\nnode test\nversion\n"
 
-func Run(_ context.Context, args []string, stdout, stderr io.Writer) int {
+type appDependencies struct {
+	workingDir func() (string, error)
+	diagnose   func(context.Context, string) []CheckResult
+}
+
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return run(ctx, args, stdout, stderr, appDependencies{
+		workingDir: os.Getwd,
+		diagnose: func(ctx context.Context, root string) []CheckResult {
+			return Diagnose(ctx, root, defaultDoctorDeps(root))
+		},
+	})
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies appDependencies) int {
 	if len(args) == 0 || args[0] == "help" {
 		_, _ = io.WriteString(stdout, helpText)
 		return 0
@@ -20,7 +35,22 @@ func Run(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	case "version":
 		_, _ = fmt.Fprintf(stdout, "agent-studio %s (%s)\n", agentnode.Version, agentnode.APIVersion)
 		return 0
-	case "doctor", "generate":
+	case "doctor":
+		root, err := dependencies.workingDir()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "determine working directory: %v\n", err)
+			return 1
+		}
+		failed := false
+		for _, result := range dependencies.diagnose(ctx, root) {
+			_, _ = fmt.Fprintf(stdout, "[%s] %s: %s\n", result.Status, result.Name, result.Detail)
+			failed = failed || result.Status == checkFail
+		}
+		if failed {
+			return 1
+		}
+		return 0
+	case "generate":
 		_, _ = fmt.Fprintf(stderr, "%s is not implemented\n", args[0])
 		return 1
 	case "node":
