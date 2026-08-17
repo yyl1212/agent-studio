@@ -126,7 +126,7 @@ func TestPreparePersistsRedactedInputAndCancellationFinishesRun(t *testing.T) {
 	}
 	var downstreamInput map[string]any
 	for _, event := range recorder.events {
-		if event.Type == "node_started" && event.NodeID == "start" {
+		if event.Type == "node.started" && event.NodeID == "start" {
 			downstreamInput = event.Input.(map[string]any)
 		}
 	}

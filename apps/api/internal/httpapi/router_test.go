@@ -1,0 +1,182 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"agentstudio.local/api/internal/domain"
+	"agentstudio.local/api/internal/engine"
+	"agentstudio.local/api/internal/nodes"
+	"agentstudio.local/api/internal/workflow"
+)
+
+type fixtureWorkflowService struct {
+	workflow    domain.Workflow
+	panicOnList bool
+}
+
+func (service *fixtureWorkflowService) List(context.Context) ([]domain.Workflow, error) {
+	if service.panicOnList {
+		panic("test panic")
+	}
+	return []domain.Workflow{service.workflow}, nil
+}
+
+func (service *fixtureWorkflowService) Get(context.Context, string) (domain.Workflow, error) {
+	return service.workflow, nil
+}
+
+func (service *fixtureWorkflowService) Create(_ context.Context, input workflow.CreateWorkflowInput) (domain.Workflow, error) {
+	service.workflow.Name = input.Name
+	service.workflow.Slug = input.Slug
+	return service.workflow, nil
+}
+
+func (service *fixtureWorkflowService) SaveDraft(context.Context, string, int64, domain.Graph) (domain.Workflow, error) {
+	return domain.Workflow{}, domain.ErrRevisionConflict
+}
+
+func (*fixtureWorkflowService) Validate(context.Context, string) []domain.ValidationIssue {
+	return nil
+}
+
+func (*fixtureWorkflowService) Publish(context.Context, string, int64) (domain.WorkflowVersion, error) {
+	return domain.WorkflowVersion{ID: "v1", Version: 1}, nil
+}
+
+func (*fixtureWorkflowService) AgentManifest(context.Context, string) (workflow.AgentManifest, error) {
+	return workflow.AgentManifest{WorkflowVersionID: "v1", Version: 1, Title: "Demo", InputSchema: json.RawMessage(`{"type":"object"}`)}, nil
+}
+
+type fixtureRunner struct {
+	LastVersionID string
+	prepareErr    error
+}
+
+func (runner *fixtureRunner) PrepareDraft(context.Context, string, int64, map[string]any) (*workflow.PreparedRun, error) {
+	if runner.prepareErr != nil {
+		return nil, runner.prepareErr
+	}
+	return &workflow.PreparedRun{RunID: "run-1"}, nil
+}
+
+func (runner *fixtureRunner) PrepareAgent(_ context.Context, _ string, versionID string, _ map[string]any) (*workflow.PreparedRun, error) {
+	runner.LastVersionID = versionID
+	if runner.prepareErr != nil {
+		return nil, runner.prepareErr
+	}
+	return &workflow.PreparedRun{RunID: "run-1"}, nil
+}
+
+func (*fixtureRunner) Execute(ctx context.Context, prepared *workflow.PreparedRun, observer engine.Observer) (engine.RunResult, error) {
+	if err := observer.Observe(ctx, engine.Event{Sequence: 1, Type: "run.started", RunID: prepared.RunID}); err != nil {
+		return engine.RunResult{}, err
+	}
+	if err := observer.Observe(ctx, engine.Event{Sequence: 2, Type: "run.completed", RunID: prepared.RunID, Output: "ok"}); err != nil {
+		return engine.RunResult{}, err
+	}
+	return engine.RunResult{RunID: prepared.RunID, Output: "ok"}, nil
+}
+
+type fixtureRunReader struct{}
+
+func (fixtureRunReader) GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error) {
+	return domain.Run{ID: "run-1"}, nil, nil
+}
+
+func (fixtureRunReader) ListRuns(context.Context, string, int) ([]domain.Run, error) {
+	return []domain.Run{}, nil
+}
+
+type fixtureReady struct{ err error }
+
+func (ready fixtureReady) Ready(context.Context) error { return ready.err }
+
+func TestRevisionConflictUsesStableErrorShape(t *testing.T) {
+	dependencies := fixtureDeps()
+	recorder := performRequest(NewRouter(dependencies), http.MethodPut, "/api/workflows/w1", `{"draftRevision":1,"graph":{"schemaVersion":1,"nodes":[],"edges":[]}}`)
+	assertJSONError(t, recorder, http.StatusConflict, "WORKFLOW_REVISION_CONFLICT")
+}
+
+func TestRouterRejectsUnknownJSONAndAppliesCORS(t *testing.T) {
+	dependencies := fixtureDeps()
+	router := NewRouter(dependencies)
+	recorder := performRequest(router, http.MethodPost, "/api/workflows", `{"name":"Demo","slug":"demo","unknown":true}`)
+	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+
+	request := httptest.NewRequest(http.MethodOptions, "/api/workflows", nil)
+	request.Header.Set("Origin", "http://localhost:5173")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
+		t.Fatalf("CORS headers=%v", recorder.Header())
+	}
+}
+
+func TestRouterRejectsTrailingJSON(t *testing.T) {
+	recorder := performRequest(NewRouter(fixtureDeps()), http.MethodPost, "/api/workflows", `{"name":"Demo","slug":"demo"}{}`)
+	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+}
+
+func TestRecovererReturnsSafeRequestID(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.Workflows.(*fixtureWorkflowService).panicOnList = true
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/workflows", "")
+	assertJSONError(t, recorder, http.StatusInternalServerError, "INTERNAL_ERROR")
+	var response ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RequestID == "" || strings.Contains(recorder.Body.String(), "test panic") {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+}
+
+func TestReadyReturnsServiceUnavailable(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.Readiness = fixtureReady{err: errors.New("database unavailable")}
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/readyz", "")
+	assertJSONError(t, recorder, http.StatusServiceUnavailable, "NOT_READY")
+}
+
+func fixtureDeps() Dependencies {
+	registry := nodes.NewRegistry()
+	return Dependencies{
+		Registry:  registry,
+		Workflows: &fixtureWorkflowService{workflow: domain.Workflow{ID: "w1", DraftRevision: 2}},
+		Runner:    &fixtureRunner{},
+		Runs:      fixtureRunReader{},
+		Readiness: fixtureReady{},
+		WebOrigin: "http://localhost:5173",
+	}
+}
+
+func performRequest(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func assertJSONError(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	if recorder.Code != status {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != code || response.Message == "" {
+		t.Fatalf("response=%+v", response)
+	}
+}

@@ -265,7 +265,7 @@ func TestEngineLetsIndependentBranchFinishAfterSiblingFailure(t *testing.T) {
 func TestEngineStopsOnObserverErrorAndTimeout(t *testing.T) {
 	plan, _ := compileConditionalRuntimeFixture(t, nil)
 	observerError := errors.New("observer failed")
-	_, err := New(Options{}).Run(context.Background(), "run-1", plan, map[string]any{"value": "yes"}, &memoryObserver{errAt: "node_started", err: observerError})
+	_, err := New(Options{}).Run(context.Background(), "run-1", plan, map[string]any{"value": "yes"}, &memoryObserver{errAt: "node.started", err: observerError})
 	if !errors.Is(err, observerError) {
 		t.Fatalf("observer error=%v", err)
 	}
@@ -411,7 +411,7 @@ func assertStrictSequences(t *testing.T, events []Event) {
 func assertStartEventInput(t *testing.T, events []Event, want string) {
 	t.Helper()
 	for _, event := range events {
-		if event.Type != "node_started" || event.NodeID != "start" {
+		if event.Type != "node.started" || event.NodeID != "start" {
 			continue
 		}
 		input, ok := event.Input.(map[string]any)

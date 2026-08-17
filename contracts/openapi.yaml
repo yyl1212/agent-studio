@@ -1,0 +1,684 @@
+openapi: 3.1.0
+info:
+  title: Agent Studio API
+  version: 0.1.0
+  description: 轻量化 Agent Studio 的本地 API。
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+  /readyz:
+    get:
+      operationId: getReadiness
+      responses:
+        "200":
+          description: 服务就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "503":
+          $ref: "#/components/responses/Error"
+  /api/node-types:
+    get:
+      operationId: listNodeTypes
+      responses:
+        "200":
+          description: 节点定义
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NodeDefinition"
+  /api/node-types/{type}/{version}/resolve:
+    post:
+      operationId: resolveNodeType
+      parameters:
+        - $ref: "#/components/parameters/NodeType"
+        - $ref: "#/components/parameters/NodeVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [config]
+              properties:
+                config:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "200":
+          description: 解析后的端口
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolvedPorts"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/workflows:
+    get:
+      operationId: listWorkflows
+      responses:
+        "200":
+          description: 工作流列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Workflow"
+    post:
+      operationId: createWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkflowRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    get:
+      operationId: getWorkflow
+      responses:
+        "200":
+          description: 工作流草稿
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "404":
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: saveWorkflowDraft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveDraftRequest"
+      responses:
+        "200":
+          description: 已保存
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/validate:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: validateWorkflow
+      responses:
+        "200":
+          description: 校验结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid, issues]
+                properties:
+                  valid:
+                    type: boolean
+                  issues:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ValidationIssue"
+  /api/workflows/{id}/test-runs:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: runWorkflowDraft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DraftRunRequest"
+      responses:
+        "200":
+          description: 每行一个 RunEvent 的 NDJSON 流
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: 每行符合 RunEvent Schema。
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/publish:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: publishWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [draftRevision]
+              properties:
+                draftRevision:
+                  type: integer
+                  format: int64
+      responses:
+        "201":
+          description: 不可变工作流版本
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowVersion"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/runs:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    get:
+      operationId: listWorkflowRuns
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: 运行记录
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Run"
+  /api/agents/{slug}:
+    parameters:
+      - $ref: "#/components/parameters/AgentSlug"
+    get:
+      operationId: getAgentManifest
+      responses:
+        "200":
+          description: 当前发布页 Manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentManifest"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/agents/{slug}/runs:
+    parameters:
+      - $ref: "#/components/parameters/AgentSlug"
+    post:
+      operationId: runAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentRunRequest"
+      responses:
+        "200":
+          description: 每行一个 RunEvent 的 NDJSON 流
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: 每行符合 RunEvent Schema。
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+  /api/runs/{id}:
+    get:
+      operationId: getRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 运行详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run, nodeRuns]
+                properties:
+                  run:
+                    $ref: "#/components/schemas/Run"
+                  nodeRuns:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NodeRun"
+        "404":
+          $ref: "#/components/responses/Error"
+components:
+  parameters:
+    WorkflowID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AgentSlug:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    NodeType:
+      name: type
+      in: path
+      required: true
+      schema:
+        type: string
+    NodeVersion:
+      name: version
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Error:
+      description: 稳定错误响应
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    StatusResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+    Position:
+      type: object
+      additionalProperties: false
+      required: [x, y]
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+    Node:
+      type: object
+      additionalProperties: false
+      required: [id, type, typeVersion, position, config]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        typeVersion:
+          type: string
+        position:
+          $ref: "#/components/schemas/Position"
+        config:
+          type: object
+          additionalProperties: true
+    Edge:
+      type: object
+      additionalProperties: false
+      required: [id, source, sourcePort, target, targetPort]
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+        sourcePort:
+          type: string
+        target:
+          type: string
+        targetPort:
+          type: string
+    Graph:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, nodes, edges]
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/Edge"
+    PortDefinition:
+      type: object
+      required: [key, title, type, required, cardinality]
+      properties:
+        key:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+          enum: [string, number, boolean, json, any]
+        required:
+          type: boolean
+        cardinality:
+          type: string
+          enum: [one, single-active]
+    ResolvedPorts:
+      type: object
+      required: [inputs, outputs]
+      properties:
+        inputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortDefinition"
+        outputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortDefinition"
+    NodeDefinition:
+      type: object
+      required: [type, version, title, description, category, configSchema, inputs, outputs]
+      properties:
+        type:
+          type: string
+        version:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        configSchema:
+          type: object
+          additionalProperties: true
+        inputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortDefinition"
+        outputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortDefinition"
+    ValidationIssue:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        nodeId:
+          type: string
+        edgeId:
+          type: string
+        path:
+          type: string
+    Workflow:
+      type: object
+      required: [id, name, slug, description, draftGraph, draftRevision, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        draftGraph:
+          $ref: "#/components/schemas/Graph"
+        draftRevision:
+          type: integer
+          format: int64
+        publishedVersionId:
+          type: [string, "null"]
+          format: uuid
+        publishedVersion:
+          type: [integer, "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkflowVersion:
+      type: object
+      required: [id, workflowId, version, graph, inputSchema, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workflowId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        graph:
+          $ref: "#/components/schemas/Graph"
+        inputSchema:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+    AgentManifest:
+      type: object
+      required: [workflowVersionId, version, title, description, inputSchema]
+      properties:
+        workflowVersionId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        inputSchema:
+          type: object
+          additionalProperties: true
+    Run:
+      type: object
+      required: [id, workflowId, mode, status, input, startedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workflowId:
+          type: string
+          format: uuid
+        workflowVersionId:
+          type: [string, "null"]
+          format: uuid
+        draftRevision:
+          type: [integer, "null"]
+          format: int64
+        graphSnapshot:
+          oneOf:
+            - $ref: "#/components/schemas/Graph"
+            - type: "null"
+        mode:
+          type: string
+          enum: [test, published]
+        status:
+          type: string
+          enum: [running, completed, failed, cancelled]
+        input: {}
+        output: {}
+        error:
+          oneOf:
+            - $ref: "#/components/schemas/PublicError"
+            - type: "null"
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: [string, "null"]
+          format: date-time
+    NodeRun:
+      type: object
+      required: [id, runId, nodeId, nodeType, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        runId:
+          type: string
+          format: uuid
+        nodeId:
+          type: string
+        nodeType:
+          type: string
+        status:
+          type: string
+        input: {}
+        output: {}
+        error:
+          oneOf:
+            - $ref: "#/components/schemas/PublicError"
+            - type: "null"
+        startedAt:
+          type: [string, "null"]
+          format: date-time
+        endedAt:
+          type: [string, "null"]
+          format: date-time
+    RunEvent:
+      type: object
+      required: [sequence, type, runId, timestamp]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+        type:
+          type: string
+          enum: [run.started, node.started, node.completed, node.failed, node.skipped, node.cancelled, run.completed, run.failed, run.cancelled]
+        runId:
+          type: string
+          format: uuid
+        nodeId:
+          type: string
+        status:
+          type: string
+        input: {}
+        output: {}
+        error:
+          oneOf:
+            - $ref: "#/components/schemas/PublicError"
+            - type: "null"
+        timestamp:
+          type: string
+          format: date-time
+    PublicError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        nodeId:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        requestId:
+          type: string
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationIssue"
+    CreateWorkflowRequest:
+      type: object
+      additionalProperties: false
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+    SaveDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [draftRevision, graph]
+      properties:
+        draftRevision:
+          type: integer
+          format: int64
+        graph:
+          $ref: "#/components/schemas/Graph"
+    DraftRunRequest:
+      type: object
+      additionalProperties: false
+      required: [draftRevision, input]
+      properties:
+        draftRevision:
+          type: integer
+          format: int64
+        input:
+          type: object
+          additionalProperties: true
+    AgentRunRequest:
+      type: object
+      additionalProperties: false
+      required: [workflowVersionId, input]
+      properties:
+        workflowVersionId:
+          type: string
+          format: uuid
+        input:
+          type: object
+          additionalProperties: true

@@ -48,7 +48,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 		event.Timestamp = time.Now().UTC()
 		return observer.Observe(runContext, event)
 	}
-	if err := emit(Event{Type: "run_started"}); err != nil {
+	if err := emit(Event{Type: "run.started"}); err != nil {
 		return finishResult(result), err
 	}
 
@@ -74,7 +74,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 				terminal++
 				madeProgress = true
 				deactivateOutgoing(plan, nodeID, edgeStates)
-				if err := emit(Event{Type: "node_skipped", NodeID: nodeID, Status: domain.NodeSkipped, Input: inputs}); err != nil {
+				if err := emit(Event{Type: "node.skipped", NodeID: nodeID, Status: domain.NodeSkipped, Input: inputs}); err != nil {
 					cancel()
 					return finishResult(result), err
 				}
@@ -89,7 +89,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 				if nodeID == plan.StartNodeID {
 					eventInput = runInput
 				}
-				if err := emit(Event{Type: "node_started", NodeID: nodeID, Status: domain.NodeRunning, Input: eventInput}); err != nil {
+				if err := emit(Event{Type: "node.started", NodeID: nodeID, Status: domain.NodeRunning, Input: eventInput}); err != nil {
 					cancel()
 					return finishResult(result), err
 				}
@@ -115,7 +115,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 				}
 			}
 			ended := finishResult(result)
-			_ = emitWithContext(context.WithoutCancel(runContext), observer, &sequence, runID, Event{Type: "run_cancelled", Error: &domain.PublicError{Code: "RUN_CANCELLED", Message: "运行已取消"}})
+			_ = emitWithContext(context.WithoutCancel(runContext), observer, &sequence, runID, Event{Type: "run.cancelled", Error: &domain.PublicError{Code: "RUN_CANCELLED", Message: "运行已取消"}})
 			return ended, runContext.Err()
 		case worker := <-workerResults:
 			running--
@@ -127,7 +127,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 				}
 				deactivateOutgoing(plan, worker.nodeID, edgeStates)
 				publicError := &domain.PublicError{Code: "NODE_EXECUTION_FAILED", Message: "节点执行失败", NodeID: worker.nodeID}
-				if err := emit(Event{Type: "node_failed", NodeID: worker.nodeID, Status: domain.NodeFailed, Input: worker.input, Error: publicError}); err != nil {
+				if err := emit(Event{Type: "node.failed", NodeID: worker.nodeID, Status: domain.NodeFailed, Input: worker.input, Error: publicError}); err != nil {
 					cancel()
 					return finishResult(result), err
 				}
@@ -139,7 +139,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 					statuses[nodeID] = domain.NodeCancelled
 					terminal++
 					deactivateOutgoing(plan, nodeID, edgeStates)
-					if err := emit(Event{Type: "node_cancelled", NodeID: nodeID, Status: domain.NodeCancelled}); err != nil {
+					if err := emit(Event{Type: "node.cancelled", NodeID: nodeID, Status: domain.NodeCancelled}); err != nil {
 						cancel()
 						return finishResult(result), err
 					}
@@ -150,7 +150,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 			statuses[worker.nodeID] = domain.NodeCompleted
 			terminal++
 			applyNodeResult(plan, worker.nodeID, worker.result, edgeStates, edgeValues)
-			if err := emit(Event{Type: "node_completed", NodeID: worker.nodeID, Status: domain.NodeCompleted, Input: worker.input, Output: worker.result.Outputs}); err != nil {
+			if err := emit(Event{Type: "node.completed", NodeID: worker.nodeID, Status: domain.NodeCompleted, Input: worker.input, Output: worker.result.Outputs}); err != nil {
 				cancel()
 				return finishResult(result), err
 			}
@@ -163,7 +163,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 	result = finishResult(result)
 	if executionErr != nil {
 		publicError := &domain.PublicError{Code: "RUN_FAILED", Message: "运行失败"}
-		if err := emit(Event{Type: "run_failed", Error: publicError}); err != nil {
+		if err := emit(Event{Type: "run.failed", Error: publicError}); err != nil {
 			return result, err
 		}
 		return result, executionErr
@@ -171,7 +171,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 	if statuses[plan.EndNodeID] != domain.NodeCompleted {
 		return result, fmt.Errorf("%w: end node did not complete", ErrSchedulerDeadlock)
 	}
-	if err := emit(Event{Type: "run_completed", Output: result.Output}); err != nil {
+	if err := emit(Event{Type: "run.completed", Output: result.Output}); err != nil {
 		return result, err
 	}
 	return result, nil

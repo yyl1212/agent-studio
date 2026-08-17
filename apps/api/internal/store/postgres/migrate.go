@@ -40,6 +40,27 @@ func (store *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
+func (store *Store) Ready(ctx context.Context) error {
+	if err := store.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("ping database: %w", err)
+	}
+	files, err := loadMigrations()
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	var applied int64
+	if err := store.pool.QueryRow(ctx, "SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&applied); err != nil {
+		return fmt.Errorf("read migration readiness: %w", err)
+	}
+	if applied != files[len(files)-1].version {
+		return fmt.Errorf("database migration version %d, want %d", applied, files[len(files)-1].version)
+	}
+	return nil
+}
+
 func loadMigrations() ([]migrationFile, error) {
 	entries, err := migrations.Files.ReadDir(".")
 	if err != nil {
