@@ -112,6 +112,21 @@ func TestWorkflowLookupKeepsPublishedVersionsImmutable(t *testing.T) {
 	}
 }
 
+func TestCreateWorkflowMapsDuplicateSlug(t *testing.T) {
+	store := migratedTestStore(t)
+	first := createWorkflowFixture(t, store, "duplicate")
+	_, err := store.CreateWorkflow(context.Background(), domain.Workflow{
+		ID:            fixtureUUID(),
+		Name:          "重复 slug",
+		Slug:          first.Slug,
+		DraftGraph:    json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[]}`),
+		DraftRevision: 1,
+	})
+	if !errors.Is(err, domain.ErrSlugConflict) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestUpdateDraftUsesRevisionAndPublishRollsBackOnConflict(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "revision")

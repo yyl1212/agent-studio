@@ -3,11 +3,13 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"agentstudio.local/api/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const workflowSelectColumns = `w.id::text,w.name,w.slug,w.description,w.draft_graph,w.draft_revision,
@@ -56,6 +58,10 @@ func (store *Store) CreateWorkflow(ctx context.Context, workflow domain.Workflow
     FROM inserted i`, workflow.ID, workflow.Name, workflow.Slug, workflow.Description, workflow.DraftGraph, workflow.DraftRevision)
 	created, err := scanWorkflow(row)
 	if err != nil {
+		var postgresError *pgconn.PgError
+		if errors.As(err, &postgresError) && postgresError.Code == "23505" && postgresError.ConstraintName == "workflows_slug_key" {
+			return domain.Workflow{}, domain.ErrSlugConflict
+		}
 		return domain.Workflow{}, fmt.Errorf("create workflow: %w", err)
 	}
 	return created, nil

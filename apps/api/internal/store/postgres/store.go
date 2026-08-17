@@ -5,13 +5,14 @@ import (
 	"errors"
 	"fmt"
 
+	"agentstudio.local/api/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	ErrNotFound         = errors.New("record not found")
-	ErrRevisionConflict = errors.New("workflow revision conflict")
+	ErrNotFound         = domain.ErrNotFound
+	ErrRevisionConflict = domain.ErrRevisionConflict
 )
 
 type Store struct {
