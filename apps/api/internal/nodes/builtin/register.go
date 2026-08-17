@@ -1,6 +1,9 @@
 package builtin
 
-import "agentstudio.local/api/internal/nodes"
+import (
+	"agentstudio.local/api/internal/modelprovider"
+	"agentstudio.local/api/internal/nodes"
+)
 
 func RegisterCore(registry *nodes.Registry) error {
 	for _, node := range []nodes.NodeType{
@@ -14,4 +17,8 @@ func RegisterCore(registry *nodes.Registry) error {
 		}
 	}
 	return nil
+}
+
+func RegisterLLM(registry *nodes.Registry, provider modelprovider.Provider, defaultModel string) error {
+	return registry.Register(NewLLM(provider, defaultModel))
 }
