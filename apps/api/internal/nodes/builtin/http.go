@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 const maxHTTPResponseBytes = 1 << 20
@@ -69,8 +69,8 @@ func NewHTTP(options HTTPOptions) *httpNode {
 	}
 }
 
-func (*httpNode) Definition() domain.NodeDefinition {
-	return domain.NodeDefinition{
+func (*httpNode) Definition() agentnode.Definition {
+	return agentnode.Definition{
 		Type:        "http",
 		Version:     "1",
 		Title:       "HTTP",
@@ -87,40 +87,47 @@ func (*httpNode) Definition() domain.NodeDefinition {
           "required":["method","url","headers"],
           "additionalProperties":false
         }`),
-		Inputs: []domain.PortDefinition{{Key: "body", Title: "请求体", Type: domain.TypeAny, Cardinality: domain.CardinalityOne}},
-		Outputs: []domain.PortDefinition{
-			{Key: "status", Title: "状态码", Type: domain.TypeNumber, Cardinality: domain.CardinalityOne},
-			{Key: "headers", Title: "响应头", Type: domain.TypeJSON, Cardinality: domain.CardinalityOne},
-			{Key: "body", Title: "响应体", Type: domain.TypeAny, Cardinality: domain.CardinalityOne},
+		Inputs: []agentnode.Port{{Key: "body", Title: "请求体", Type: agentnode.DataTypeAny, Cardinality: agentnode.CardinalityOne}},
+		Outputs: []agentnode.Port{
+			{Key: "status", Title: "状态码", Type: agentnode.DataTypeNumber, Cardinality: agentnode.CardinalityOne},
+			{Key: "headers", Title: "响应头", Type: agentnode.DataTypeJSON, Cardinality: agentnode.CardinalityOne},
+			{Key: "body", Title: "响应体", Type: agentnode.DataTypeAny, Cardinality: agentnode.CardinalityOne},
+		},
+		Capabilities: []agentnode.Capability{
+			agentnode.CapabilityNetwork,
+			agentnode.CapabilitySecrets,
 		},
 	}
 }
 
-func (node *httpNode) Resolve(config json.RawMessage) (domain.ResolvedPorts, error) {
+func (node *httpNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, error) {
 	if _, err := node.parseConfig(config); err != nil {
-		return domain.ResolvedPorts{}, err
+		return agentnode.ResolvedPorts{}, nodeConfigError(err)
 	}
 	definition := node.Definition()
-	return domain.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
+	return agentnode.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
 }
 
-func (node *httpNode) Execute(ctx context.Context, request domain.NodeRequest) (domain.NodeResult, error) {
+func (node *httpNode) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
 	config, err := node.parseConfig(request.Config)
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, nodeConfigError(err)
 	}
 	if _, err := node.validateURL(ctx, config.URL); err != nil {
-		return domain.NodeResult{}, err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return agentnode.Result{}, classifyExternalError(err)
+		}
+		return agentnode.Result{}, nodeConfigError(err)
 	}
 
 	var body io.Reader
 	if values := request.Inputs["body"]; len(values) > 0 {
 		if len(values) != 1 {
-			return domain.NodeResult{}, fmt.Errorf("%w: body", ErrInputCardinality)
+			return agentnode.Result{}, nodeInputError(fmt.Errorf("%w: body", ErrInputCardinality))
 		}
 		encoded, err := json.Marshal(values[0])
 		if err != nil {
-			return domain.NodeResult{}, fmt.Errorf("encode HTTP body: %w", err)
+			return agentnode.Result{}, nodeInputError(fmt.Errorf("encode HTTP body: %w", err))
 		}
 		body = bytes.NewReader(encoded)
 	}
@@ -130,7 +137,7 @@ func (node *httpNode) Execute(ctx context.Context, request domain.NodeRequest) (
 	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(requestContext, config.Method, config.URL, body)
 	if err != nil {
-		return domain.NodeResult{}, fmt.Errorf("create HTTP request: %w", err)
+		return agentnode.Result{}, nodeConfigError(fmt.Errorf("create HTTP request: %w", err))
 	}
 	if body != nil {
 		httpRequest.Header.Set("Content-Type", "application/json")
@@ -141,7 +148,7 @@ func (node *httpNode) Execute(ctx context.Context, request domain.NodeRequest) (
 			var exists bool
 			value, exists = node.lookupEnv(header.EnvName)
 			if !exists {
-				return domain.NodeResult{}, fmt.Errorf("%w: %s", ErrEnvironmentValueMissing, header.EnvName)
+				return agentnode.Result{}, nodeExecutionError(fmt.Errorf("%w: %s", ErrEnvironmentValueMissing, header.EnvName))
 			}
 		}
 		httpRequest.Header.Set(header.Name, value)
@@ -149,24 +156,24 @@ func (node *httpNode) Execute(ctx context.Context, request domain.NodeRequest) (
 
 	response, err := node.newClient().Do(httpRequest)
 	if err != nil {
-		return domain.NodeResult{}, fmt.Errorf("send HTTP request: %w", err)
+		return agentnode.Result{}, classifyExternalError(fmt.Errorf("send HTTP request: %w", err))
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxHTTPResponseBytes+1))
 	if err != nil {
-		return domain.NodeResult{}, fmt.Errorf("read HTTP response: %w", err)
+		return agentnode.Result{}, classifyExternalError(fmt.Errorf("read HTTP response: %w", err))
 	}
 	if len(responseBody) > maxHTTPResponseBytes {
-		return domain.NodeResult{}, ErrHTTPResponseTooLarge
+		return agentnode.Result{}, nodeExecutionError(ErrHTTPResponseTooLarge)
 	}
 
 	var decodedBody any = string(responseBody)
 	if strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "application/json") {
 		if err := json.Unmarshal(responseBody, &decodedBody); err != nil {
-			return domain.NodeResult{}, fmt.Errorf("decode HTTP JSON response: %w", err)
+			return agentnode.Result{}, nodeExecutionError(fmt.Errorf("decode HTTP JSON response: %w", err))
 		}
 	}
-	return domain.NodeResult{Outputs: map[string]any{
+	return agentnode.Result{Outputs: map[string]any{
 		"status":  float64(response.StatusCode),
 		"headers": map[string][]string(response.Header),
 		"body":    decodedBody,

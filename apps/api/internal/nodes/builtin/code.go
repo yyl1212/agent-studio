@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 	"go.starlark.net/starlark"
 )
 
@@ -56,8 +56,8 @@ func NewCode(options CodeOptions) *codeNode {
 	}
 }
 
-func (*codeNode) Definition() domain.NodeDefinition {
-	return domain.NodeDefinition{
+func (*codeNode) Definition() agentnode.Definition {
+	return agentnode.Definition{
 		Type:        "code",
 		Version:     "1",
 		Title:       "代码",
@@ -69,34 +69,35 @@ func (*codeNode) Definition() domain.NodeDefinition {
           "required":["source"],
           "additionalProperties":false
         }`),
-		Inputs:  []domain.PortDefinition{{Key: "input", Title: "输入", Type: domain.TypeAny, Cardinality: domain.CardinalityOne}},
-		Outputs: []domain.PortDefinition{{Key: "result", Title: "结果", Type: domain.TypeAny, Cardinality: domain.CardinalityOne}},
+		Inputs:       []agentnode.Port{{Key: "input", Title: "输入", Type: agentnode.DataTypeAny, Cardinality: agentnode.CardinalityOne}},
+		Outputs:      []agentnode.Port{{Key: "result", Title: "结果", Type: agentnode.DataTypeAny, Cardinality: agentnode.CardinalityOne}},
+		Capabilities: []agentnode.Capability{},
 	}
 }
 
-func (node *codeNode) Resolve(config json.RawMessage) (domain.ResolvedPorts, error) {
+func (node *codeNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, error) {
 	if _, err := parseCodeConfig(config); err != nil {
-		return domain.ResolvedPorts{}, err
+		return agentnode.ResolvedPorts{}, nodeConfigError(err)
 	}
 	definition := node.Definition()
-	return domain.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
+	return agentnode.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
 }
 
-func (node *codeNode) Execute(ctx context.Context, request domain.NodeRequest) (domain.NodeResult, error) {
+func (node *codeNode) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
 	config, err := parseCodeConfig(request.Config)
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, nodeConfigError(err)
 	}
 	input := any(nil)
 	if values := request.Inputs["input"]; len(values) > 0 {
 		if len(values) != 1 {
-			return domain.NodeResult{}, fmt.Errorf("%w: input", ErrInputCardinality)
+			return agentnode.Result{}, nodeInputError(fmt.Errorf("%w: input", ErrInputCardinality))
 		}
 		input = values[0]
 	}
 	starlarkInput, err := toStarlark(input, 0)
 	if err != nil {
-		return domain.NodeResult{}, fmt.Errorf("convert code input: %w", err)
+		return agentnode.Result{}, nodeInputError(fmt.Errorf("convert code input: %w", err))
 	}
 
 	thread := &starlark.Thread{Name: "agent-studio-code"}
@@ -115,32 +116,32 @@ func (node *codeNode) Execute(ctx context.Context, request domain.NodeRequest) (
 
 	globals, err := starlark.ExecFile(thread, "node.star", config.Source, nil)
 	if err != nil {
-		return domain.NodeResult{}, mapCodeError(runContext, err)
+		return agentnode.Result{}, mapCodeError(runContext, err)
 	}
 	mainValue, exists := globals["main"]
 	if !exists {
-		return domain.NodeResult{}, ErrCodeMainMissing
+		return agentnode.Result{}, nodeExecutionError(ErrCodeMainMissing)
 	}
 	callable, ok := mainValue.(starlark.Callable)
 	if !ok {
-		return domain.NodeResult{}, ErrCodeMainMissing
+		return agentnode.Result{}, nodeExecutionError(ErrCodeMainMissing)
 	}
 	result, err := starlark.Call(thread, callable, starlark.Tuple{starlarkInput}, nil)
 	if err != nil {
-		return domain.NodeResult{}, mapCodeError(runContext, err)
+		return agentnode.Result{}, mapCodeError(runContext, err)
 	}
 	converted, err := fromStarlark(result, 0)
 	if err != nil {
-		return domain.NodeResult{}, fmt.Errorf("%w: %v", ErrCodeExecution, err)
+		return agentnode.Result{}, nodeExecutionError(fmt.Errorf("%w: %v", ErrCodeExecution, err))
 	}
 	encoded, err := json.Marshal(converted)
 	if err != nil {
-		return domain.NodeResult{}, fmt.Errorf("%w: output is not JSON-compatible", ErrCodeExecution)
+		return agentnode.Result{}, nodeExecutionError(fmt.Errorf("%w: output is not JSON-compatible", ErrCodeExecution))
 	}
 	if len(encoded) > node.maxOutputBytes {
-		return domain.NodeResult{}, ErrCodeOutputTooLarge
+		return agentnode.Result{}, nodeExecutionError(ErrCodeOutputTooLarge)
 	}
-	return domain.NodeResult{Outputs: map[string]any{"result": converted}}, nil
+	return agentnode.Result{Outputs: map[string]any{"result": converted}}, nil
 }
 
 func parseCodeConfig(raw json.RawMessage) (codeConfig, error) {
@@ -156,13 +157,13 @@ func parseCodeConfig(raw json.RawMessage) (codeConfig, error) {
 
 func mapCodeError(ctx context.Context, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("%w: %v", ErrCodeTimeout, err)
+		return nodeTemporaryError(fmt.Errorf("%w: %v", ErrCodeTimeout, err))
 	}
-	if ctx.Err() != nil {
-		return fmt.Errorf("%w: %v", ctx.Err(), err)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nodeCanceledError(fmt.Errorf("%w: %v", context.Canceled, err))
 	}
 	if strings.Contains(err.Error(), "too many steps") {
-		return fmt.Errorf("%w: %v", ErrCodeStepLimit, err)
+		return nodeExecutionError(fmt.Errorf("%w: %v", ErrCodeStepLimit, err))
 	}
-	return fmt.Errorf("%w: %v", ErrCodeExecution, err)
+	return nodeExecutionError(fmt.Errorf("%w: %v", ErrCodeExecution, err))
 }

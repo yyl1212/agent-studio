@@ -1,7 +1,7 @@
 package builtin
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,12 +21,7 @@ var (
 )
 
 func decodeConfig(raw json.RawMessage, target any) error {
-	if len(raw) == 0 {
-		raw = json.RawMessage(`{}`)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
+	if err := agentnode.DecodeConfig(raw, target); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 	return nil
@@ -51,6 +46,28 @@ func nodeInputError(err error) error {
 	return agentnode.NewError(agentnode.ErrorKindInput, "invalid_input", err, nil)
 }
 
+func nodeMissingInputError(err error) error {
+	return agentnode.NewError(agentnode.ErrorKindInput, "missing_input", err, nil)
+}
+
 func nodeExecutionError(err error) error {
 	return agentnode.NewError(agentnode.ErrorKindInternal, "execution_failed", err, nil)
+}
+
+func nodeCanceledError(err error) error {
+	return agentnode.NewError(agentnode.ErrorKindCanceled, "run_canceled", err, nil)
+}
+
+func nodeTemporaryError(err error) error {
+	return agentnode.NewError(agentnode.ErrorKindTemporary, "upstream_timeout", err, nil)
+}
+
+func classifyExternalError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nodeCanceledError(err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nodeTemporaryError(err)
+	}
+	return nodeExecutionError(err)
 }

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 var (
@@ -32,8 +32,8 @@ func NewLLM(provider modelprovider.Provider, defaultModel string) *llmNode {
 	return &llmNode{provider: provider, defaultModel: defaultModel}
 }
 
-func (*llmNode) Definition() domain.NodeDefinition {
-	return domain.NodeDefinition{
+func (*llmNode) Definition() agentnode.Definition {
+	return agentnode.Definition{
 		Type:        "llm",
 		Version:     "1",
 		Title:       "LLM",
@@ -49,43 +49,50 @@ func (*llmNode) Definition() domain.NodeDefinition {
           },
           "additionalProperties":false
         }`),
-		Inputs: []domain.PortDefinition{{
+		Inputs: []agentnode.Port{{
 			Key:         "prompt",
 			Title:       "提示词",
-			Type:        domain.TypeString,
+			Type:        agentnode.DataTypeString,
 			Required:    true,
-			Cardinality: domain.CardinalityOne,
+			Cardinality: agentnode.CardinalityOne,
 		}},
-		Outputs: []domain.PortDefinition{
-			{Key: "text", Title: "文本", Type: domain.TypeString, Cardinality: domain.CardinalityOne},
-			{Key: "usage", Title: "用量", Type: domain.TypeJSON, Cardinality: domain.CardinalityOne},
+		Outputs: []agentnode.Port{
+			{Key: "text", Title: "文本", Type: agentnode.DataTypeString, Cardinality: agentnode.CardinalityOne},
+			{Key: "usage", Title: "用量", Type: agentnode.DataTypeJSON, Cardinality: agentnode.CardinalityOne},
+		},
+		Capabilities: []agentnode.Capability{
+			agentnode.CapabilityNetwork,
+			agentnode.CapabilitySecrets,
 		},
 	}
 }
 
-func (node *llmNode) Resolve(config json.RawMessage) (domain.ResolvedPorts, error) {
+func (node *llmNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, error) {
 	if _, err := node.parseConfig(config); err != nil {
-		return domain.ResolvedPorts{}, err
+		return agentnode.ResolvedPorts{}, nodeConfigError(err)
 	}
 	definition := node.Definition()
-	return domain.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
+	return agentnode.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
 }
 
-func (node *llmNode) Execute(ctx context.Context, request domain.NodeRequest) (domain.NodeResult, error) {
+func (node *llmNode) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
 	if node.provider == nil {
-		return domain.NodeResult{}, ErrModelProviderMissing
+		return agentnode.Result{}, nodeExecutionError(ErrModelProviderMissing)
 	}
 	config, err := node.parseConfig(request.Config)
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, nodeConfigError(err)
 	}
 	promptValue, err := exactlyOneInput(request.Inputs, "prompt")
 	if err != nil {
-		return domain.NodeResult{}, err
+		if errors.Is(err, ErrRequiredInputMissing) {
+			return agentnode.Result{}, nodeMissingInputError(err)
+		}
+		return agentnode.Result{}, nodeInputError(err)
 	}
 	prompt, ok := promptValue.(string)
 	if !ok {
-		return domain.NodeResult{}, fmt.Errorf("%w: prompt", ErrInputTypeMismatch)
+		return agentnode.Result{}, nodeInputError(fmt.Errorf("%w: prompt", ErrInputTypeMismatch))
 	}
 
 	temperature := 0.7
@@ -106,9 +113,9 @@ func (node *llmNode) Execute(ctx context.Context, request domain.NodeRequest) (d
 		MaxTokens:    maxTokens,
 	})
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, classifyExternalError(err)
 	}
-	return domain.NodeResult{Outputs: map[string]any{
+	return agentnode.Result{Outputs: map[string]any{
 		"text":  response.Text,
 		"usage": response.Usage,
 	}}, nil
