@@ -15,6 +15,7 @@ type appDependencies struct {
 	workingDir func() (string, error)
 	diagnose   func(context.Context, string) []CheckResult
 	generate   func(context.Context, string) (generateResult, error)
+	nodeInit   func(context.Context, string, string) (nodeInitResult, error)
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -24,6 +25,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return Diagnose(ctx, root, defaultDoctorDeps(root))
 		},
 		generate: generateNodes,
+		nodeInit: initializeNode,
 	})
 }
 
@@ -75,7 +77,26 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 			return 2
 		}
 		switch args[1] {
-		case "init", "test":
+		case "init":
+			if len(args) != 3 {
+				_, _ = io.WriteString(stderr, "node init requires exactly one name\n")
+				return 2
+			}
+			start, err := dependencies.workingDir()
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "determine working directory: %v\n", err)
+				return 1
+			}
+			result, err := dependencies.nodeInit(ctx, start, args[2])
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "initialize node: %v\n", err)
+				return 1
+			}
+			_, _ = fmt.Fprintf(stdout, "created %s\n", result.Directory)
+			_, _ = fmt.Fprintf(stdout, "next: CGO_ENABLED=0 go run ./cmd/agent-studio node test ./%s\n", result.Directory)
+			_, _ = io.WriteString(stdout, "next: CGO_ENABLED=0 go run ./cmd/agent-studio generate\n")
+			return 0
+		case "test":
 			_, _ = fmt.Fprintf(stderr, "node %s is not implemented\n", args[1])
 			return 1
 		default:

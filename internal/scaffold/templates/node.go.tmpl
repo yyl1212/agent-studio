@@ -1,0 +1,73 @@
+package {{.PackageName}}
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
+)
+
+type Config struct {
+	Prefix string `json:"prefix,omitempty"`
+}
+
+type Node struct{}
+
+func Register(registrar agentnode.Registrar) error {
+	return registrar.Register(Node{})
+}
+
+func (Node) Definition() agentnode.Definition {
+	return agentnode.Definition{
+		Type:        "{{.NodeType}}",
+		Version:     "1.0.0",
+		Title:       "{{.Title}}",
+		Description: "返回带前缀的输入文本",
+		Category:    "扩展",
+		ConfigSchema: agentnode.MustSchema(`{
+          "$schema":"https://json-schema.org/draft/2020-12/schema",
+          "type":"object",
+          "properties":{"prefix":{"type":"string","title":"前缀","default":""}},
+          "additionalProperties":false
+        }`),
+		Inputs: []agentnode.Port{
+			{
+				Key: "text", Title: "文本", Type: agentnode.DataTypeString, Required: true, Cardinality: agentnode.CardinalityOne,
+			},
+		},
+		Outputs: []agentnode.Port{
+			{
+				Key: "text", Title: "文本", Type: agentnode.DataTypeString, Cardinality: agentnode.CardinalityOne,
+			},
+		},
+	}
+}
+
+func (node Node) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, error) {
+	var parsed Config
+	if err := agentnode.DecodeConfig(config, &parsed); err != nil {
+		return agentnode.ResolvedPorts{}, err
+	}
+	definition := node.Definition()
+	return agentnode.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
+}
+
+func (Node) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return agentnode.Result{}, agentnode.NewError(agentnode.ErrorKindCanceled, "run_canceled", err, nil)
+	}
+	var config Config
+	if err := agentnode.DecodeConfig(request.Config, &config); err != nil {
+		return agentnode.Result{}, err
+	}
+	values := request.Inputs["text"]
+	if len(values) != 1 {
+		return agentnode.Result{}, agentnode.NewError(agentnode.ErrorKindInput, "invalid_text", fmt.Errorf("text input must contain exactly one value"), nil)
+	}
+	text, ok := values[0].(string)
+	if !ok {
+		return agentnode.Result{}, agentnode.NewError(agentnode.ErrorKindInput, "invalid_text", fmt.Errorf("text input must be a string"), nil)
+	}
+	return agentnode.Result{Outputs: map[string]any{"text": config.Prefix + text}}, nil
+}
