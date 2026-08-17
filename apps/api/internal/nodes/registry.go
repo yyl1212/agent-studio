@@ -2,14 +2,13 @@ package nodes
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 var (
@@ -17,15 +16,12 @@ var (
 	ErrNodeTypeNotFound  = errors.New("node type not found")
 )
 
-type NodeType interface {
-	Definition() domain.NodeDefinition
-	Resolve(config json.RawMessage) (domain.ResolvedPorts, error)
-	Execute(ctx context.Context, request domain.NodeRequest) (domain.NodeResult, error)
-}
+type NodeType = agentnode.Node
 
 type registeredNode struct {
-	node   NodeType
-	schema *jsonschema.Schema
+	node       NodeType
+	definition agentnode.Definition
+	schema     *jsonschema.Schema
 }
 
 type Registry struct {
@@ -36,8 +32,14 @@ func NewRegistry() *Registry {
 	return &Registry{entries: make(map[string]registeredNode)}
 }
 
-func (r *Registry) Register(node NodeType) error {
-	definition := node.Definition()
+var _ agentnode.Registrar = (*Registry)(nil)
+
+func (r *Registry) Register(node agentnode.Node) error {
+	adapted, err := Adapt(node)
+	if err != nil {
+		return err
+	}
+	definition := adapted.Definition()
 	key := registryKey(definition.Type, definition.Version)
 	if _, exists := r.entries[key]; exists {
 		return fmt.Errorf("%w: %s", ErrDuplicateNodeType, key)
@@ -49,7 +51,7 @@ func (r *Registry) Register(node NodeType) error {
 		return fmt.Errorf("compile config schema for %s: %w", key, err)
 	}
 
-	r.entries[key] = registeredNode{node: node, schema: compiled}
+	r.entries[key] = registeredNode{node: adapted, definition: definition, schema: compiled}
 	return nil
 }
 
@@ -61,17 +63,10 @@ func (r *Registry) Get(nodeType, version string) (NodeType, error) {
 	return entry.node, nil
 }
 
-func (r *Registry) Definitions() []domain.NodeDefinition {
-	definitions := make([]domain.NodeDefinition, 0, len(r.entries))
+func (r *Registry) Definitions() []agentnode.Definition {
+	definitions := make([]agentnode.Definition, 0, len(r.entries))
 	for _, entry := range r.entries {
-		definition := entry.node.Definition()
-		if definition.Inputs == nil {
-			definition.Inputs = []domain.PortDefinition{}
-		}
-		if definition.Outputs == nil {
-			definition.Outputs = []domain.PortDefinition{}
-		}
-		definitions = append(definitions, definition)
+		definitions = append(definitions, cloneDefinition(entry.definition))
 	}
 	sort.Slice(definitions, func(i, j int) bool {
 		if definitions[i].Type == definitions[j].Type {
