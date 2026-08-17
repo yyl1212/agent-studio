@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"agentstudio.local/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
 func TestStartResolvesFieldsAndEmitsRunInput(t *testing.T) {

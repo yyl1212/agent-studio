@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"agentstudio.local/api/internal/domain"
-	"agentstudio.local/api/internal/modelprovider"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
 )
 
 var (

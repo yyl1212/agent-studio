@@ -11,14 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"agentstudio.local/api/internal/config"
-	"agentstudio.local/api/internal/engine"
-	"agentstudio.local/api/internal/httpapi"
-	"agentstudio.local/api/internal/modelprovider"
-	"agentstudio.local/api/internal/nodes"
-	"agentstudio.local/api/internal/nodes/builtin"
-	"agentstudio.local/api/internal/store/postgres"
-	"agentstudio.local/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/apps/api/internal/config"
+	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
+	"github.com/yyl1212/agent-studio/apps/api/internal/httpapi"
+	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
+	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/apps/api/internal/store/postgres"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 )
 
 func main() {

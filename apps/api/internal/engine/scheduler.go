@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"agentstudio.local/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
 var ErrSchedulerDeadlock = errors.New("workflow scheduler deadlock")

@@ -1,4 +1,4 @@
-module agentstudio.local/api
+module github.com/yyl1212/agent-studio
 
 go 1.26.0
 

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"agentstudio.local/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )

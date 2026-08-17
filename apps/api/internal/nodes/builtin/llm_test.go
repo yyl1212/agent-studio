@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"agentstudio.local/api/internal/domain"
-	"agentstudio.local/api/internal/modelprovider"
-	"agentstudio.local/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
+	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 )
 
 type recordingProvider struct {

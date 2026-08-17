@@ -3,8 +3,8 @@ package httpapi
 import (
 	"net/http"
 
-	"agentstudio.local/api/internal/domain"
-	"agentstudio.local/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/go-chi/chi/v5"
 )
 

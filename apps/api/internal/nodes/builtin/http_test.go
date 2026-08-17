@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentstudio.local/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

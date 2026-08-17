@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"agentstudio.local/api/internal/domain"
-	"agentstudio.local/api/internal/engine"
-	"agentstudio.local/api/internal/nodes"
-	"agentstudio.local/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
+	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 )

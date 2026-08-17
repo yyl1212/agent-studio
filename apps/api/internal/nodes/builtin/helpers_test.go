@@ -3,7 +3,7 @@ package builtin
 import (
 	"encoding/json"
 
-	"agentstudio.local/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
 func domainRequest(config json.RawMessage, inputs map[string][]any) domain.NodeRequest {

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"agentstudio.local/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
 const maxHTTPResponseBytes = 1 << 20

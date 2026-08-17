@@ -9,17 +9,17 @@ db-down:
 	docker compose down
 
 dev-api:
-	set -a; [ ! -f .env ] || . ./.env; set +a; cd apps/api && CGO_ENABLED=0 go run ./cmd/server
+	set -a; [ ! -f .env ] || . ./.env; set +a; CGO_ENABLED=0 go run ./apps/api/cmd/server
 
 dev-web:
 	corepack pnpm@10.34.5 dev:web
 
 test-api-integration: db-up
-	cd apps/api && TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test ./internal/store/postgres -count=1 -v
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test ./apps/api/internal/store/postgres -count=1 -v
 
 verify: db-up
-	cd apps/api && TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test ./... -count=1
-	cd apps/api && CGO_ENABLED=0 go vet ./...
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test ./... -count=1
+	CGO_ENABLED=0 go vet ./...
 	corepack pnpm@10.34.5 --filter @agent-studio/web generate:api
 	git diff --exit-code -- apps/web/src/lib/api/generated.ts
 	corepack pnpm@10.34.5 lint

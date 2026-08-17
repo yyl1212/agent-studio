@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"agentstudio.local/api/internal/domain"
-	"agentstudio.local/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 )
 
 func TestEndAcceptsExactlyOneActiveResult(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"agentstudio.local/api/internal/engine"
-	"agentstudio.local/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/go-chi/chi/v5"
 )
 

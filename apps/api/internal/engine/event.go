@@ -3,7 +3,7 @@ package engine
 import (
 	"time"
 
-	"agentstudio.local/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
 type Event struct {

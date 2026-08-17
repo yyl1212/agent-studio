@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"agentstudio.local/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
 const runSelectColumns = `id::text,workflow_id::text,workflow_version_id::text,draft_revision,

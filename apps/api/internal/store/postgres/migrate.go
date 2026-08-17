@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strconv"
 
-	"agentstudio.local/api/migrations"
+	"github.com/yyl1212/agent-studio/apps/api/migrations"
 	"github.com/jackc/pgx/v5"
 )
 
