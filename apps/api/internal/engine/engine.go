@@ -193,5 +193,14 @@ func emitWithContext(ctx context.Context, observer Observer, sequence *int64, ru
 	event.Sequence = *sequence
 	event.RunID = runID
 	event.Timestamp = time.Now().UTC()
-	return observer.Observe(ctx, event)
+	observed := make(chan error, 1)
+	go func() {
+		observed <- observer.Observe(ctx, event)
+	}()
+	select {
+	case err := <-observed:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

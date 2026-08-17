@@ -25,12 +25,13 @@ type memoryObserver struct {
 	err    error
 }
 
-type cancellationBlockingObserver struct{}
+type cancellationBlockingObserver struct {
+	release chan struct{}
+}
 
-func (cancellationBlockingObserver) Observe(ctx context.Context, event Event) error {
+func (observer cancellationBlockingObserver) Observe(_ context.Context, event Event) error {
 	if event.Type == "run.cancelled" {
-		<-ctx.Done()
-		return ctx.Err()
+		<-observer.release
 	}
 	return nil
 }
@@ -361,9 +362,11 @@ func TestEngineBoundsCancelledEventObservation(t *testing.T) {
 	tracker := newConcurrencyTracker()
 	plan, _ := compileJoinedRuntimeFixture(t, tracker, false)
 	ctx, cancel := context.WithCancel(context.Background())
+	observerRelease := make(chan struct{})
+	defer close(observerRelease)
 	done := make(chan error, 1)
 	go func() {
-		_, err := New(Options{MaxParallel: 2}).Run(ctx, "run-cancel-observer", plan, map[string]any{"value": "x"}, cancellationBlockingObserver{})
+		_, err := New(Options{MaxParallel: 2}).Run(ctx, "run-cancel-observer", plan, map[string]any{"value": "x"}, cancellationBlockingObserver{release: observerRelease})
 		done <- err
 	}()
 	for range 2 {

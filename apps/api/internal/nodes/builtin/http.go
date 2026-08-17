@@ -222,7 +222,7 @@ func redactHTTPSecrets(value any, secrets []string) any {
 	case map[string]any:
 		redacted := make(map[string]any, len(typed))
 		for key, item := range typed {
-			if sensitiveHeader(key) {
+			if sensitiveJSONKey(key) {
 				redacted[key] = "[REDACTED]"
 			} else {
 				redacted[key] = redactHTTPSecrets(item, secrets)

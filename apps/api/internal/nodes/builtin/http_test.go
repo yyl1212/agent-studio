@@ -44,7 +44,7 @@ func TestHTTPRejectsHostnameResolvingToPrivateAddress(t *testing.T) {
 
 func TestHTTPRequiresEnvForSensitiveHeader(t *testing.T) {
 	node := NewHTTP(HTTPOptions{})
-	for _, header := range []string{"Authorization", "X-Auth-Token", "Private-Token", "X-Secret", "X-API-Key"} {
+	for _, header := range []string{"Authorization", "X-Auth-Token", "Private-Token", "X-Secret", "X-API-Key", "Ocp-Apim-Subscription-Key", "X-Subscription-Key"} {
 		t.Run(header, func(t *testing.T) {
 			config := json.RawMessage(fmt.Sprintf(`{"method":"GET","url":"https://example.com","headers":[{"name":%q,"valueSource":"literal","value":"secret"}]}`, header))
 			if _, err := node.Resolve(config); !errors.Is(err, ErrSensitiveHeaderMustUseEnv) {
@@ -59,11 +59,12 @@ func TestHTTPRedactsSensitiveResponseFields(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header: http.Header{
-				"Content-Type":  []string{"application/json"},
-				"Set-Cookie":    []string{"session=new-secret"},
-				"Private-Token": []string{"new-secret"},
+				"Content-Type":       []string{"application/json"},
+				"Set-Cookie":         []string{"session=new-secret"},
+				"Private-Token":      []string{"new-secret"},
+				"X-Subscription-Key": []string{"subscription-secret"},
 			},
-			Body: io.NopCloser(strings.NewReader(`{"api_token":"new-secret","safe":"visible"}`)),
+			Body: io.NopCloser(strings.NewReader(`{"api_token":"new-secret","auth":"auth-secret","author":"Ada","authors":["Ada","Lin"],"authority":"standards-body","safe":"visible"}`)),
 		}, nil
 	})}
 	node := NewHTTP(HTTPOptions{AllowPrivateNetwork: true, Client: client})
@@ -78,11 +79,23 @@ func TestHTTPRedactsSensitiveResponseFields(t *testing.T) {
 	if strings.Contains(string(encoded), "new-secret") {
 		t.Fatalf("sensitive response leaked: %s", encoded)
 	}
+	if strings.Contains(string(encoded), "subscription-secret") || strings.Contains(string(encoded), "auth-secret") {
+		t.Fatalf("additional sensitive response leaked: %s", encoded)
+	}
 	if !strings.Contains(string(encoded), "[REDACTED]") {
 		t.Fatalf("redaction marker missing: %s", encoded)
 	}
 	if got := result.Outputs["body"].(map[string]any)["safe"]; got != "visible" {
 		t.Fatalf("safe body value=%v", got)
+	}
+	body := result.Outputs["body"].(map[string]any)
+	for key, want := range map[string]any{"author": "Ada", "authority": "standards-body"} {
+		if got := body[key]; got != want {
+			t.Fatalf("body[%q]=%v, want %v", key, got, want)
+		}
+	}
+	if got := body["authors"].([]any); len(got) != 2 || got[0] != "Ada" || got[1] != "Lin" {
+		t.Fatalf("authors=%v", got)
 	}
 }
 

@@ -132,11 +132,36 @@ func (node *httpNode) newClient() *http.Client {
 }
 
 func sensitiveHeader(name string) bool {
-	normalized := strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(strings.TrimSpace(name)))
-	for _, marker := range []string{"auth", "cookie", "token", "secret", "password", "apikey", "credential"} {
+	normalized := normalizeCredentialKey(name)
+	for _, marker := range []string{"authorization", "cookie", "token", "secret", "password", "apikey", "credential", "subscriptionkey"} {
 		if strings.Contains(normalized, marker) {
 			return true
 		}
 	}
+	for _, part := range splitCredentialKey(name) {
+		if part == "auth" {
+			return true
+		}
+	}
 	return false
+}
+
+func sensitiveJSONKey(name string) bool {
+	normalized := normalizeCredentialKey(name)
+	for _, marker := range []string{"authorization", "cookie", "token", "secret", "password", "apikey", "credential", "subscriptionkey"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return normalized == "auth"
+}
+
+func normalizeCredentialKey(name string) string {
+	return strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(name)))
+}
+
+func splitCredentialKey(name string) []string {
+	return strings.FieldsFunc(strings.ToLower(strings.TrimSpace(name)), func(character rune) bool {
+		return character == '-' || character == '_' || character == ' '
+	})
 }
