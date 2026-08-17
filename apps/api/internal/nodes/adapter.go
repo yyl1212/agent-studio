@@ -45,15 +45,7 @@ func (node *adaptedNode) Resolve(config json.RawMessage) (agentnode.ResolvedPort
 }
 
 func (node *adaptedNode) Execute(ctx context.Context, request agentnode.Request) (agentnode.Result, error) {
-	ports, err := node.Resolve(request.Config)
-	if err != nil {
-		return agentnode.Result{}, err
-	}
-	result, err := node.delegate.Execute(ctx, request)
-	if err != nil {
-		return agentnode.Result{}, err
-	}
-	return NormalizeResult(result, ports)
+	return node.delegate.Execute(ctx, request)
 }
 
 func NormalizeDefinition(definition agentnode.Definition) (agentnode.Definition, error) {

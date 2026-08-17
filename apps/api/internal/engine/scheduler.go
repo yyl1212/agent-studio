@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 )
 
 var ErrSchedulerDeadlock = errors.New("workflow scheduler deadlock")
@@ -117,5 +118,8 @@ func executeNode(ctx context.Context, plan *Plan, nodeID string, runInput map[st
 		RunInput: runInput,
 		Config:   compiled.Node.Config,
 	})
+	if err == nil {
+		result, err = nodes.NormalizeResult(result, compiled.Ports)
+	}
 	results <- workerResult{nodeID: nodeID, input: eventInput, result: result, err: err}
 }
