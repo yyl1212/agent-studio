@@ -621,6 +621,9 @@ components:
       properties:
         code:
           type: string
+        kind:
+          type: string
+          enum: [config, input, temporary, canceled, internal]
         message:
           type: string
         nodeId:

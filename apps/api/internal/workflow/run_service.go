@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"reflect"
 	"time"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
-	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/google/uuid"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 var ErrInputValidation = errors.New("run input validation failed")
@@ -30,10 +34,30 @@ type RunService struct {
 	store    Store
 	compiler Compiler
 	engine   Engine
+	logger   *slog.Logger
 }
 
-func NewRunService(store Store, compiler Compiler, runtime Engine) *RunService {
-	return &RunService{store: store, compiler: compiler, engine: runtime}
+type RunOption func(*RunService)
+
+func WithLogger(logger *slog.Logger) RunOption {
+	return func(service *RunService) {
+		if logger != nil {
+			service.logger = logger
+		}
+	}
+}
+
+func NewRunService(store Store, compiler Compiler, runtime Engine, options ...RunOption) *RunService {
+	service := &RunService{
+		store:    store,
+		compiler: compiler,
+		engine:   runtime,
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, revision int64, input map[string]any) (*PreparedRun, error) {
@@ -133,6 +157,9 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 		started:    make(map[string]time.Time),
 	}
 	result, runErr := service.engine.Run(ctx, prepared.RunID, prepared.Plan, prepared.Input, persistence)
+	if runErr != nil {
+		service.logRunError(prepared.RunID, runErr)
+	}
 	status := domain.RunCompleted
 	var publicError *domain.PublicError
 	if runErr != nil {
@@ -140,7 +167,12 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 			status = domain.RunCancelled
 		}
-		publicError = &domain.PublicError{Code: "RUN_FAILED", Message: "运行失败"}
+		var executionErr *engine.NodeExecutionError
+		if errors.As(runErr, &executionErr) {
+			publicError = domain.NewPublicNodeError(executionErr.Err, executionErr.NodeID)
+		} else {
+			publicError = domain.NewPublicRunError(runErr)
+		}
 	}
 	finishContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -152,6 +184,39 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 		return result, finishErr
 	}
 	return result, nil
+}
+
+func (service *RunService) logRunError(runID string, err error) {
+	var executionErr *engine.NodeExecutionError
+	if !errors.As(err, &executionErr) {
+		return
+	}
+	kind := agentnode.KindOf(executionErr.Err)
+	code := "execution_failed"
+	var details map[string]any
+	var nodeErr *agentnode.NodeError
+	if errors.As(executionErr.Err, &nodeErr) {
+		code = nodeErr.Code
+		details, _ = Redact(nodeErr.Details).(map[string]any)
+	}
+	service.logger.Error(
+		"node execution failed",
+		"run_id", runID,
+		"node_id", executionErr.NodeID,
+		"node_type", executionErr.NodeType,
+		"error_kind", kind,
+		"error_code", code,
+		"error_causes", errorCauseTypes(err),
+		"error_details", details,
+	)
+}
+
+func errorCauseTypes(err error) []string {
+	causes := make([]string, 0, 4)
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		causes = append(causes, reflect.TypeOf(current).String())
+	}
+	return causes
 }
 
 func compileRunGraph(compiler Compiler, raw json.RawMessage) (domain.Graph, *engine.Plan, error) {

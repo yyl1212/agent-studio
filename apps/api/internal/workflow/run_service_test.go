@@ -5,16 +5,28 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 type recordingObserver struct {
 	events []engine.Event
 	err    error
+}
+
+type failingRunEngine struct {
+	err error
+}
+
+func (runtime failingRunEngine) Run(_ context.Context, runID string, _ *engine.Plan, _ map[string]any, _ engine.Observer) (engine.RunResult, error) {
+	return engine.RunResult{RunID: runID, EndedAt: time.Now().UTC()}, runtime.err
 }
 
 func (observer *recordingObserver) Observe(_ context.Context, event engine.Event) error {
@@ -150,6 +162,60 @@ func TestPreparePersistsRedactedInputAndCancellationFinishesRun(t *testing.T) {
 	}
 	if store.LastRun().Status != domain.RunCancelled {
 		t.Fatalf("run status=%s", store.LastRun().Status)
+	}
+}
+
+func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
+	store := newFakeStore(t)
+	const runID = "run-structured-error"
+	if err := store.CreateRun(context.Background(), domain.Run{ID: runID, Status: domain.RunRunning}); err != nil {
+		t.Fatal(err)
+	}
+	nodeErr := agentnode.NewError(
+		agentnode.ErrorKindInput,
+		"missing_input",
+		errors.New("top-secret cause"),
+		map[string]any{
+			"Authorization": "Bearer top-secret",
+			"field":         "prompt",
+		},
+	)
+	runErr := &engine.NodeExecutionError{NodeID: "llm-1", NodeType: "llm", Err: nodeErr}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	service := NewRunService(store, newRealCompiler(t), failingRunEngine{err: runErr}, WithLogger(logger))
+	_, err := service.Execute(context.Background(), &PreparedRun{RunID: runID, Plan: &engine.Plan{}}, &recordingObserver{})
+	if !errors.Is(err, nodeErr) {
+		t.Fatalf("execute error = %v", err)
+	}
+
+	persisted := store.LastRun().Error
+	if persisted == nil || persisted.Code != "NODE_EXECUTION_FAILED" || persisted.Kind != agentnode.ErrorKindInput ||
+		persisted.NodeID != "llm-1" || persisted.Message != "节点输入无效" {
+		t.Fatalf("persisted public error = %+v", persisted)
+	}
+	if strings.Contains(logs.String(), "top-secret") || strings.Contains(logs.String(), "Bearer") {
+		t.Fatalf("structured log leaked secret: %s", logs.String())
+	}
+	var record map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"run_id": "run-structured-error", "node_id": "llm-1", "node_type": "llm",
+		"error_kind": "input", "error_code": "missing_input",
+	} {
+		if got := record[key]; got != want {
+			t.Fatalf("log field %s = %v, want %v; record=%v", key, got, want, record)
+		}
+	}
+	details, ok := record["error_details"].(map[string]any)
+	if !ok || details["Authorization"] != "[REDACTED]" || details["field"] != "prompt" {
+		t.Fatalf("redacted details = %#v", record["error_details"])
+	}
+	causes, ok := record["error_causes"].([]any)
+	if !ok || len(causes) < 3 {
+		t.Fatalf("error causes = %#v", record["error_causes"])
 	}
 }
 

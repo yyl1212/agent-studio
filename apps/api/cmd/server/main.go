@@ -64,7 +64,7 @@ func run(logger *slog.Logger) error {
 	compiler := engine.NewCompiler(registry)
 	runtime := engine.New(engine.Options{MaxParallel: cfg.MaxParallelNodes, Timeout: cfg.WorkflowTimeout})
 	workflowService := workflow.NewService(store, compiler)
-	runService := workflow.NewRunService(store, compiler, runtime)
+	runService := workflow.NewRunService(store, compiler, runtime, workflow.WithLogger(logger))
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		Registry:  registry,
 		Workflows: workflowService,

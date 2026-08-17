@@ -61,10 +61,11 @@ func Redact(value any) any {
 }
 
 func isSensitiveKey(key string) bool {
-	switch strings.ToLower(key) {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie", "api-key", "apikey", "token", "secret":
-		return true
-	default:
-		return false
+	normalized := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(key))
+	for _, marker := range []string{"authorization", "cookie", "token", "secret", "password", "apikey"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
 	}
+	return false
 }

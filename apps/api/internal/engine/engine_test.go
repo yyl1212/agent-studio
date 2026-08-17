@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 var errFixtureBranch = errors.New("fixture branch failed")
@@ -85,6 +87,7 @@ type runtimeBranchNode struct {
 	tracker *concurrencyTracker
 	mu      sync.Mutex
 	done    map[string]bool
+	failure error
 }
 
 type runtimeBranchConfig struct {
@@ -120,6 +123,9 @@ func (node *runtimeBranchNode) Execute(ctx context.Context, request domain.NodeR
 		}
 	}
 	if config.Fail {
+		if node.failure != nil {
+			return domain.NodeResult{}, node.failure
+		}
 		return domain.NodeResult{}, errFixtureBranch
 	}
 	if config.Drop {
@@ -260,6 +266,47 @@ func TestEngineLetsIndependentBranchFinishAfterSiblingFailure(t *testing.T) {
 	if !branch.completed("right") {
 		t.Fatal("independent right branch did not complete")
 	}
+}
+
+func TestEngineWrapsNodeFailureAndPublishesStableError(t *testing.T) {
+	plan, branch := compileJoinedRuntimeFixture(t, nil, true)
+	branch.failure = agentnode.NewError(
+		agentnode.ErrorKindInput,
+		"missing_input",
+		errors.New("top-secret cause"),
+		map[string]any{"Authorization": "Bearer top-secret"},
+	)
+	observer := &memoryObserver{}
+	_, err := New(Options{}).Run(context.Background(), "run-secret", plan, map[string]any{"value": "x"}, observer)
+	var executionErr *NodeExecutionError
+	if !errors.As(err, &executionErr) {
+		t.Fatalf("error %v is not NodeExecutionError", err)
+	}
+	if executionErr.NodeID != "left" || executionErr.NodeType != "runtime-branch" {
+		t.Fatalf("execution error = %+v", executionErr)
+	}
+	if !errors.Is(err, branch.failure) {
+		t.Fatal("NodeExecutionError must unwrap the node failure")
+	}
+
+	for _, event := range observer.Events() {
+		if event.Type != "node.failed" || event.NodeID != "left" {
+			continue
+		}
+		if event.Error == nil || event.Error.Code != "NODE_EXECUTION_FAILED" ||
+			event.Error.Kind != agentnode.ErrorKindInput || event.Error.Message != "节点输入无效" {
+			t.Fatalf("public error = %+v", event.Error)
+		}
+		encoded, marshalErr := json.Marshal(event.Error)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if strings.Contains(string(encoded), "top-secret") || strings.Contains(string(encoded), "missing_input") {
+			t.Fatalf("public event leaked private error data: %s", encoded)
+		}
+		return
+	}
+	t.Fatal("node.failed event not found")
 }
 
 func TestEngineStopsOnObserverErrorAndTimeout(t *testing.T) {

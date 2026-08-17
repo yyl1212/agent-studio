@@ -386,6 +386,8 @@ export interface components {
         };
         PublicError: {
             code: string;
+            /** @enum {string} */
+            kind?: "config" | "input" | "temporary" | "canceled" | "internal";
             message: string;
             nodeId?: string;
         };

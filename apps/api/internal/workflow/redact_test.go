@@ -44,3 +44,21 @@ func TestRedactCoversHTTPHeaderValues(t *testing.T) {
 		t.Fatalf("redacted headers=%#v", got)
 	}
 }
+
+func TestRedactMatchesSensitiveKeyFragments(t *testing.T) {
+	input := map[string]any{
+		"databasePassword": "top-secret",
+		"nested": []any{
+			map[string]any{"api_key": "key", "safe": "visible"},
+		},
+	}
+	want := map[string]any{
+		"databasePassword": "[REDACTED]",
+		"nested": []any{
+			map[string]any{"api_key": "[REDACTED]", "safe": "visible"},
+		},
+	}
+	if got := Redact(input); !reflect.DeepEqual(got, want) {
+		t.Fatalf("redacted = %#v, want %#v", got, want)
+	}
+}

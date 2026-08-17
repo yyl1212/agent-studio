@@ -115,18 +115,20 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 				}
 			}
 			ended := finishResult(result)
-			_ = emitWithContext(context.WithoutCancel(runContext), observer, &sequence, runID, Event{Type: "run.cancelled", Error: &domain.PublicError{Code: "RUN_CANCELLED", Message: "运行已取消"}})
+			_ = emitWithContext(context.WithoutCancel(runContext), observer, &sequence, runID, Event{Type: "run.cancelled", Error: domain.NewPublicRunError(runContext.Err())})
 			return ended, runContext.Err()
 		case worker := <-workerResults:
 			running--
 			if worker.err != nil {
+				compiled := plan.Nodes[worker.nodeID]
+				nodeErr := &NodeExecutionError{NodeID: worker.nodeID, NodeType: compiled.Node.Type, Err: worker.err}
 				statuses[worker.nodeID] = domain.NodeFailed
 				terminal++
 				if executionErr == nil {
-					executionErr = worker.err
+					executionErr = nodeErr
 				}
 				deactivateOutgoing(plan, worker.nodeID, edgeStates)
-				publicError := &domain.PublicError{Code: "NODE_EXECUTION_FAILED", Message: "节点执行失败", NodeID: worker.nodeID}
+				publicError := domain.NewPublicNodeError(worker.err, worker.nodeID)
 				if err := emit(Event{Type: "node.failed", NodeID: worker.nodeID, Status: domain.NodeFailed, Input: worker.input, Error: publicError}); err != nil {
 					cancel()
 					return finishResult(result), err
@@ -162,7 +164,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 
 	result = finishResult(result)
 	if executionErr != nil {
-		publicError := &domain.PublicError{Code: "RUN_FAILED", Message: "运行失败"}
+		publicError := domain.NewPublicRunError(executionErr)
 		if err := emit(Event{Type: "run.failed", Error: publicError}); err != nil {
 			return result, err
 		}
