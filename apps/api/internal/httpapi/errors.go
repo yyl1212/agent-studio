@@ -4,9 +4,9 @@ import (
 	"errors"
 	"net/http"
 
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
-	chimiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
 var errHandlerPanic = errors.New("handler panic")

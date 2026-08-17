@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
-	"github.com/google/uuid"
 )
 
 var (

@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/yyl1212/agent-studio/apps/api/migrations"
 	"github.com/jackc/pgx/v5"
+	"github.com/yyl1212/agent-studio/apps/api/migrations"
 )
 
 var migrationNamePattern = regexp.MustCompile(`^(\d{6})_.+\.sql$`)

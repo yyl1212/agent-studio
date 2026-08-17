@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/go-chi/chi/v5"
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
 func (handler *handler) listNodeTypes(writer http.ResponseWriter, _ *http.Request) {
