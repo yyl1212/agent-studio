@@ -12,6 +12,7 @@ import (
 	"agentstudio.local/api/internal/domain"
 	"agentstudio.local/api/internal/engine"
 	"agentstudio.local/api/internal/nodes"
+	"agentstudio.local/api/internal/nodes/builtin"
 	"agentstudio.local/api/internal/workflow"
 )
 
@@ -143,6 +144,21 @@ func TestReadyReturnsServiceUnavailable(t *testing.T) {
 	dependencies.Readiness = fixtureReady{err: errors.New("database unavailable")}
 	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/readyz", "")
 	assertJSONError(t, recorder, http.StatusServiceUnavailable, "NOT_READY")
+}
+
+func TestNodeAPIRendersMissingPortSlicesAsArrays(t *testing.T) {
+	dependencies := fixtureDeps()
+	if err := builtin.RegisterCore(dependencies.Registry); err != nil {
+		t.Fatal(err)
+	}
+	listRecorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/node-types", "")
+	if strings.Contains(listRecorder.Body.String(), `"inputs":null`) || strings.Contains(listRecorder.Body.String(), `"outputs":null`) {
+		t.Fatalf("definitions contain null ports: %s", listRecorder.Body.String())
+	}
+	resolveRecorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/node-types/start/1/resolve", `{"config":{"fields":[]}}`)
+	if resolveRecorder.Code != http.StatusOK || !strings.Contains(resolveRecorder.Body.String(), `"inputs":[]`) {
+		t.Fatalf("status=%d body=%s", resolveRecorder.Code, resolveRecorder.Body.String())
+	}
 }
 
 func fixtureDeps() Dependencies {

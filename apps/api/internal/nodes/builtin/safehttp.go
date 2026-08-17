@@ -15,6 +15,7 @@ var (
 	ErrInvalidHTTPURL        = errors.New("invalid HTTP URL")
 	ErrPrivateAddressBlocked = errors.New("private network address blocked")
 	ErrTooManyRedirects      = errors.New("too many HTTP redirects")
+	ErrCrossOriginRedirect   = errors.New("cross-origin HTTP redirect blocked")
 )
 
 type lookupIPFunc func(context.Context, string, string) ([]net.IP, error)
@@ -118,8 +119,14 @@ func (node *httpNode) newClient() *http.Client {
 		if len(via) >= 3 {
 			return ErrTooManyRedirects
 		}
-		_, err := node.validateURL(request.Context(), request.URL.String())
-		return err
+		if _, err := node.validateURL(request.Context(), request.URL.String()); err != nil {
+			return err
+		}
+		origin := via[0].URL
+		if !strings.EqualFold(request.URL.Scheme, origin.Scheme) || !strings.EqualFold(request.URL.Host, origin.Host) {
+			return ErrCrossOriginRedirect
+		}
+		return nil
 	}
 	return &client
 }

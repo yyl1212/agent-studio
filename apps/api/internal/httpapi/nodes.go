@@ -36,5 +36,11 @@ func (handler *handler) resolveNodeType(writer http.ResponseWriter, request *htt
 		writeRequestError(writer, request, err)
 		return
 	}
+	if ports.Inputs == nil {
+		ports.Inputs = []domain.PortDefinition{}
+	}
+	if ports.Outputs == nil {
+		ports.Outputs = []domain.PortDefinition{}
+	}
 	writeJSON(writer, http.StatusOK, ports)
 }

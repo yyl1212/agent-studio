@@ -36,8 +36,12 @@ export function WorkflowCanvas(props: WorkflowCanvasProps) {
           onEdgesChange={props.onEdgesChange}
           onConnect={props.onConnect}
           isValidConnection={props.isValidConnection}
-          onNodeClick={(_, node) => props.onNodeClick(node)}
+          onNodeClick={(event, node) => {
+            if ((event.target as HTMLElement).closest('.react-flow__handle')) return
+            props.onNodeClick(node)
+          }}
           fitView
+          fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
           deleteKeyCode={['Backspace', 'Delete']}
         >
           <Background gap={22} size={1.2} />

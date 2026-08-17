@@ -1,4 +1,5 @@
-import Ajv, { type ErrorObject } from 'ajv'
+import type { ErrorObject } from 'ajv'
+import Ajv2020 from 'ajv/dist/2020.js'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 
 import { Field } from './Field'
@@ -17,7 +18,7 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
   const [draft, setDraft] = useState<FormValue>(value)
   const [errors, setErrors] = useState<Record<string, string>>({})
   useEffect(() => setDraft(value), [value])
-  const validate = useMemo(() => new Ajv({ allErrors: true, strict: false, useDefaults: true }).compile(schema as object), [schema])
+  const validate = useMemo(() => new Ajv2020({ allErrors: true, strict: false, useDefaults: true }).compile(schema as object), [schema])
   const properties = schema.properties ?? {}
   const order = [...(schema['x-ui-order'] ?? []), ...Object.keys(properties).filter((key) => !schema['x-ui-order']?.includes(key))]
 

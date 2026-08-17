@@ -2,6 +2,8 @@ import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
 
 import { WorkflowListPage } from '../features/workflows/WorkflowListPage'
 import { StudioPage } from '../features/studio/StudioPage'
+import { AgentPage } from '../features/agent/AgentPage'
+import { RunHistoryPage } from '../features/runs/RunHistoryPage'
 
 function AppLayout() {
   return (
@@ -17,8 +19,8 @@ function AppLayout() {
         <Route path="/" element={<Navigate to="/workflows" replace />} />
         <Route path="/workflows" element={<WorkflowListPage />} />
         <Route path="/workflows/:id" element={<StudioPage />} />
-        <Route path="/workflows/:id/runs" element={<Placeholder title="运行记录" />} />
-        <Route path="/agents/:slug" element={<Placeholder title="Agent" />} />
+        <Route path="/workflows/:id/runs" element={<RunHistoryPage />} />
+        <Route path="/agents/:slug" element={<AgentPage />} />
         <Route path="*" element={<Placeholder title="页面不存在" />} />
       </Routes>
     </div>

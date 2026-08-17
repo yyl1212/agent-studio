@@ -19,7 +19,7 @@ export function toFlowGraph(
         typeVersion: node.typeVersion,
         config: structuredClone(node.config),
         definition: definitionMap.get(`${node.type}@${node.typeVersion}`),
-        ports: resolved[node.id] ?? portsFromDefinition(definitionMap.get(`${node.type}@${node.typeVersion}`)),
+        ports: normalizePorts(resolved[node.id] ?? portsFromDefinition(definitionMap.get(`${node.type}@${node.typeVersion}`))),
         issues: [],
       },
     })),
@@ -56,5 +56,9 @@ export function fromFlowGraph(nodes: StudioNode[], edges: StudioEdge[]): Graph {
 
 export function portsFromDefinition(definition?: NodeDefinition): ResolvedPorts {
   if (!definition) return emptyPorts
-  return { inputs: definition.inputs, outputs: definition.outputs }
+  return normalizePorts({ inputs: definition.inputs, outputs: definition.outputs })
+}
+
+export function normalizePorts(ports: ResolvedPorts): ResolvedPorts {
+  return { inputs: ports.inputs ?? [], outputs: ports.outputs ?? [] }
 }

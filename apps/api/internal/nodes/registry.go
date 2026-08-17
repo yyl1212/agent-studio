@@ -64,7 +64,14 @@ func (r *Registry) Get(nodeType, version string) (NodeType, error) {
 func (r *Registry) Definitions() []domain.NodeDefinition {
 	definitions := make([]domain.NodeDefinition, 0, len(r.entries))
 	for _, entry := range r.entries {
-		definitions = append(definitions, entry.node.Definition())
+		definition := entry.node.Definition()
+		if definition.Inputs == nil {
+			definition.Inputs = []domain.PortDefinition{}
+		}
+		if definition.Outputs == nil {
+			definition.Outputs = []domain.PortDefinition{}
+		}
+		definitions = append(definitions, definition)
 	}
 	sort.Slice(definitions, func(i, j int) bool {
 		if definitions[i].Type == definitions[j].Type {

@@ -45,7 +45,7 @@ describe('StudioPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '提示词模板' }))
     expect(screen.getByRole('dialog', { name: '节点配置' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
-    await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenLastCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
+    await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
   })
 
   it('发布前等待保存队列完成并使用新 revision', async () => {

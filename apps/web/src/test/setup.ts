@@ -28,3 +28,12 @@ Object.defineProperty(window, 'matchMedia', {
     dispatchEvent: () => false,
   }),
 })
+
+class DOMMatrixReadOnlyMock {
+  m22 = 1
+}
+
+Object.defineProperty(window, 'DOMMatrixReadOnly', {
+  configurable: true,
+  value: DOMMatrixReadOnlyMock,
+})

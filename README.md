@@ -1,0 +1,115 @@
+# Agent Studio
+
+Agent Studio 是一套轻量化、本地优先的 Agent 开发系统：用低代码画布组合工作流，从开始节点参数自动生成聚焦式 Agent 页面，并通过后端节点注册表快速扩展能力。首版采用 Go 单体 API、React 画布和 Docker PostgreSQL，默认 Mock 模型即可跑通完整闭环。
+
+```mermaid
+flowchart LR
+  B["React 画布与 Schema 表单"] -->|"JSON API / NDJSON"| A["Go chi API"]
+  A --> S["工作流服务"]
+  S --> C["DAG 编译器"]
+  S --> E["并发执行引擎"]
+  C --> R["节点注册表"]
+  E --> R
+  A --> P[("PostgreSQL 18")]
+  R --> M["Mock / OpenAI-compatible"]
+```
+
+## 环境要求
+
+- Go 1.26（项目 toolchain 为 1.26.5）
+- Node.js 24
+- Corepack 与 pnpm 10.34.5
+- Docker Desktop / Docker Compose
+
+首次安装：
+
+```bash
+corepack enable
+corepack pnpm@10.34.5 install
+cp .env.example .env
+```
+
+## 本地启动
+
+启动 PostgreSQL：
+
+```bash
+make db-up
+```
+
+终端一启动 API（启动时自动执行幂等 migration）：
+
+```bash
+make dev-api
+```
+
+`make dev-api` 会自动加载根目录 `.env`；修改模型或网络策略配置后重启 API 即可生效。
+
+终端二启动 Web：
+
+```bash
+make dev-web
+```
+
+打开 `http://localhost:5173/workflows`。默认 `MODEL_PROVIDER=mock`，无需密钥：创建工作流，配置开始节点，添加“提示词模板”和“LLM”，连接到结束节点后即可测试、发布并运行 Agent。
+
+健康检查：`GET http://localhost:8080/healthz`；就绪检查还会验证 PostgreSQL 与最新 migration：`GET http://localhost:8080/readyz`。
+
+## 模型配置
+
+默认配置：
+
+```dotenv
+MODEL_PROVIDER=mock
+```
+
+切换到 OpenAI-compatible Chat Completions 服务：
+
+```dotenv
+MODEL_PROVIDER=openai-compatible
+OPENAI_BASE_URL=https://your-provider.example/v1
+OPENAI_API_KEY=
+OPENAI_DEFAULT_MODEL=your-model
+```
+
+密钥只通过环境变量传入，不进入工作流 JSON、API 响应或日志。
+
+## HTTP 节点密钥与网络策略
+
+HTTP 节点的敏感 Header 必须选择环境变量来源并填写变量名，例如 `UPSTREAM_API_KEY`；禁止把 Authorization/Cookie 直接写入配置。默认拒绝 loopback、私网、link-local 和解析后落入私网的地址，以降低 SSRF 风险。本地可信开发环境确需访问私网时才设置：
+
+```dotenv
+HTTP_NODE_ALLOW_PRIVATE=true
+```
+
+## 验证
+
+```bash
+make verify
+make test-e2e
+```
+
+`make verify` 会启动数据库，运行全部 Go 测试、`go vet`、OpenAPI 类型再生成差异检查、前端类型检查、组件测试和生产构建。`make test-e2e` 使用真实浏览器验证创建、配置、连线、测试、发布、版本绑定和 Agent 运行。
+
+单独调试：
+
+```bash
+cd apps/api && CGO_ENABLED=0 go test ./... -count=1
+corepack pnpm@10.34.5 test
+corepack pnpm@10.34.5 build
+```
+
+## 项目结构
+
+- `apps/api`：Go API、DAG 编译/执行、节点、PostgreSQL store 和 migration。
+- `apps/web`：React 工作流列表、画布 Studio、通用 Schema 表单、Agent 页与运行记录。
+- `contracts/openapi.yaml`：前后端唯一 HTTP 契约来源。
+- `docs/node-development.md`：无需修改前端的节点扩展示例。
+
+## 首版边界
+
+- 单租户、本地部署，不包含登录、RBAC、团队协作与审计后台。
+- 工作流是无环图，不支持循环、人工审批、定时触发和分布式队列。
+- 运行在 API 进程内执行；重启不会恢复正在运行的任务。
+- 模型接入为 Mock 或 OpenAI-compatible Chat Completions，不含供应商专属高级能力。
+- Code 节点使用受步数、时间和输出大小约束的 Starlark，不执行任意系统命令。

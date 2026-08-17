@@ -17,6 +17,11 @@ const schema = {
 }
 
 describe('SchemaForm', () => {
+  it('支持服务端生成的 JSON Schema 2020-12', () => {
+    render(<SchemaForm schema={{ ...schema, $schema: 'https://json-schema.org/draft/2020-12/schema' }} value={{}} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="运行" />)
+    expect(screen.getByLabelText('主题')).toBeInTheDocument()
+  })
+
   it('渲染必填文本、布尔、单选和 JSON 字段并显示中文校验', async () => {
     render(<SchemaForm schema={schema} value={{}} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="运行" />)
     expect(screen.getByLabelText('主题')).toBeRequired()

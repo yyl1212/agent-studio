@@ -1,6 +1,7 @@
 export type UIWidget = 'text' | 'textarea' | 'select' | 'code' | 'json'
 
 export interface JSONSchema {
+  $schema?: string
   type?: 'object' | 'string' | 'number' | 'integer' | 'boolean' | 'array'
   title?: string
   description?: string

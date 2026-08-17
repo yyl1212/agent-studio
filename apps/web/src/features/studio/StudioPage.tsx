@@ -13,7 +13,7 @@ import type { JSONSchema } from '../../components/schema-form/types'
 import { APIError, api, type NodeDefinition, type Workflow } from '../../lib/api/client'
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { ConfigDrawer } from './ConfigDrawer'
-import { fromFlowGraph, portsFromDefinition, toFlowGraph } from './graphAdapter'
+import { fromFlowGraph, normalizePorts, portsFromDefinition, toFlowGraph } from './graphAdapter'
 import { NodeLibraryDrawer } from './NodeLibraryDrawer'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
@@ -78,15 +78,16 @@ export function StudioPage() {
   }, [id])
 
   const selectedNode = nodes.find((node) => node.id === selectedID)
-  const selectedConfigKey = selectedNode ? JSON.stringify(selectedNode.data.config) : ''
+  const resolveKey = JSON.stringify(nodes.map((node) => [node.id, node.data.nodeType, node.data.typeVersion, node.data.config]))
   useEffect(() => {
-    if (!selectedNode) return
+    if (nodes.length === 0) return
     const controller = new AbortController()
     const timer = setTimeout(() => {
-      api.resolveNodeType(selectedNode.data.nodeType, selectedNode.data.typeVersion, selectedNode.data.config, controller.signal)
-        .then((ports) => {
+      Promise.all(nodes.map(async (node) => [node.id, await api.resolveNodeType(node.data.nodeType, node.data.typeVersion, node.data.config, controller.signal)] as const))
+        .then((resolved) => {
+          const portsByID = new Map(resolved)
           setNodes((currentNodes) => {
-            const nextNodes = currentNodes.map((node) => node.id === selectedNode.id ? { ...node, data: { ...node.data, ports } } : node)
+            const nextNodes = currentNodes.map((node) => portsByID.has(node.id) ? { ...node, data: { ...node.data, ports: normalizePorts(portsByID.get(node.id)!) } } : node)
             setEdges((currentEdges) => markInvalidEdges(nextNodes, currentEdges))
             return nextNodes
           })
@@ -94,7 +95,7 @@ export function StudioPage() {
         .catch(() => undefined)
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [selectedID, selectedConfigKey])
+  }, [resolveKey])
 
   const commit = (nextNodes: StudioNode[], nextEdges: StudioEdge[]) => saveQueue.current?.enqueue(fromFlowGraph(nextNodes, nextEdges))
   const handleNodesChange = (changes: NodeChange<StudioNode>[]) => {
@@ -122,9 +123,10 @@ export function StudioPage() {
   }
 
   const addNode = (definition: NodeDefinition) => {
+    const addedCount = nodes.filter((existing) => existing.data.nodeType !== 'start' && existing.data.nodeType !== 'end').length
     const node: StudioNode = {
       id: createID(definition.type), type: 'studio',
-      position: { x: 260 + nodes.length * 28, y: 180 + nodes.length * 18 },
+      position: { x: 320, y: 180 + addedCount * 220 },
       data: {
         nodeType: definition.type,
         typeVersion: definition.version,

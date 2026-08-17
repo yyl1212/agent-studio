@@ -1,0 +1,14 @@
+.agent-page { min-height: calc(100vh - 64px); padding: 64px 20px; background: radial-gradient(circle at 50% 0, #e8edff, #f6f8fc 45%); }
+.agent-card { width: min(680px, 100%); margin: 0 auto; padding: clamp(26px, 5vw, 48px); border: 1px solid #dfe5ef; border-radius: 24px; background: white; box-shadow: 0 24px 70px rgb(36 56 105 / 12%); }
+.agent-card header { margin-bottom: 32px; text-align: center; }
+.agent-card h2 { margin: 8px 0; font-size: clamp(28px, 6vw, 42px); }
+.agent-card header p { color: #667085; line-height: 1.6; }
+.agent-version { color: #3157d5; font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.agent-card .primary-button { margin-top: 10px; }
+.cancel-button { margin-top: 12px; padding: 8px 12px; border: 1px solid #e0a6a2; border-radius: 8px; color: #b42318; background: white; }
+.run-progress { margin-top: 30px; border-top: 1px solid #e6eaf1; padding-top: 20px; }
+.run-progress ol { display: grid; gap: 8px; padding: 0; list-style: none; }
+.run-progress li { display: flex; justify-content: space-between; padding: 9px 12px; border-radius: 8px; background: #f4f6fa; }
+.run-progress small { color: #667085; }
+.agent-result { margin-top: 28px; }
+.agent-result pre { max-height: 360px; padding: 18px; overflow: auto; border-radius: 12px; color: #e7edf7; background: #172033; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }

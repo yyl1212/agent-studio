@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -69,6 +71,63 @@ func TestHTTPRechecksRedirectAndRequiresExistingEnvironmentValue(t *testing.T) {
 	config = json.RawMessage(`{"method":"GET","url":"https://public.example","headers":[{"name":"Authorization","valueSource":"env","envName":"AGENT_TOKEN"}]}`)
 	if _, err := node.Execute(context.Background(), domain.NodeRequest{Config: config}); !errors.Is(err, ErrEnvironmentValueMissing) {
 		t.Fatalf("environment error=%v", err)
+	}
+}
+
+func TestHTTPRejectsCrossOriginRedirectBeforeForwardingSecret(t *testing.T) {
+	secretReceived := false
+	target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		secretReceived = request.Header.Get("X-API-Key") != ""
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, target.URL, http.StatusFound)
+	}))
+	defer source.Close()
+
+	node := NewHTTP(HTTPOptions{
+		AllowPrivateNetwork: true,
+		LookupEnv: func(name string) (string, bool) {
+			return "top-secret", name == "UPSTREAM_API_KEY"
+		},
+	})
+	config := json.RawMessage(fmt.Sprintf(`{"method":"GET","url":%q,"headers":[{"name":"X-API-Key","valueSource":"env","envName":"UPSTREAM_API_KEY"}]}`, source.URL))
+	_, err := node.Execute(context.Background(), domain.NodeRequest{Config: config})
+	if !errors.Is(err, ErrCrossOriginRedirect) {
+		t.Fatalf("error=%v, want ErrCrossOriginRedirect", err)
+	}
+	if secretReceived {
+		t.Fatal("sensitive header reached redirect target")
+	}
+}
+
+func TestHTTPAllowsSameOriginRedirect(t *testing.T) {
+	secretReceived := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/start" {
+			http.Redirect(writer, request, "/final", http.StatusFound)
+			return
+		}
+		secretReceived = request.Header.Get("Authorization") == "Bearer top-secret"
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	node := NewHTTP(HTTPOptions{
+		AllowPrivateNetwork: true,
+		LookupEnv: func(name string) (string, bool) {
+			return "Bearer top-secret", name == "UPSTREAM_AUTH"
+		},
+	})
+	config := json.RawMessage(fmt.Sprintf(`{"method":"GET","url":%q,"headers":[{"name":"Authorization","valueSource":"env","envName":"UPSTREAM_AUTH"}]}`, server.URL+"/start"))
+	result, err := node.Execute(context.Background(), domain.NodeRequest{Config: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !secretReceived || result.Outputs["status"] != float64(http.StatusOK) {
+		t.Fatalf("secretReceived=%v outputs=%v", secretReceived, result.Outputs)
 	}
 }
 
