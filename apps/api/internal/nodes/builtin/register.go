@@ -5,16 +5,17 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
-func RegisterCore(registry *nodes.Registry) error {
-	for _, node := range []nodes.NodeType{
+func RegisterCore(registrar agentnode.Registrar) error {
+	for _, node := range []agentnode.Node{
 		NewStart(),
 		NewTemplate(),
 		NewCondition(),
 		NewEnd(),
 	} {
-		if err := registry.Register(node); err != nil {
+		if err := registrar.Register(node); err != nil {
 			return err
 		}
 	}

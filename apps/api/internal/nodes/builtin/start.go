@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"regexp"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 var fieldKeyPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
@@ -33,8 +33,8 @@ func NewStart() *startNode {
 	return &startNode{}
 }
 
-func (*startNode) Definition() domain.NodeDefinition {
-	return domain.NodeDefinition{
+func (*startNode) Definition() agentnode.Definition {
+	return agentnode.Definition{
 		Type:        "start",
 		Version:     "1",
 		Title:       "开始",
@@ -68,27 +68,27 @@ func (*startNode) Definition() domain.NodeDefinition {
 	}
 }
 
-func (*startNode) Resolve(config json.RawMessage) (domain.ResolvedPorts, error) {
+func (*startNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, error) {
 	parsed, err := parseStartConfig(config)
 	if err != nil {
-		return domain.ResolvedPorts{}, err
+		return agentnode.ResolvedPorts{}, nodeConfigError(err)
 	}
-	outputs := make([]domain.PortDefinition, 0, len(parsed.Fields))
+	outputs := make([]agentnode.Port, 0, len(parsed.Fields))
 	for _, field := range parsed.Fields {
-		outputs = append(outputs, domain.PortDefinition{
+		outputs = append(outputs, agentnode.Port{
 			Key:         field.Key,
 			Title:       field.Label,
 			Type:        startFieldDataType(field.Type),
-			Cardinality: domain.CardinalityOne,
+			Cardinality: agentnode.CardinalityOne,
 		})
 	}
-	return domain.ResolvedPorts{Outputs: outputs}, nil
+	return agentnode.ResolvedPorts{Outputs: outputs}, nil
 }
 
-func (*startNode) Execute(_ context.Context, request domain.NodeRequest) (domain.NodeResult, error) {
+func (*startNode) Execute(_ context.Context, request agentnode.Request) (agentnode.Result, error) {
 	parsed, err := parseStartConfig(request.Config)
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, nodeConfigError(err)
 	}
 	outputs := make(map[string]any, len(parsed.Fields))
 	for _, field := range parsed.Fields {
@@ -98,16 +98,16 @@ func (*startNode) Execute(_ context.Context, request domain.NodeRequest) (domain
 		}
 		if !exists || value == nil {
 			if field.Required {
-				return domain.NodeResult{}, fmt.Errorf("%w: %s", ErrRequiredInputMissing, field.Key)
+				return agentnode.Result{}, nodeInputError(fmt.Errorf("%w: %s", ErrRequiredInputMissing, field.Key))
 			}
 			continue
 		}
 		if !validStartFieldValue(field, value) {
-			return domain.NodeResult{}, fmt.Errorf("%w: %s", ErrInputTypeMismatch, field.Key)
+			return agentnode.Result{}, nodeInputError(fmt.Errorf("%w: %s", ErrInputTypeMismatch, field.Key))
 		}
 		outputs[field.Key] = value
 	}
-	return domain.NodeResult{Outputs: outputs}, nil
+	return agentnode.Result{Outputs: outputs}, nil
 }
 
 func DeriveInputSchema(config json.RawMessage) (json.RawMessage, error) {
@@ -193,16 +193,16 @@ func parseStartConfig(raw json.RawMessage) (startConfig, error) {
 	return config, nil
 }
 
-func startFieldDataType(fieldType string) domain.DataType {
+func startFieldDataType(fieldType string) agentnode.DataType {
 	switch fieldType {
 	case "text", "textarea", "select":
-		return domain.TypeString
+		return agentnode.DataTypeString
 	case "number":
-		return domain.TypeNumber
+		return agentnode.DataTypeNumber
 	case "boolean":
-		return domain.TypeBoolean
+		return agentnode.DataTypeBoolean
 	case "json":
-		return domain.TypeJSON
+		return agentnode.DataTypeJSON
 	default:
 		return ""
 	}

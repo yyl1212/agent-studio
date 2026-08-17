@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 var templateVariablePattern = regexp.MustCompile(`\{\{([A-Za-z][A-Za-z0-9_]{0,63})\}\}`)
@@ -22,8 +22,8 @@ func NewTemplate() *templateNode {
 	return &templateNode{}
 }
 
-func (*templateNode) Definition() domain.NodeDefinition {
-	return domain.NodeDefinition{
+func (*templateNode) Definition() agentnode.Definition {
+	return agentnode.Definition{
 		Type:        "template",
 		Version:     "1",
 		Title:       "提示词模板",
@@ -37,51 +37,51 @@ func (*templateNode) Definition() domain.NodeDefinition {
           "required":["template"],
           "additionalProperties":false
         }`),
-		Outputs: []domain.PortDefinition{{
+		Outputs: []agentnode.Port{{
 			Key:         "text",
 			Title:       "文本",
-			Type:        domain.TypeString,
-			Cardinality: domain.CardinalityOne,
+			Type:        agentnode.DataTypeString,
+			Cardinality: agentnode.CardinalityOne,
 		}},
 	}
 }
 
-func (*templateNode) Resolve(config json.RawMessage) (domain.ResolvedPorts, error) {
+func (*templateNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, error) {
 	_, variables, err := parseTemplateConfig(config)
 	if err != nil {
-		return domain.ResolvedPorts{}, err
+		return agentnode.ResolvedPorts{}, nodeConfigError(err)
 	}
-	inputs := make([]domain.PortDefinition, 0, len(variables))
+	inputs := make([]agentnode.Port, 0, len(variables))
 	for _, variable := range variables {
-		inputs = append(inputs, domain.PortDefinition{
+		inputs = append(inputs, agentnode.Port{
 			Key:         variable,
 			Title:       variable,
-			Type:        domain.TypeAny,
+			Type:        agentnode.DataTypeAny,
 			Required:    true,
-			Cardinality: domain.CardinalityOne,
+			Cardinality: agentnode.CardinalityOne,
 		})
 	}
-	return domain.ResolvedPorts{Inputs: inputs, Outputs: NewTemplate().Definition().Outputs}, nil
+	return agentnode.ResolvedPorts{Inputs: inputs, Outputs: NewTemplate().Definition().Outputs}, nil
 }
 
-func (*templateNode) Execute(_ context.Context, request domain.NodeRequest) (domain.NodeResult, error) {
+func (*templateNode) Execute(_ context.Context, request agentnode.Request) (agentnode.Result, error) {
 	config, variables, err := parseTemplateConfig(request.Config)
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, nodeConfigError(err)
 	}
 	rendered := config.Template
 	for _, variable := range variables {
 		value, err := exactlyOneInput(request.Inputs, variable)
 		if err != nil {
-			return domain.NodeResult{}, err
+			return agentnode.Result{}, nodeInputError(err)
 		}
 		text, err := templateValue(value)
 		if err != nil {
-			return domain.NodeResult{}, fmt.Errorf("render template variable %s: %w", variable, err)
+			return agentnode.Result{}, nodeExecutionError(fmt.Errorf("render template variable %s: %w", variable, err))
 		}
 		rendered = strings.ReplaceAll(rendered, "{{"+variable+"}}", text)
 	}
-	return domain.NodeResult{Outputs: map[string]any{"text": rendered}}, nil
+	return agentnode.Result{Outputs: map[string]any{"text": rendered}}, nil
 }
 
 func parseTemplateConfig(raw json.RawMessage) (templateConfig, []string, error) {

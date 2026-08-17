@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 var (
@@ -39,4 +41,16 @@ func exactlyOneInput(inputs map[string][]any, key string) (any, error) {
 		return nil, fmt.Errorf("%w: %s has %d values", ErrInputCardinality, key, len(values))
 	}
 	return values[0], nil
+}
+
+func nodeConfigError(err error) error {
+	return agentnode.NewError(agentnode.ErrorKindConfig, "invalid_config", err, nil)
+}
+
+func nodeInputError(err error) error {
+	return agentnode.NewError(agentnode.ErrorKindInput, "invalid_input", err, nil)
+}
+
+func nodeExecutionError(err error) error {
+	return agentnode.NewError(agentnode.ErrorKindInternal, "execution_failed", err, nil)
 }

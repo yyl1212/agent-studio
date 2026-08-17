@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 type endNode struct{}
@@ -14,43 +14,51 @@ func NewEnd() *endNode {
 	return &endNode{}
 }
 
-func (*endNode) Definition() domain.NodeDefinition {
-	return domain.NodeDefinition{
+func (*endNode) Definition() agentnode.Definition {
+	return agentnode.Definition{
 		Type:         "end",
 		Version:      "1",
 		Title:        "结束",
 		Description:  "返回 Agent 最终结果",
 		Category:     "流程",
 		ConfigSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
-		Inputs: []domain.PortDefinition{{
+		Inputs: []agentnode.Port{{
 			Key:         "result",
 			Title:       "结果",
-			Type:        domain.TypeAny,
+			Type:        agentnode.DataTypeAny,
 			Required:    true,
-			Cardinality: domain.CardinalitySingleActive,
+			Cardinality: agentnode.CardinalitySingleActive,
 		}},
-		Outputs: []domain.PortDefinition{{
+		Outputs: []agentnode.Port{{
 			Key:         "result",
 			Title:       "最终结果",
-			Type:        domain.TypeAny,
-			Cardinality: domain.CardinalityOne,
+			Type:        agentnode.DataTypeAny,
+			Cardinality: agentnode.CardinalityOne,
 		}},
 	}
 }
 
-func (n *endNode) Resolve(json.RawMessage) (domain.ResolvedPorts, error) {
+func (n *endNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, error) {
+	var parsed struct{}
+	if err := decodeConfig(config, &parsed); err != nil {
+		return agentnode.ResolvedPorts{}, nodeConfigError(err)
+	}
 	definition := n.Definition()
-	return domain.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
+	return agentnode.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
 }
 
-func (*endNode) Execute(_ context.Context, request domain.NodeRequest) (domain.NodeResult, error) {
+func (*endNode) Execute(_ context.Context, request agentnode.Request) (agentnode.Result, error) {
+	var parsed struct{}
+	if err := decodeConfig(request.Config, &parsed); err != nil {
+		return agentnode.Result{}, nodeConfigError(err)
+	}
 	results := request.Inputs["result"]
 	switch len(results) {
 	case 0:
-		return domain.NodeResult{}, ErrEndResultMissing
+		return agentnode.Result{}, nodeInputError(ErrEndResultMissing)
 	case 1:
-		return domain.NodeResult{Outputs: map[string]any{"result": results[0]}}, nil
+		return agentnode.Result{Outputs: map[string]any{"result": results[0]}}, nil
 	default:
-		return domain.NodeResult{}, fmt.Errorf("%w: got %d", ErrEndMultipleResults, len(results))
+		return agentnode.Result{}, nodeInputError(fmt.Errorf("%w: got %d", ErrEndMultipleResults, len(results)))
 	}
 }

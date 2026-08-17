@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 type conditionNode struct{}
@@ -21,8 +21,8 @@ func NewCondition() *conditionNode {
 	return &conditionNode{}
 }
 
-func (*conditionNode) Definition() domain.NodeDefinition {
-	return domain.NodeDefinition{
+func (*conditionNode) Definition() agentnode.Definition {
+	return agentnode.Definition{
 		Type:        "condition",
 		Version:     "1",
 		Title:       "条件",
@@ -37,46 +37,46 @@ func (*conditionNode) Definition() domain.NodeDefinition {
           "required":["operator"],
           "additionalProperties":false
         }`),
-		Inputs: []domain.PortDefinition{{
+		Inputs: []agentnode.Port{{
 			Key:         "value",
 			Title:       "值",
-			Type:        domain.TypeAny,
+			Type:        agentnode.DataTypeAny,
 			Required:    true,
-			Cardinality: domain.CardinalityOne,
+			Cardinality: agentnode.CardinalityOne,
 		}},
-		Outputs: []domain.PortDefinition{
-			{Key: "true", Title: "是", Type: domain.TypeAny, Cardinality: domain.CardinalityOne},
-			{Key: "false", Title: "否", Type: domain.TypeAny, Cardinality: domain.CardinalityOne},
+		Outputs: []agentnode.Port{
+			{Key: "true", Title: "是", Type: agentnode.DataTypeAny, Cardinality: agentnode.CardinalityOne},
+			{Key: "false", Title: "否", Type: agentnode.DataTypeAny, Cardinality: agentnode.CardinalityOne},
 		},
 	}
 }
 
-func (n *conditionNode) Resolve(config json.RawMessage) (domain.ResolvedPorts, error) {
+func (n *conditionNode) Resolve(config json.RawMessage) (agentnode.ResolvedPorts, error) {
 	if _, err := parseConditionConfig(config); err != nil {
-		return domain.ResolvedPorts{}, err
+		return agentnode.ResolvedPorts{}, nodeConfigError(err)
 	}
 	definition := n.Definition()
-	return domain.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
+	return agentnode.ResolvedPorts{Inputs: definition.Inputs, Outputs: definition.Outputs}, nil
 }
 
-func (*conditionNode) Execute(_ context.Context, request domain.NodeRequest) (domain.NodeResult, error) {
+func (*conditionNode) Execute(_ context.Context, request agentnode.Request) (agentnode.Result, error) {
 	config, err := parseConditionConfig(request.Config)
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, nodeConfigError(err)
 	}
 	value, err := exactlyOneInput(request.Inputs, "value")
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, nodeInputError(err)
 	}
 	matched, err := evaluateCondition(config.Operator, value, config.CompareValue)
 	if err != nil {
-		return domain.NodeResult{}, err
+		return agentnode.Result{}, nodeInputError(err)
 	}
 	port := "false"
 	if matched {
 		port = "true"
 	}
-	return domain.NodeResult{
+	return agentnode.Result{
 		Outputs:     map[string]any{port: value},
 		ActivePorts: []string{port},
 	}, nil
