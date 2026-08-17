@@ -14,6 +14,7 @@ const helpText = "doctor\ngenerate\nnode init\nnode test\nversion\n"
 type appDependencies struct {
 	workingDir func() (string, error)
 	diagnose   func(context.Context, string) []CheckResult
+	generate   func(context.Context, string) (generateResult, error)
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -22,6 +23,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnose: func(ctx context.Context, root string) []CheckResult {
 			return Diagnose(ctx, root, defaultDoctorDeps(root))
 		},
+		generate: generateNodes,
 	})
 }
 
@@ -51,8 +53,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 		}
 		return 0
 	case "generate":
-		_, _ = fmt.Fprintf(stderr, "%s is not implemented\n", args[0])
-		return 1
+		start, err := dependencies.workingDir()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "determine working directory: %v\n", err)
+			return 1
+		}
+		result, err := dependencies.generate(ctx, start)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "generate nodes: %v\n", err)
+			return 1
+		}
+		status := "unchanged"
+		if result.Changed {
+			status = "generated"
+		}
+		_, _ = fmt.Fprintf(stdout, "%s %s\n", status, result.Path)
+		return 0
 	case "node":
 		if len(args) < 2 {
 			_, _ = io.WriteString(stderr, "node requires init or test\n")

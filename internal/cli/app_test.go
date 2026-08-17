@@ -20,7 +20,6 @@ func TestRunTopLevelCommands(t *testing.T) {
 		{name: "unknown", args: []string{"missing"}, wantCode: 2, wantErr: "unknown command \"missing\"\n"},
 		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires init or test\n"},
 		{name: "unknown node subcommand", args: []string{"node", "missing"}, wantCode: 2, wantErr: "unknown node command \"missing\"\n"},
-		{name: "reserved generate", args: []string{"generate"}, wantCode: 1, wantErr: "generate is not implemented\n"},
 		{name: "reserved node init", args: []string{"node", "init"}, wantCode: 1, wantErr: "node init is not implemented\n"},
 		{name: "reserved node test", args: []string{"node", "test"}, wantCode: 1, wantErr: "node test is not implemented\n"},
 	}
