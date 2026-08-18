@@ -55,8 +55,12 @@ make dev-web
 
 ```bash
 make check-generated
+make verify-quick
 make verify
 make test-sdk-e2e
 ```
+
+`verify-quick` 不启动 Docker，适合每次提交前运行；`verify` 和
+`test-sdk-e2e` 使用 Docker PostgreSQL，作为合并前完整回归。
 
 扩展节点与 API 在同一 Go 进程内运行，不存在第三方代码沙箱。只应登记和加载经过审查的可信源码；部署时仍需使用容器权限、文件权限和网络策略限制进程能力。

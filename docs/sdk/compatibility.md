@@ -11,6 +11,18 @@
 
 扩展在加载 manifest 或连接宿主前，应使用 `agentnode.SupportsAPIVersion` 拒绝未知协议版本。
 
+### 应用构建版本
+
+SDK 版本与应用构建版本独立：
+
+- `agentnode.Version = 0.2.0` 表示公开 Go SDK 契约。
+- `agentnode.APIVersion = agent-studio.dev/v1alpha1` 表示节点协议。
+- 本地源码构建显示 `0.2.0-dev`。
+- 从 tag 安装的 CLI 显示对应模块版本，例如 `v0.2.0-rc.1`。
+
+应用构建版本变化不自动改变 SDK 或节点协议；只有公开契约变化时才按
+本文件的兼容规则提升 SDK/API 版本。
+
 ## 节点版本
 
 节点的 `Type + Version` 标识一份工作流可固定引用的行为契约。同一版本可以修复不改变输入、输出和语义的缺陷；删除端口、改变配置含义或改变结果类型时必须发布新的节点版本，并保留旧版本供已有工作流执行。

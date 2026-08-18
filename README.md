@@ -78,6 +78,14 @@ CGO_ENABLED=0 go run ./cmd/agent-studio node test ./extensions/my-echo
 CGO_ENABLED=0 go run ./cmd/agent-studio generate
 ```
 
+查看当前应用构建、SDK/API 契约和提交信息：
+
+```bash
+CGO_ENABLED=0 go run ./cmd/agent-studio version
+```
+
+源码开发构建显示 `0.2.0-dev`；从版本标签安装时显示对应 tag。
+
 完整步骤见 [30 分钟创建第一个扩展节点](docs/sdk/quickstart.md)，错误处理见 [节点开发排错](docs/sdk/debugging.md)。扩展与 API 同进程运行，只应加载可信源码。
 
 ## 模型配置
@@ -108,6 +116,17 @@ HTTP_NODE_ALLOW_PRIVATE=true
 ```
 
 ## 验证
+
+不启动 Docker 的提交前快速检查：
+
+```bash
+make verify-quick
+```
+
+该命令运行 Go 生成物检查、单元测试、vet、发布脚本测试，以及前端
+OpenAPI 生成物检查、lint、类型检查、组件测试和生产构建。
+
+需要 Docker PostgreSQL 的完整回归：
 
 ```bash
 make verify
@@ -141,3 +160,10 @@ corepack pnpm@10.34.5 build
 - 运行在 API 进程内执行；重启不会恢复正在运行的任务。
 - 模型接入为 Mock 或 OpenAI-compatible Chat Completions，不含供应商专属高级能力。
 - Code 节点使用受步数、时间和输出大小约束的 Starlark，不执行任意系统命令。
+
+## 社区与安全
+
+- 贡献流程：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- 安全报告：[SECURITY.md](SECURITY.md)
+- 许可证：[Apache-2.0](LICENSE)
