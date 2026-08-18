@@ -24,9 +24,9 @@ jobs:
       CGO_ENABLED: "0"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -39,14 +39,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.34.5
           run_install: false
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: pnpm
@@ -57,3 +57,41 @@ jobs:
         run: corepack pnpm@10.34.5 install --frozen-lockfile
       - name: Verify Web
         run: make verify-web-quick
+
+  release-artifacts:
+    name: Release artifact snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Download Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.51.0
+      - name: Add Syft to PATH
+        env:
+          SYFT_CMD: ${{ steps.syft.outputs.cmd }}
+        run: echo "$(dirname "$SYFT_CMD")" >> "$GITHUB_PATH"
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          install-only: true
+      - name: Lint workflows
+        run: make verify-workflows
+      - name: Check release configuration
+        run: make release-check GORELEASER=goreleaser SYFT=syft
+      - name: Build and verify release snapshot
+        run: make release-snapshot GORELEASER=goreleaser SYFT=syft
