@@ -14,6 +14,17 @@ flowchart LR
   R --> M["Mock / OpenAI-compatible"]
 ```
 
+## 开发者预览版本
+
+当前候选版本为 `v0.2.0-rc.1`，面向源码使用者和节点开发者试用，不代表生产稳定性。完整能力、安全边界和已知限制见 [v0.2.0-rc.1 Release Notes](docs/releases/v0.2.0-rc.1.md)。
+
+安装带版本信息的 CLI：
+
+```bash
+CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.2.0-rc.1
+agent-studio version
+```
+
 ## 环境要求
 
 - Go 1.26（项目 toolchain 为 1.26.5）
