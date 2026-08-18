@@ -2,8 +2,10 @@
 
 **日期：** 2026-08-18  
 **仓库：** `https://github.com/yyl1212/agent-studio`  
-**状态：** 已完成需求确认，待实施计划  
+**状态：** 长期路线背景；v0.2 当前实施范围已由 `2026-08-18-v0.2-source-preview-design.md` 取代
 **目标版本：** `v0.2.0` 开发者预览版
+
+> 说明：本文件保留长期 SDK 路线背景。`v0.2.0-rc.1` 的发布形态、CI 范围、官方节点位置和安全约束以 `2026-08-18-v0.2-source-preview-design.md` 为准；本文件中的 GoReleaser、容器镜像、SBOM、任意外部 manifest 包和 `examples/nodes` 不属于当前实施计划。
 
 ## 1. 背景与目标
 
