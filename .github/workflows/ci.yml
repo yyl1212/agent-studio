@@ -82,7 +82,7 @@ jobs:
       - name: Add Syft to PATH
         env:
           SYFT_CMD: ${{ steps.syft.outputs.cmd }}
-        run: echo "$(dirname "$SYFT_CMD")" >> "$GITHUB_PATH"
+        run: dirname "$SYFT_CMD" >> "$GITHUB_PATH"
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
