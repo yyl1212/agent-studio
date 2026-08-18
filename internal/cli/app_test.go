@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"testing"
 )
 
@@ -20,7 +21,6 @@ func TestRunTopLevelCommands(t *testing.T) {
 		{name: "unknown", args: []string{"missing"}, wantCode: 2, wantErr: "unknown command \"missing\"\n"},
 		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires init or test\n"},
 		{name: "unknown node subcommand", args: []string{"node", "missing"}, wantCode: 2, wantErr: "unknown node command \"missing\"\n"},
-		{name: "reserved node test", args: []string{"node", "test"}, wantCode: 1, wantErr: "node test is not implemented\n"},
 	}
 
 	for _, test := range tests {
@@ -32,6 +32,34 @@ func TestRunTopLevelCommands(t *testing.T) {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunNodeTestRequiresPackage(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"node", "test"}, &stdout, &stderr, appDependencies{})
+	if code != 2 || stdout.Len() != 0 || stderr.String() != "node test requires exactly one package\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunNodeTestDelegatesFromWorkingDirectory(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	called := false
+	code := run(context.Background(), []string{"node", "test", "./extensions/echo"}, &stdout, &stderr, appDependencies{
+		workingDir: func() (string, error) { return "/repo/subdir", nil },
+		nodeTest: func(_ context.Context, start, packageArg string, gotStdout, gotStderr io.Writer) int {
+			called = true
+			if start != "/repo/subdir" || packageArg != "./extensions/echo" || gotStdout != &stdout || gotStderr != &stderr {
+				t.Fatalf("start=%q package=%q stdout=%T stderr=%T", start, packageArg, gotStdout, gotStderr)
+			}
+			return 7
+		},
+	})
+	if code != 7 || !called {
+		t.Fatalf("code=%d called=%v", code, called)
 	}
 }
 

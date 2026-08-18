@@ -16,6 +16,7 @@ type appDependencies struct {
 	diagnose   func(context.Context, string) []CheckResult
 	generate   func(context.Context, string) (generateResult, error)
 	nodeInit   func(context.Context, string, string) (nodeInitResult, error)
+	nodeTest   func(context.Context, string, string, io.Writer, io.Writer) int
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -26,6 +27,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		},
 		generate: generateNodes,
 		nodeInit: initializeNode,
+		nodeTest: testNodePackage,
 	})
 }
 
@@ -97,8 +99,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 			_, _ = io.WriteString(stdout, "next: CGO_ENABLED=0 go run ./cmd/agent-studio generate\n")
 			return 0
 		case "test":
-			_, _ = fmt.Fprintf(stderr, "node %s is not implemented\n", args[1])
-			return 1
+			if len(args) != 3 {
+				_, _ = io.WriteString(stderr, "node test requires exactly one package\n")
+				return 2
+			}
+			start, err := dependencies.workingDir()
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "determine working directory: %v\n", err)
+				return 1
+			}
+			return dependencies.nodeTest(ctx, start, args[2], stdout, stderr)
 		default:
 			_, _ = fmt.Fprintf(stderr, "unknown node command %q\n", args[1])
 			return 2
