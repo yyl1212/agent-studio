@@ -14,6 +14,7 @@ interface TestRunDrawerProps {
 
 export function TestRunDrawer({ schema, events, running, error, onRun, onCancel, onClose }: TestRunDrawerProps) {
   const completed = [...events].reverse().find((event) => event.type === 'run.completed')
+  const failed = [...events].reverse().find((event) => event.type === 'node.failed' && event.error)
   return (
     <aside className="test-run-drawer" role="dialog" aria-label="测试运行">
       <div className="drawer-heading"><h2>测试运行</h2><button type="button" aria-label="关闭测试运行" onClick={onClose}>×</button></div>
@@ -24,6 +25,7 @@ export function TestRunDrawer({ schema, events, running, error, onRun, onCancel,
           {events.length === 0 && <p>填写参数后开始运行。</p>}
           <ol>{events.filter((event) => event.nodeId).map((event) => <li key={event.sequence}>{event.nodeId}：{event.type}</li>)}</ol>
           {completed && <pre className="run-output">{formatOutput(completed.output)}</pre>}
+          {failed?.error && <p className="form-error" role="alert">{failed.error.message}</p>}
           {error && <p className="form-error" role="alert">{error}</p>}
           {running && <button type="button" onClick={onCancel}>取消运行</button>}
         </section>
