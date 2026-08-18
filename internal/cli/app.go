@@ -33,7 +33,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies appDependencies) int {
-	if len(args) == 0 || args[0] == "help" {
+	if len(args) == 0 {
+		_, _ = io.WriteString(stdout, helpText)
+		return 0
+	}
+	if args[0] == "help" {
+		if len(args) != 1 {
+			_, _ = io.WriteString(stderr, "help takes no arguments\n")
+			return 2
+		}
 		_, _ = io.WriteString(stdout, helpText)
 		return 0
 	}

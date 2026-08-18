@@ -49,6 +49,7 @@ func TestRunRejectsUnexpectedArguments(t *testing.T) {
 		args []string
 		want string
 	}{
+		{args: []string{"help", "unexpected"}, want: "help takes no arguments\n"},
 		{args: []string{"version", "unexpected"}, want: "version takes no arguments\n"},
 		{args: []string{"doctor", "unexpected"}, want: "doctor takes no arguments\n"},
 		{args: []string{"generate", "unexpected"}, want: "generate takes no arguments\n"},
