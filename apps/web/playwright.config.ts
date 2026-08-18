@@ -12,7 +12,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], channel: 'chrome' } }],
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
       command: 'cd ../api && CGO_ENABLED=0 DATABASE_URL=postgres://agent:agent@127.0.0.1:5432/agent_studio?sslmode=disable MODEL_PROVIDER=mock HTTP_ADDR=127.0.0.1:8080 go run ./cmd/server',
