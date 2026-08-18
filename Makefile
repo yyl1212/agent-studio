@@ -1,6 +1,10 @@
-.PHONY: db-up db-down dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick test-e2e test-sdk-e2e
+.PHONY: db-up db-down dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick test-e2e test-sdk-e2e release-tools release-check release-snapshot verify-workflows verify-release
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
+RELEASE_TOOLS_DIR ?= $(CURDIR)/.release-tools/bin
+GORELEASER ?= $(RELEASE_TOOLS_DIR)/goreleaser
+SYFT ?= $(RELEASE_TOOLS_DIR)/syft
+ACTIONLINT_VERSION ?= v1.7.12
 
 db-up:
 	docker compose up -d --wait db
@@ -36,6 +40,7 @@ verify-go-quick: check-generated
 	CGO_ENABLED=0 go test ./... -count=1
 	CGO_ENABLED=0 go vet ./...
 	sh scripts/check-version_test.sh
+	sh scripts/check-release-artifacts_test.sh
 
 verify-web-quick:
 	corepack pnpm@10.34.5 --filter @agent-studio/web generate:api
@@ -53,3 +58,25 @@ test-e2e: db-up
 test-sdk-e2e: db-up
 	CGO_ENABLED=0 go test ./internal/generatedtest -count=1 -v
 	corepack pnpm@10.34.5 --filter @agent-studio/web exec playwright test e2e/sdk-node.spec.ts
+
+release-tools:
+	RELEASE_TOOLS_DIR=$(RELEASE_TOOLS_DIR) sh scripts/install-release-tools.sh
+
+release-check:
+	command -v "$(GORELEASER)" >/dev/null
+	command -v "$(SYFT)" >/dev/null
+	PATH="$(dir $(SYFT)):$$PATH" "$(GORELEASER)" check
+
+release-snapshot:
+	command -v "$(GORELEASER)" >/dev/null
+	command -v "$(SYFT)" >/dev/null
+	PATH="$(dir $(SYFT)):$$PATH" "$(GORELEASER)" release --clean --snapshot --skip=publish
+	sh scripts/check-release-artifacts.sh collection dist "v0.2.1-snapshot"
+
+verify-workflows:
+	CGO_ENABLED=0 go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+
+verify-release: release-tools
+	$(MAKE) release-check
+	$(MAKE) release-snapshot
+	$(MAKE) verify-workflows
