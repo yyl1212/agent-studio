@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"testing"
+
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 )
 
 func TestRunTopLevelCommands(t *testing.T) {
@@ -17,7 +19,6 @@ func TestRunTopLevelCommands(t *testing.T) {
 	}{
 		{name: "empty shows help", wantCode: 0, wantOut: "doctor\ngenerate\nnode init\nnode test\nversion\n"},
 		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "doctor\ngenerate\nnode init\nnode test\nversion\n"},
-		{name: "version", args: []string{"version"}, wantCode: 0, wantOut: "agent-studio 0.2.0 (agent-studio.dev/v1alpha1)\n"},
 		{name: "unknown", args: []string{"missing"}, wantCode: 2, wantErr: "unknown command \"missing\"\n"},
 		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires init or test\n"},
 		{name: "unknown node subcommand", args: []string{"node", "missing"}, wantCode: 2, wantErr: "unknown node command \"missing\"\n"},
@@ -32,6 +33,24 @@ func TestRunTopLevelCommands(t *testing.T) {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunVersionReportsBuildAndProtocolVersions(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"version"}, &stdout, &stderr, appDependencies{
+		buildInfo: func() buildinfo.Info {
+			return buildinfo.Info{
+				Version: "v0.2.0-rc.1", SDKVersion: "0.2.0",
+				APIVersion: "agent-studio.dev/v1alpha1",
+				Revision:   "abc123", Dirty: true,
+			}
+		},
+	})
+	want := "agent-studio v0.2.0-rc.1 (sdk 0.2.0; api agent-studio.dev/v1alpha1; commit abc123; dirty true)\n"
+	if code != 0 || stdout.String() != want || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

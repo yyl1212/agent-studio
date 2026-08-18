@@ -6,14 +6,15 @@ import (
 	"io"
 	"os"
 
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 	"github.com/yyl1212/agent-studio/internal/scaffold"
-	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 const helpText = "doctor\ngenerate\nnode init\nnode test\nversion\n"
 
 type appDependencies struct {
 	workingDir func() (string, error)
+	buildInfo  func() buildinfo.Info
 	diagnose   func(context.Context, string) []CheckResult
 	generate   func(context.Context, string) (generateResult, error)
 	nodeInit   func(context.Context, string, string) (nodeInitResult, error)
@@ -23,6 +24,7 @@ type appDependencies struct {
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return run(ctx, args, stdout, stderr, appDependencies{
 		workingDir: os.Getwd,
+		buildInfo:  buildinfo.Current,
 		diagnose: func(ctx context.Context, root string) []CheckResult {
 			return Diagnose(ctx, root, defaultDoctorDeps(root))
 		},
@@ -52,7 +54,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 			_, _ = io.WriteString(stderr, "version takes no arguments\n")
 			return 2
 		}
-		_, _ = fmt.Fprintf(stdout, "agent-studio %s (%s)\n", agentnode.Version, agentnode.APIVersion)
+		info := dependencies.buildInfo()
+		_, _ = fmt.Fprintf(
+			stdout,
+			"agent-studio %s (sdk %s; api %s; commit %s; dirty %t)\n",
+			info.Version,
+			info.SDKVersion,
+			info.APIVersion,
+			info.Revision,
+			info.Dirty,
+		)
 		return 0
 	case "doctor":
 		if len(args) != 1 {

@@ -20,6 +20,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
 	"github.com/yyl1212/agent-studio/apps/api/internal/store/postgres"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 )
 
 func main() {
@@ -31,6 +32,8 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	logBuildInfo(logger, buildinfo.Current())
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -108,6 +111,17 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	return nil
+}
+
+func logBuildInfo(logger *slog.Logger, info buildinfo.Info) {
+	logger.Info(
+		"server starting",
+		"version", info.Version,
+		"sdk_version", info.SDKVersion,
+		"api_version", info.APIVersion,
+		"commit", info.Revision,
+		"dirty", info.Dirty,
+	)
 }
 
 func registerExtensionNodes(registry *nodes.Registry) error {
