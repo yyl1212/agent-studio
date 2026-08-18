@@ -40,6 +40,7 @@ verify-go-quick: check-generated
 	CGO_ENABLED=0 go test ./... -count=1
 	CGO_ENABLED=0 go vet ./...
 	sh scripts/check-version_test.sh
+	sh scripts/check-release-artifacts_test.sh
 
 verify-web-quick:
 	corepack pnpm@10.34.5 --filter @agent-studio/web generate:api
