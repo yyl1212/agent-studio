@@ -25,6 +25,41 @@ CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.2.0
 agent-studio version
 ```
 
+### 预编译 CLI 附件
+
+`v0.2.0-rc.1` 仍是只包含源码的版本。某个后续 Release 实际列出附件后，可以按下面的文件名下载；示例版本号需替换成该 Release 的标签：
+
+```bash
+VERSION=v0.2.0-rc.2
+OS=darwin
+ARCH=arm64
+ARCHIVE="agent-studio_${VERSION}_${OS}_${ARCH}.tar.gz"
+BASE_URL="https://github.com/yyl1212/agent-studio/releases/download/${VERSION}"
+
+curl -fLO "${BASE_URL}/${ARCHIVE}"
+curl -fLO "${BASE_URL}/checksums.txt"
+grep "  ${ARCHIVE}$" checksums.txt | shasum -a 256 -c -
+tar -xzf "${ARCHIVE}"
+./agent-studio version
+```
+
+Linux 使用 `sha256sum` 校验：
+
+```bash
+grep "  ${ARCHIVE}$" checksums.txt | sha256sum -c -
+```
+
+支持的预编译目标如下：
+
+| 操作系统 | 架构 |
+| --- | --- |
+| Linux | amd64 |
+| Linux | arm64 |
+| macOS | amd64 |
+| macOS | arm64 |
+
+macOS 归档目前未签名，也未经过 Apple Developer ID 签名或公证。`checksums.txt` 中的 SHA-256 只能确认下载内容与发布附件一致，不能替代发布者签名验证。若目标 Release 没有预编译附件，请继续使用 `go install`；这也是当前更稳妥的安装方式。
+
 ## 环境要求
 
 - Go 1.26（项目 toolchain 为 1.26.5）

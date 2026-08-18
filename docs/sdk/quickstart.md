@@ -2,6 +2,16 @@
 
 本指南从仓库根目录创建 `my-echo`，通过契约测试和确定性代码生成把它接入 API。画布从 `/api/node-types` 自动读取节点定义，因此不需要编写前端专用组件。
 
+CLI 有三种等价调用方式：
+
+```text
+仓库源码：CGO_ENABLED=0 go run ./cmd/agent-studio <command>
+Go 安装：agent-studio <command>
+Release 附件：./agent-studio <command>
+```
+
+本文保留仓库源码形式，方便直接跟随教程修改代码。安装方式、附件命名和校验命令见 [README 的预编译 CLI 附件说明](../../README.md#预编译-cli-附件)。Release 附件中的 macOS CLI 目前未签名，也未经过 Apple Developer ID 公证。
+
 ```mermaid
 flowchart LR
   INIT["node init"] --> CODE["实现与契约测试"]
