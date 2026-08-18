@@ -48,6 +48,22 @@ func TestResolveBuildInfo(t *testing.T) {
 			},
 		},
 		{
+			name: "untagged source pseudo-version falls back to development",
+			info: &debug.BuildInfo{
+				Main: debug.Module{Version: "v0.0.0-20260818100027-5055b0130416"},
+				Settings: []debug.BuildSetting{
+					{Key: "vcs.revision", Value: "5055b0130416"},
+					{Key: "vcs.modified", Value: "false"},
+				},
+			},
+			ok: true,
+			want: Info{
+				Version: "0.2.0-dev", SDKVersion: "0.2.0",
+				APIVersion: "agent-studio.dev/v1alpha1",
+				Revision:   "5055b0130416", Dirty: false,
+			},
+		},
+		{
 			name: "development fallback",
 			info: &debug.BuildInfo{
 				Main: debug.Module{Version: "(devel)"},

@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
+	"golang.org/x/mod/module"
 )
 
 const developmentVersion = "0.2.0-dev"
@@ -33,7 +34,7 @@ func resolve(override string, info *debug.BuildInfo, ok bool) Info {
 	}
 	if override != "" {
 		current.Version = override
-	} else if ok && info != nil && info.Main.Version != "" && info.Main.Version != "(devel)" {
+	} else if ok && info != nil && info.Main.Version != "" && info.Main.Version != "(devel)" && !module.IsPseudoVersion(info.Main.Version) {
 		current.Version = info.Main.Version
 	}
 	if !ok || info == nil {
