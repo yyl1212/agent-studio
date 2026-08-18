@@ -151,6 +151,36 @@ func TestExecuteOrdersRoundsAndKeepsZeroScores(t *testing.T) {
 	}
 }
 
+func TestExecuteUsesRawScoreOrderingBeforeRounding(t *testing.T) {
+	queryTokens := make([]string, 10000)
+	for index := range queryTokens {
+		queryTokens[index] = fmt.Sprintf("q%d", index)
+	}
+	lower := append(append([]string(nil), queryTokens[:5000]...), "extra-a")
+	higher := append(append([]string(nil), queryTokens[:5001]...), "extra-a", "extra-b", "extra-c")
+	config := configJSON(t, []map[string]string{
+		{"id": "lower-first", "text": strings.Join(lower, " ")},
+		{"id": "higher-second", "text": strings.Join(higher, " ")},
+	}, 2)
+	result, err := (Node{}).Execute(context.Background(), agentnode.Request{
+		Config: config,
+		Inputs: map[string][]any{"query": {strings.Join(queryTokens, " ")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches, ok := result.Outputs["matches"].([]Match)
+	if !ok || len(matches) != 2 {
+		t.Fatalf("matches=%#v", result.Outputs["matches"])
+	}
+	if matches[0].ID != "higher-second" || matches[1].ID != "lower-first" {
+		t.Fatalf("matches=%#v", matches)
+	}
+	if matches[0].Score != matches[1].Score {
+		t.Fatalf("rounded scores differ: %#v", matches)
+	}
+}
+
 func TestExecuteUsesUnicodeTokensAndStableTieOrder(t *testing.T) {
 	config := json.RawMessage(`{"documents":[{"id":"a","text":"你好 AGENT"},{"id":"b","text":"你好 agent"}],"topK":100}`)
 	result, err := (Node{}).Execute(context.Background(), agentnode.Request{

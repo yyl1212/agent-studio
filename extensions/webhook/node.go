@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,6 +175,12 @@ func (node *Node) Execute(ctx context.Context, request agentnode.Request) (agent
 	}
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxBodyBytes+1))
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return agentnode.Result{}, canceledError()
+		}
+		if errors.Is(requestContext.Err(), context.DeadlineExceeded) {
+			return agentnode.Result{}, upstreamError(context.DeadlineExceeded)
+		}
 		return agentnode.Result{}, upstreamError()
 	}
 	if len(responseBody) > maxBodyBytes {
@@ -293,10 +301,7 @@ func successResult(status int, body any) agentnode.Result {
 func redactToken(value any, token string) any {
 	switch typed := value.(type) {
 	case string:
-		if token == "" {
-			return typed
-		}
-		return strings.ReplaceAll(typed, token, "[REDACTED]")
+		return redactString(typed, token)
 	case []any:
 		redacted := make([]any, len(typed))
 		for index, item := range typed {
@@ -305,13 +310,33 @@ func redactToken(value any, token string) any {
 		return redacted
 	case map[string]any:
 		redacted := make(map[string]any, len(typed))
-		for key, item := range typed {
-			redacted[key] = redactToken(item, token)
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			redactedKey := redactString(key, token)
+			uniqueKey := redactedKey
+			for suffix := 2; ; suffix++ {
+				if _, exists := redacted[uniqueKey]; !exists {
+					break
+				}
+				uniqueKey = redactedKey + "#" + strconv.Itoa(suffix)
+			}
+			redacted[uniqueKey] = redactToken(typed[key], token)
 		}
 		return redacted
 	default:
 		return value
 	}
+}
+
+func redactString(value, token string) string {
+	if token == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, token, "[REDACTED]")
 }
 
 func nodeError(kind agentnode.ErrorKind, code string, cause error) error {

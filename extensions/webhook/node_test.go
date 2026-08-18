@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -559,6 +560,60 @@ func TestExecuteMapsNodeTimeoutToTemporaryError(t *testing.T) {
 	assertEmptyResult(t, result)
 }
 
+func TestExecuteClassifiesCallerCancellationWhileReadingResponseBody(t *testing.T) {
+	started := make(chan struct{})
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &contextResponseBody{ctx: request.Context(), started: started},
+			Request:    request,
+		}, nil
+	})}
+	node := New(Options{Client: client, LookupEnv: envLookup(map[string]string{webhookURLEnv: "https://upstream.example"})})
+	ctx, cancel := context.WithCancel(context.Background())
+	outcome := make(chan error, 1)
+	go func() {
+		_, err := node.Execute(ctx, validRequest(map[string]any{"ok": true}))
+		outcome <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("response body read did not start")
+	}
+	cancel()
+	select {
+	case err := <-outcome:
+		assertNodeError(t, err, agentnode.ErrorKindCanceled, "run_canceled")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Execute did not return after body read cancellation")
+	}
+}
+
+func TestExecuteClassifiesNodeTimeoutWhileReadingResponseBody(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &contextResponseBody{ctx: request.Context(), started: make(chan struct{})},
+			Request:    request,
+		}, nil
+	})}
+	node := New(Options{Client: client, LookupEnv: envLookup(map[string]string{webhookURLEnv: "https://upstream.example"})})
+	request := validRequest(map[string]any{"ok": true})
+	request.Config = json.RawMessage(`{"path":"hook","timeoutMs":20}`)
+	result, err := node.Execute(context.Background(), request)
+	assertNodeError(t, err, agentnode.ErrorKindTemporary, "upstream_failed")
+	if !errors.Is(err, ErrUpstreamFailed) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v", err)
+	}
+	assertEmptyResult(t, result)
+}
+
 func TestExecuteDropsUnsafeTransportError(t *testing.T) {
 	const (
 		baseURL = "https://private-upstream.example/base"
@@ -583,7 +638,7 @@ func TestSuccessfulResponseRecursivelyRedactsTokenOccurrences(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		writer.Header().Set("Authorization", "Bearer "+token)
-		_, _ = io.WriteString(writer, `{"plain":"top-secret-token","nested":{"value":"prefix top-secret-token suffix"},"items":["safe","top-secret-token"],"number":7}`)
+		_, _ = io.WriteString(writer, `{"plain":"top-secret-token","nested":{"value":"prefix top-secret-token suffix"},"items":["safe","top-secret-token"],"key-top-secret-token":"key value","[REDACTED]":"literal key","top-secret-token":"redacted key","number":7}`)
 	}))
 	defer server.Close()
 	node := New(Options{LookupEnv: envLookup(map[string]string{webhookURLEnv: server.URL, webhookTokenEnv: token})})
@@ -592,10 +647,13 @@ func TestSuccessfulResponseRecursivelyRedactsTokenOccurrences(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantBody := map[string]any{
-		"plain":  "[REDACTED]",
-		"nested": map[string]any{"value": "prefix [REDACTED] suffix"},
-		"items":  []any{"safe", "[REDACTED]"},
-		"number": float64(7),
+		"plain":          "[REDACTED]",
+		"nested":         map[string]any{"value": "prefix [REDACTED] suffix"},
+		"items":          []any{"safe", "[REDACTED]"},
+		"key-[REDACTED]": "key value",
+		"[REDACTED]":     "literal key",
+		"[REDACTED]#2":   "redacted key",
+		"number":         float64(7),
 	}
 	if !reflect.DeepEqual(result.Outputs["body"], wantBody) {
 		t.Fatalf("body=%#v want=%#v", result.Outputs["body"], wantBody)
@@ -620,6 +678,20 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
 }
+
+type contextResponseBody struct {
+	ctx     context.Context
+	started chan struct{}
+	once    sync.Once
+}
+
+func (body *contextResponseBody) Read([]byte) (int, error) {
+	body.once.Do(func() { close(body.started) })
+	<-body.ctx.Done()
+	return 0, body.ctx.Err()
+}
+
+func (*contextResponseBody) Close() error { return nil }
 
 func envLookup(values map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) {

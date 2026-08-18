@@ -9,6 +9,12 @@
 - `path`：必填的相对路径，例如 `v1/orders`。
 - `timeoutMs`：可选，范围为 1～30000 毫秒，默认 5000 毫秒。
 
+最小节点配置：
+
+```json
+{"path":"v1/orders","timeoutMs":5000}
+```
+
 服务启动前由运维配置：
 
 - `AGENT_STUDIO_WEBHOOK_URL`：必填的 HTTP/HTTPS 基地址。
@@ -20,10 +26,22 @@
 
 输入端口 `body` 必须且只能接收一个 JSON 值。节点固定发送 `Content-Type: application/json`，请求体上限为 1 MiB。
 
+输入示例：
+
+```json
+{"orderId":"order-1","action":"confirm"}
+```
+
 成功响应输出：
 
 - `status`：HTTP 状态码。
 - `body`：解析后的 JSON；空响应或 `204` 输出 `null`。
+
+成功输出示例：
+
+```json
+{"status":200,"body":{"accepted":true}}
+```
 
 响应体上限为 1 MiB。节点不跟随重定向。若响应 JSON 中出现与运维令牌相同的字符串片段，会在返回工作流前递归替换为 `[REDACTED]`。
 
