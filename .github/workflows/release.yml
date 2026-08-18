@@ -220,6 +220,24 @@ jobs:
           test "$(wc -l < actual-assets.txt | tr -d ' ')" -eq 9
           test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '[.assets[].size > 0] | all')" = true
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = true
+          test "$(gh release view "$GITHUB_REF_NAME" --json tagName --jq '.tagName')" = "$GITHUB_REF_NAME"
+
+          remote_dist=$(mktemp -d)
+          trap 'rm -rf "$remote_dist"' EXIT HUP INT TERM
+          gh release download "$GITHUB_REF_NAME" --dir "$remote_dist"
+          sh scripts/check-release-artifacts.sh collection "$remote_dist" "$GITHUB_REF_NAME"
+          for local_file in dist/*; do
+            remote_file="$remote_dist/$(basename "$local_file")"
+            test -f "$remote_file"
+            cmp -- "$local_file" "$remote_file"
+          done
+
+          tag_api="repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME"
+          test "$(gh api "$tag_api" --jq '.object.type')" = tag
+          tag_object=$(gh api "$tag_api" --jq '.object.sha')
+          annotated_api="repos/$GITHUB_REPOSITORY/git/tags/$tag_object"
+          test "$(gh api "$annotated_api" --jq '.object.type')" = commit
+          test "$(gh api "$annotated_api" --jq '.object.sha')" = "$(git rev-parse HEAD)"
       - name: Promote verified release
         run: |
           case "$GITHUB_REF_NAME" in
