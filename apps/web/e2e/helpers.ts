@@ -10,13 +10,17 @@ export async function createWorkflow(page: Page, slug: string, name = `SDK Echo 
   return page.url()
 }
 
-export async function configureStartTextField(page: Page, key: string, label: string) {
+export async function configureStartField(page: Page, key: string, label: string, type: 'text' | 'json') {
   await page.getByTestId('node-start').click()
   await page.getByRole('button', { name: '添加一项' }).first().click()
   await page.getByLabel('字段标识').fill(key)
   await page.getByLabel('字段标题').fill(label)
-  await page.getByLabel('字段类型').selectOption('text')
+  await page.getByLabel('字段类型').selectOption(type)
   await page.getByRole('checkbox', { name: '必填' }).check()
+}
+
+export async function configureStartTextField(page: Page, key: string, label: string) {
+  await configureStartField(page, key, label, 'text')
 }
 
 export async function connectPorts(page: Page, connections: Array<[string, string, string, string]>) {
