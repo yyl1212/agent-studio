@@ -18,16 +18,17 @@ const (
 )
 
 type fixtureOptions struct {
-	omitArchive    string
-	badChecksum    string
-	invalidSPDX    string
-	unsafePath     string
-	wrongOutput    string
-	missingFile    string
-	nonExec        string
-	extraTarget    bool
-	extraSBOM      bool
-	symlinkArchive string
+	omitArchive     string
+	badChecksum     string
+	badSBOMChecksum string
+	invalidSPDX     string
+	unsafePath      string
+	wrongOutput     string
+	missingFile     string
+	nonExec         string
+	extraTarget     bool
+	extraSBOM       bool
+	symlinkArchive  string
 }
 
 type fixtureTarget struct {
@@ -69,6 +70,12 @@ func TestVerifyCollectionRejectsExtraSBOM(t *testing.T) {
 
 func TestVerifyCollectionRejectsChecksumMismatch(t *testing.T) {
 	dist := makeFixture(t, fixtureOptions{badChecksum: "darwin_amd64"})
+	err := VerifyCollection(Config{DistDir: dist, Version: fixtureVersion})
+	assertErrorContains(t, err, "checksum mismatch")
+}
+
+func TestVerifyCollectionRejectsSBOMChecksumMismatch(t *testing.T) {
+	dist := makeFixture(t, fixtureOptions{badSBOMChecksum: "darwin_amd64"})
 	err := VerifyCollection(Config{DistDir: dist, Version: fixtureVersion})
 	assertErrorContains(t, err, "checksum mismatch")
 }
@@ -181,7 +188,13 @@ func makeFixture(t *testing.T, options fixtureOptions) string {
 			digest = strings.Repeat("0", 64)
 		}
 		checksums = append(checksums, digest+"  "+archiveName)
-		writeSPDX(t, archivePath+".spdx.json", archiveName, options.invalidSPDX == key)
+		sbomPath := archivePath + ".spdx.json"
+		writeSPDX(t, sbomPath, archiveName, options.invalidSPDX == key)
+		sbomDigest := fileDigest(t, sbomPath)
+		if options.badSBOMChecksum == key {
+			sbomDigest = strings.Repeat("0", 64)
+		}
+		checksums = append(checksums, sbomDigest+"  "+filepath.Base(sbomPath))
 	}
 
 	if options.extraTarget {

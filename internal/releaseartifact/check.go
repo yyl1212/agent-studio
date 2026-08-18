@@ -52,11 +52,15 @@ func VerifyCollection(config Config) error {
 
 	expectedArchives := make(map[string]struct{}, len(supportedTargets))
 	expectedSBOMs := make(map[string]struct{}, len(supportedTargets))
+	expectedChecksums := make(map[string]struct{}, len(supportedTargets)*2)
 	archiveNames := make([]string, 0, len(supportedTargets))
 	for _, target := range supportedTargets {
 		archiveName := archiveName(config.Version, target.GOOS, target.GOARCH)
+		sbomName := archiveName + ".spdx.json"
 		expectedArchives[archiveName] = struct{}{}
-		expectedSBOMs[archiveName+".spdx.json"] = struct{}{}
+		expectedSBOMs[sbomName] = struct{}{}
+		expectedChecksums[archiveName] = struct{}{}
+		expectedChecksums[sbomName] = struct{}{}
 		archiveNames = append(archiveNames, archiveName)
 	}
 
@@ -99,23 +103,32 @@ func VerifyCollection(config Config) error {
 	if err != nil {
 		return err
 	}
-	if err := compareFileSet("checksum entry", expectedArchives, checksumKeys(checksums)); err != nil {
+	if err := compareFileSet("checksum entry", expectedChecksums, checksumKeys(checksums)); err != nil {
 		return err
 	}
 
 	sort.Strings(archiveNames)
 	for _, archiveName := range archiveNames {
-		archivePath := filepath.Join(config.DistDir, archiveName)
-		actualDigest, err := digestFile(archivePath)
-		if err != nil {
-			return fmt.Errorf("hash archive %s: %w", archiveName, err)
+		sbomName := archiveName + ".spdx.json"
+		for _, fileName := range []string{archiveName, sbomName} {
+			if err := verifyDigest(filepath.Join(config.DistDir, fileName), fileName, checksums[fileName]); err != nil {
+				return err
+			}
 		}
-		if subtle.ConstantTimeCompare(actualDigest, checksums[archiveName]) != 1 {
-			return fmt.Errorf("checksum mismatch for %s", archiveName)
-		}
-		if err := verifySPDX(filepath.Join(config.DistDir, archiveName+".spdx.json"), archiveName); err != nil {
+		if err := verifySPDX(filepath.Join(config.DistDir, sbomName), archiveName); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func verifyDigest(filePath, fileName string, expectedDigest []byte) error {
+	actualDigest, err := digestFile(filePath)
+	if err != nil {
+		return fmt.Errorf("hash release file %s: %w", fileName, err)
+	}
+	if subtle.ConstantTimeCompare(actualDigest, expectedDigest) != 1 {
+		return fmt.Errorf("checksum mismatch for %s", fileName)
 	}
 	return nil
 }

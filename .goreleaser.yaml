@@ -1,0 +1,64 @@
+version: 2
+project_name: agent-studio
+
+builds:
+  - id: agent-studio
+    main: ./cmd/agent-studio
+    binary: agent-studio
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w -X github.com/yyl1212/agent-studio/internal/buildinfo.versionOverride={{ if .IsSnapshot }}v{{ .Version }}{{ else }}{{ .Tag }}{{ end }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: agent-studio
+    ids:
+      - agent-studio
+    formats:
+      - tar.gz
+    name_template: >-
+      agent-studio_{{ if .IsSnapshot }}v{{ .Version }}{{ else }}{{ .Tag }}{{ end }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - id: archive-spdx
+    artifacts: archive
+    ids:
+      - agent-studio
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
+    cmd: syft
+    args:
+      - $artifact
+      - --output
+      - spdx-json=$document
+
+snapshot:
+  version_template: "0.2.1-snapshot"
+
+source:
+  enabled: false
+
+changelog:
+  disable: true
+
+release:
+  disable: true
+
+metadata:
+  mod_timestamp: "{{ .CommitTimestamp }}"
