@@ -54,7 +54,7 @@ func runNodeTest(ctx context.Context, root, packageArg string, stdout, stderr io
 		Name:        "go",
 		Args:        []string{"test", packageArg, "-count=1"},
 		Dir:         root,
-		Environment: map[string]string{"CGO_ENABLED": "0"},
+		Environment: map[string]string{"CGO_ENABLED": "0", "GOFLAGS": "-mod=mod"},
 		Stdout:      stdout,
 		Stderr:      stderr,
 	}

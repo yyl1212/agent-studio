@@ -30,7 +30,7 @@ func TestNodeTestUsesOfflineCGOFreeGoCommands(t *testing.T) {
 		t.Fatalf("calls=%#v", calls)
 	}
 	assertProcessCall(t, calls[0], "go", []string{"list", "-mod=readonly", "./extensions/echo"}, map[string]string{"CGO_ENABLED": "0", "GOPROXY": "off"})
-	assertProcessCall(t, calls[1], "go", []string{"test", "./extensions/echo", "-count=1"}, map[string]string{"CGO_ENABLED": "0"})
+	assertProcessCall(t, calls[1], "go", []string{"test", "./extensions/echo", "-count=1"}, map[string]string{"CGO_ENABLED": "0", "GOFLAGS": "-mod=mod"})
 }
 
 func TestNodeTestAcceptsCurrentModuleImportPath(t *testing.T) {
