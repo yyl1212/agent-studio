@@ -67,6 +67,19 @@ import "github.com/yyl1212/agent-studio/sdk/go/agentnode"
 
 节点仍在 API 进程内运行。Capability 只用于展示和审计，不提供沙箱隔离；生产环境只应加载可信扩展，并用容器、系统权限和网络策略建立安全边界。
 
+### 创建扩展节点
+
+仓库内置低代码节点开发闭环：环境检查、脚手架、契约测试、确定性注册代码生成，以及无需前端专用组件的画布验证。
+
+```bash
+CGO_ENABLED=0 go run ./cmd/agent-studio doctor
+CGO_ENABLED=0 go run ./cmd/agent-studio node init my-echo
+CGO_ENABLED=0 go run ./cmd/agent-studio node test ./extensions/my-echo
+CGO_ENABLED=0 go run ./cmd/agent-studio generate
+```
+
+完整步骤见 [30 分钟创建第一个扩展节点](docs/sdk/quickstart.md)，错误处理见 [节点开发排错](docs/sdk/debugging.md)。扩展与 API 同进程运行，只应加载可信源码。
+
 ## 模型配置
 
 默认配置：
@@ -99,9 +112,10 @@ HTTP_NODE_ALLOW_PRIVATE=true
 ```bash
 make verify
 make test-e2e
+make test-sdk-e2e
 ```
 
-`make verify` 会启动数据库，运行全部 Go 测试、`go vet`、OpenAPI 类型再生成差异检查、前端类型检查、组件测试和生产构建。`make test-e2e` 使用真实浏览器验证创建、配置、连线、测试、发布、版本绑定和 Agent 运行。
+`make verify` 会检查节点生成代码，启动数据库，运行全部 Go 测试、`go vet`、OpenAPI 类型再生成差异检查、前端类型检查、组件测试和生产构建。`make test-e2e` 使用真实浏览器验证创建、配置、连线、测试、发布、版本绑定和 Agent 运行；`make test-sdk-e2e` 额外验证临时 Module 的 CLI 黄金路径和通用画布 Echo 节点。
 
 单独调试：
 
@@ -118,6 +132,7 @@ corepack pnpm@10.34.5 build
 - `sdk/go/agentnode`：公开节点协议；`sdk/go/agenttest`：第三方节点契约测试工具。
 - `contracts/openapi.yaml`：前后端唯一 HTTP 契约来源。
 - `docs/node-development.md`：无需修改前端的节点扩展示例。
+- `docs/sdk/quickstart.md`：仓库节点创建、测试、生成和画布验证的黄金路径。
 
 ## 首版边界
 
