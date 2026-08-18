@@ -8,6 +8,7 @@
   "scripts": {
     "dev:web": "corepack pnpm@10.34.5 --filter @agent-studio/web dev",
     "lint": "corepack pnpm@10.34.5 --filter @agent-studio/web lint",
+    "typecheck": "corepack pnpm@10.34.5 --filter @agent-studio/web typecheck",
     "test": "corepack pnpm@10.34.5 --filter @agent-studio/web test --run",
     "build": "corepack pnpm@10.34.5 --filter @agent-studio/web build",
     "test:e2e": "corepack pnpm@10.34.5 --filter @agent-studio/web test:e2e"

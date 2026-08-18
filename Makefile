@@ -1,4 +1,4 @@
-.PHONY: db-up db-down dev-api dev-web generate check-generated test-api-integration verify test-e2e test-sdk-e2e
+.PHONY: db-up db-down dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick test-e2e test-sdk-e2e
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
 
@@ -31,6 +31,21 @@ verify: db-up check-generated
 	corepack pnpm@10.34.5 lint
 	corepack pnpm@10.34.5 test
 	corepack pnpm@10.34.5 build
+
+verify-go-quick: check-generated
+	CGO_ENABLED=0 go test ./... -count=1
+	CGO_ENABLED=0 go vet ./...
+	sh scripts/check-version_test.sh
+
+verify-web-quick:
+	corepack pnpm@10.34.5 --filter @agent-studio/web generate:api
+	git diff --exit-code -- apps/web/src/lib/api/generated.ts
+	corepack pnpm@10.34.5 lint
+	corepack pnpm@10.34.5 typecheck
+	corepack pnpm@10.34.5 test
+	corepack pnpm@10.34.5 build
+
+verify-quick: verify-go-quick verify-web-quick
 
 test-e2e: db-up
 	corepack pnpm@10.34.5 --filter @agent-studio/web exec playwright test
