@@ -1,3 +1,5 @@
 apiVersion: agent-studio.dev/v1alpha1
 nodes:
   - package: github.com/yyl1212/agent-studio/extensions/echo
+  - package: github.com/yyl1212/agent-studio/extensions/retriever
+  - package: github.com/yyl1212/agent-studio/extensions/webhook

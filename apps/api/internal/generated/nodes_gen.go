@@ -6,12 +6,20 @@ import (
 	"fmt"
 
 	node0 "github.com/yyl1212/agent-studio/extensions/echo"
+	node1 "github.com/yyl1212/agent-studio/extensions/retriever"
+	node2 "github.com/yyl1212/agent-studio/extensions/webhook"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 func RegisterNodes(registrar agentnode.Registrar) error {
 	if err := node0.Register(registrar); err != nil {
 		return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/echo: %w", err)
+	}
+	if err := node1.Register(registrar); err != nil {
+		return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/retriever: %w", err)
+	}
+	if err := node2.Register(registrar); err != nil {
+		return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/webhook: %w", err)
 	}
 	return nil
 }

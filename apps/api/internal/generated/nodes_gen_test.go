@@ -3,26 +3,70 @@ package generated
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
-func TestRegisterNodesAddsEcho(t *testing.T) {
+type recordingRegistrar struct {
+	types []string
+}
+
+func (registrar *recordingRegistrar) Register(node agentnode.Node) error {
+	definition := node.Definition()
+	registrar.types = append(registrar.types, definition.Type+"@"+definition.Version)
+	return nil
+}
+
+func TestRegisterNodesUsesGeneratedOrder(t *testing.T) {
+	registrar := &recordingRegistrar{}
+	if err := RegisterNodes(registrar); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"extension.echo@1.0.0", "extension.retriever@1.0.0", "extension.webhook@1.0.0"}
+	if !reflect.DeepEqual(registrar.types, want) {
+		t.Fatalf("types=%v want=%v", registrar.types, want)
+	}
+}
+
+func TestRegisterNodesAddsOfficialExtensions(t *testing.T) {
 	registry := nodes.NewRegistry()
 	if err := RegisterNodes(registry); err != nil {
 		t.Fatal(err)
 	}
-	node, err := registry.Get("extension.echo", "1.0.0")
+	echo, err := registry.Get("extension.echo", "1.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := node.Execute(context.Background(), agentnode.Request{
+	result, err := echo.Execute(context.Background(), agentnode.Request{
 		Config: json.RawMessage(`{"prefix":"回答："}`),
 		Inputs: map[string][]any{"text": {"你好"}},
 	})
 	if err != nil || result.Outputs["text"] != "回答：你好" {
 		t.Fatalf("result=%v err=%v", result, err)
+	}
+
+	retriever, err := registry.Get("extension.retriever", "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retrieverPorts, err := retriever.Resolve(json.RawMessage(`{"documents":[{"id":"doc-1","text":"hello world"}],"topK":1}`))
+	if err != nil || len(retrieverPorts.Inputs) != 1 || len(retrieverPorts.Outputs) != 1 {
+		t.Fatalf("retriever ports=%+v err=%v", retrieverPorts, err)
+	}
+
+	webhook, err := registry.Get("extension.webhook", "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	webhookPorts, err := webhook.Resolve(json.RawMessage(`{"path":"hooks/run"}`))
+	if err != nil || len(webhookPorts.Inputs) != 1 || len(webhookPorts.Outputs) != 2 {
+		t.Fatalf("webhook ports=%+v err=%v", webhookPorts, err)
+	}
+	wantCapabilities := []agentnode.Capability{agentnode.CapabilityNetwork, agentnode.CapabilitySecrets}
+	if got := webhook.Definition().Capabilities; !reflect.DeepEqual(got, wantCapabilities) {
+		t.Fatalf("webhook capabilities=%v want=%v", got, wantCapabilities)
 	}
 }

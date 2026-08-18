@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -163,7 +164,7 @@ func TestNodeAPIRendersMissingPortSlicesAsArrays(t *testing.T) {
 	}
 }
 
-func TestNodeAPIIncludesGeneratedEchoExtension(t *testing.T) {
+func TestNodeAPIIncludesGeneratedOfficialExtensions(t *testing.T) {
 	dependencies := fixtureDeps()
 	if err := generated.RegisterNodes(dependencies.Registry); err != nil {
 		t.Fatal(err)
@@ -176,18 +177,74 @@ func TestNodeAPIIncludesGeneratedEchoExtension(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &definitions); err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions) != 1 {
+	if len(definitions) != 3 {
 		t.Fatalf("definitions=%+v", definitions)
 	}
-	definition := definitions[0]
-	if definition.Type != "extension.echo" || definition.Version != "1.0.0" || definition.Category != "扩展" {
-		t.Fatalf("definition=%+v", definition)
+	byType := make(map[string]agentnode.Definition, len(definitions))
+	for _, definition := range definitions {
+		byType[definition.Type] = definition
 	}
-	if len(definition.Inputs) != 1 || len(definition.Outputs) != 1 {
-		t.Fatalf("inputs=%+v outputs=%+v", definition.Inputs, definition.Outputs)
+	retriever := byType["extension.retriever"]
+	if retriever.Version != "1.0.0" || retriever.Category != "扩展" || len(retriever.ConfigSchema) == 0 || len(retriever.Inputs) != 1 || len(retriever.Outputs) != 1 {
+		t.Fatalf("retriever=%+v", retriever)
+	}
+	webhook := byType["extension.webhook"]
+	wantCapabilities := []agentnode.Capability{agentnode.CapabilityNetwork, agentnode.CapabilitySecrets}
+	if webhook.Version != "1.0.0" || webhook.Category != "扩展" || len(webhook.ConfigSchema) == 0 || len(webhook.Inputs) != 1 || len(webhook.Outputs) != 2 || !reflect.DeepEqual(webhook.Capabilities, wantCapabilities) {
+		t.Fatalf("webhook=%+v", webhook)
 	}
 	if !strings.Contains(recorder.Body.String(), `"inputs":[`) || !strings.Contains(recorder.Body.String(), `"outputs":[`) {
 		t.Fatalf("ports must be JSON arrays: %s", recorder.Body.String())
+	}
+
+	resolveCases := []struct {
+		path string
+		body string
+	}{
+		{path: "/api/node-types/extension.retriever/1.0.0/resolve", body: `{"config":{"documents":[{"id":"doc-1","text":"hello world"}],"topK":1}}`},
+		{path: "/api/node-types/extension.webhook/1.0.0/resolve", body: `{"config":{"path":"hooks/run"}}`},
+	}
+	for _, test := range resolveCases {
+		resolved := performRequest(NewRouter(dependencies), http.MethodPost, test.path, test.body)
+		if resolved.Code != http.StatusOK || !strings.Contains(resolved.Body.String(), `"inputs":[`) || !strings.Contains(resolved.Body.String(), `"outputs":[`) {
+			t.Fatalf("path=%s status=%d body=%s", test.path, resolved.Code, resolved.Body.String())
+		}
+	}
+}
+
+func TestNodeAPIRejectsUnsafeOfficialExtensionConfigWithoutLeaks(t *testing.T) {
+	dependencies := fixtureDeps()
+	if err := generated.RegisterNodes(dependencies.Registry); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_STUDIO_WEBHOOK_URL", "https://environment-secret.example")
+
+	tests := []struct {
+		path      string
+		body      string
+		forbidden []string
+	}{
+		{
+			path:      "/api/node-types/extension.retriever/1.0.0/resolve",
+			body:      `{"config":{"documents":[{"id":"private-doc-id","text":"first"},{"id":"private-doc-id","text":"second"}],"topK":1}}`,
+			forbidden: []string{"private-doc-id"},
+		},
+		{
+			path:      "/api/node-types/extension.webhook/1.0.0/resolve",
+			body:      `{"config":{"path":"private-path?token=secret"}}`,
+			forbidden: []string{"private-path", "environment-secret"},
+		},
+	}
+	for _, test := range tests {
+		recorder := performRequest(NewRouter(dependencies), http.MethodPost, test.path, test.body)
+		if recorder.Code < http.StatusBadRequest || recorder.Code >= http.StatusInternalServerError {
+			t.Fatalf("path=%s status=%d body=%s", test.path, recorder.Code, recorder.Body.String())
+		}
+		for _, forbidden := range test.forbidden {
+			if strings.Contains(recorder.Body.String(), forbidden) {
+				t.Fatalf("path=%s leaked %q in body=%s", test.path, forbidden, recorder.Body.String())
+			}
+		}
 	}
 }
 
