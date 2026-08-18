@@ -2,12 +2,12 @@
 set -eu
 
 if [ "$#" -ne 1 ]; then
-	printf '%s\n' "usage: scripts/check-version.sh <vX.Y.Z-rc.N>" >&2
+	printf '%s\n' "usage: scripts/check-version.sh <vX.Y.Z[-rc.N]>" >&2
 	exit 2
 fi
 
 tag=$1
-if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$'; then
+if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$'; then
 	printf 'invalid release tag: %s\n' "$tag" >&2
 	exit 1
 fi
@@ -33,6 +33,17 @@ fi
 status=$(git status --porcelain --untracked-files=normal)
 if [ -n "$status" ]; then
 	printf '%s\n' "worktree is not clean" >&2
+	exit 1
+fi
+
+if ! origin_main=$(git rev-parse --verify refs/remotes/origin/main 2>/dev/null); then
+	printf '%s\n' "missing origin/main; run git fetch origin main" >&2
+	exit 1
+fi
+
+head_commit=$(git rev-parse HEAD)
+if [ "$head_commit" != "$origin_main" ]; then
+	printf 'HEAD is not origin/main: head=%s origin/main=%s\n' "$head_commit" "$origin_main" >&2
 	exit 1
 fi
 
