@@ -1,0 +1,35 @@
+name: 功能建议
+description: 描述用户问题和最小可行改进
+title: "[Feature]: "
+labels: []
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索现有 Issue 和路线文档
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 用户问题
+      description: 描述谁在什么场景下遇到了什么阻碍
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 最小方案
+      description: 描述希望看到的行为，不要求预先设计内部实现
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已考虑的替代方案
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与兼容性
+      description: 说明是否影响 SDK、工作流格式、数据库或安全边界
