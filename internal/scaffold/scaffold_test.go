@@ -137,6 +137,25 @@ func TestApplyRollsBackNewDirectoryWhenManifestRenameFails(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsExtensionsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "agent-studio.nodes.yaml"), []byte("apiVersion: agent-studio.dev/v1alpha1\nnodes: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "extensions")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	err := Apply(testScaffoldPlan(t, root), ApplyDeps{})
+	if err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("error=%v", err)
+	}
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("outside entries=%v err=%v", entries, readErr)
+	}
+}
+
 func testScaffoldPlan(t *testing.T, root string) ScaffoldPlan {
 	t.Helper()
 	plan, err := Plan(Request{

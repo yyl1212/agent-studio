@@ -14,4 +14,7 @@ func TestRegisterExtensionNodesAddsEcho(t *testing.T) {
 	if _, err := registry.Get("extension.echo", "1.0.0"); err != nil {
 		t.Fatal(err)
 	}
+	if err := registerExtensionNodes(registry); err == nil {
+		t.Fatal("duplicate extension registration must fail")
+	}
 }

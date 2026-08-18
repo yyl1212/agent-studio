@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,20 @@ func TestRunNodeInitRejectsMissingName(t *testing.T) {
 	code := run(context.Background(), []string{"node", "init"}, &stdout, &stderr, appDependencies{})
 	if code != 2 || stdout.Len() != 0 || stderr.String() != "node init requires exactly one name\n" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunNodeInitRejectsInvalidNameAsUsageError(t *testing.T) {
+	called := false
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"node", "init", "Bad"}, io.Discard, &stderr, appDependencies{
+		nodeInit: func(context.Context, string, string) (nodeInitResult, error) {
+			called = true
+			return nodeInitResult{}, nil
+		},
+	})
+	if code != 2 || called || !strings.Contains(stderr.String(), "use lowercase kebab-case") {
+		t.Fatalf("code=%d called=%v stderr=%q", code, called, stderr.String())
 	}
 }
 

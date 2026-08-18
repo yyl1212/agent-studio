@@ -5,17 +5,17 @@ package generated
 import (
 	"fmt"
 
-	node0 "example.com/alpha"
-	node1 "example.com/zeta"
+	node0 "example.com/studio/extensions/alpha"
+	node1 "example.com/studio/extensions/zeta"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 func RegisterNodes(registrar agentnode.Registrar) error {
 	if err := node0.Register(registrar); err != nil {
-		return fmt.Errorf("register example.com/alpha: %w", err)
+		return fmt.Errorf("register example.com/studio/extensions/alpha: %w", err)
 	}
 	if err := node1.Register(registrar); err != nil {
-		return fmt.Errorf("register example.com/zeta: %w", err)
+		return fmt.Errorf("register example.com/studio/extensions/zeta: %w", err)
 	}
 	return nil
 }

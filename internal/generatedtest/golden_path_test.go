@@ -28,9 +28,20 @@ replace github.com/yyl1212/agent-studio => %s
 	writeFile(t, filepath.Join(fixture, "agent-studio.nodes.yaml"), "apiVersion: agent-studio.dev/v1alpha1\nnodes: []\n")
 
 	run(t, fixture, nil, cliBinary, "node", "init", "echo")
+	moduleBefore, err := os.ReadFile(filepath.Join(fixture, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	run(t, fixture, nil, cliBinary, "node", "test", "./extensions/echo")
+	moduleAfter, err := os.ReadFile(filepath.Join(fixture, "go.mod"))
+	if err != nil || string(moduleAfter) != string(moduleBefore) {
+		t.Fatalf("node test changed go.mod: %v\n%s", err, moduleAfter)
+	}
+	if _, err := os.Stat(filepath.Join(fixture, "go.sum")); !os.IsNotExist(err) {
+		t.Fatalf("node test created go.sum: %v", err)
+	}
 	run(t, fixture, nil, cliBinary, "generate")
-	run(t, fixture, map[string]string{"CGO_ENABLED": "0"}, "go", "test", "./...", "-count=1")
+	run(t, fixture, map[string]string{"CGO_ENABLED": "0"}, "go", "test", "-mod=mod", "./...", "-count=1")
 
 	manifest, err := os.ReadFile(filepath.Join(fixture, "agent-studio.nodes.yaml"))
 	if err != nil {

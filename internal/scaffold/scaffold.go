@@ -15,6 +15,7 @@ import (
 	"text/template"
 
 	"github.com/yyl1212/agent-studio/internal/nodemanifest"
+	"github.com/yyl1212/agent-studio/internal/safepath"
 )
 
 //go:embed templates/*
@@ -48,13 +49,10 @@ type templateData struct {
 }
 
 func Plan(request Request) (ScaffoldPlan, error) {
-	if !extensionNamePattern.MatchString(request.Name) {
-		return ScaffoldPlan{}, fmt.Errorf("invalid node name %q: use lowercase kebab-case", request.Name)
+	if err := ValidateName(request.Name); err != nil {
+		return ScaffoldPlan{}, err
 	}
 	packageName := strings.ReplaceAll(request.Name, "-", "")
-	if token.Lookup(packageName).IsKeyword() {
-		return ScaffoldPlan{}, fmt.Errorf("invalid node name %q: generated package %q is a Go keyword", request.Name, packageName)
-	}
 	importPath := strings.TrimSuffix(request.ModulePath, "/") + "/extensions/" + request.Name
 	updatedManifest, err := nodemanifest.AddPackage(request.Manifest, importPath)
 	if err != nil {
@@ -97,7 +95,25 @@ func Plan(request Request) (ScaffoldPlan, error) {
 	}, nil
 }
 
+func ValidateName(name string) error {
+	if !extensionNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid node name %q: use lowercase kebab-case", name)
+	}
+	packageName := strings.ReplaceAll(name, "-", "")
+	if token.Lookup(packageName).IsKeyword() {
+		return fmt.Errorf("invalid node name %q: generated package %q is a Go keyword", name, packageName)
+	}
+	return nil
+}
+
 func Apply(plan ScaffoldPlan, deps ApplyDeps) (returnErr error) {
+	root := filepath.Dir(plan.ManifestPath)
+	if err := safepath.ValidateWriteTarget(root, plan.Directory); err != nil {
+		return fmt.Errorf("validate node directory: %w", err)
+	}
+	if err := safepath.ValidateWriteTarget(root, plan.ManifestPath); err != nil {
+		return fmt.Errorf("validate node manifest: %w", err)
+	}
 	manifestData, err := nodemanifest.Marshal(plan.Manifest)
 	if err != nil {
 		return err

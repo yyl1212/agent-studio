@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,7 +31,52 @@ func TestNodeTestUsesOfflineCGOFreeGoCommands(t *testing.T) {
 		t.Fatalf("calls=%#v", calls)
 	}
 	assertProcessCall(t, calls[0], "go", []string{"list", "-mod=readonly", "./extensions/echo"}, map[string]string{"CGO_ENABLED": "0", "GOPROXY": "off"})
-	assertProcessCall(t, calls[1], "go", []string{"test", "./extensions/echo", "-count=1"}, map[string]string{"CGO_ENABLED": "0", "GOFLAGS": "-mod=mod"})
+	if calls[1].Name != "go" || len(calls[1].Args) != 5 || calls[1].Args[0] != "test" || calls[1].Args[1] != "-mod=mod" || !strings.HasPrefix(calls[1].Args[2], "-modfile=") || calls[1].Args[3] != "./extensions/echo" || calls[1].Args[4] != "-count=1" {
+		t.Fatalf("test call=%#v", calls[1])
+	}
+	if got := calls[1].Environment; got["CGO_ENABLED"] != "0" || got["GOPROXY"] != "off" || got["GOFLAGS"] != "" {
+		t.Fatalf("test environment=%v", got)
+	}
+}
+
+func TestNodeTestUsesAndRemovesTemporaryModuleFiles(t *testing.T) {
+	root := nodeTestRoot(t)
+	original, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var temporaryMod string
+	code := runNodeTest(context.Background(), root, "./extensions/echo", io.Discard, io.Discard, func(_ context.Context, call processCall) error {
+		if len(call.Args) > 0 && call.Args[0] == "test" {
+			if len(call.Args) != 5 || !strings.HasPrefix(call.Args[2], "-modfile=") {
+				return errors.New("test command did not use a temporary modfile")
+			}
+			temporaryMod = strings.TrimPrefix(call.Args[2], "-modfile=")
+			if err := os.WriteFile(temporaryMod, []byte("mutated"), 0o600); err != nil {
+				return err
+			}
+			if err := os.WriteFile(strings.TrimSuffix(temporaryMod, ".mod")+".sum", []byte("temporary sum"), 0o600); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if code != 0 || temporaryMod == "" {
+		t.Fatalf("code=%d temporaryMod=%q", code, temporaryMod)
+	}
+	if _, err := os.Stat(temporaryMod); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary mod remains: %v", err)
+	}
+	if _, err := os.Stat(strings.TrimSuffix(temporaryMod, ".mod") + ".sum"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary sum remains: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil || string(after) != string(original) {
+		t.Fatalf("go.mod=%q err=%v", after, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.sum")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("user go.sum changed: %v", err)
+	}
 }
 
 func TestNodeTestAcceptsCurrentModuleImportPath(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/yyl1212/agent-studio/internal/scaffold"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -39,9 +40,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 
 	switch args[0] {
 	case "version":
+		if len(args) != 1 {
+			_, _ = io.WriteString(stderr, "version takes no arguments\n")
+			return 2
+		}
 		_, _ = fmt.Fprintf(stdout, "agent-studio %s (%s)\n", agentnode.Version, agentnode.APIVersion)
 		return 0
 	case "doctor":
+		if len(args) != 1 {
+			_, _ = io.WriteString(stderr, "doctor takes no arguments\n")
+			return 2
+		}
 		root, err := dependencies.workingDir()
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "determine working directory: %v\n", err)
@@ -57,6 +66,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 		}
 		return 0
 	case "generate":
+		if len(args) != 1 {
+			_, _ = io.WriteString(stderr, "generate takes no arguments\n")
+			return 2
+		}
 		start, err := dependencies.workingDir()
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "determine working directory: %v\n", err)
@@ -82,6 +95,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 		case "init":
 			if len(args) != 3 {
 				_, _ = io.WriteString(stderr, "node init requires exactly one name\n")
+				return 2
+			}
+			if err := scaffold.ValidateName(args[2]); err != nil {
+				_, _ = fmt.Fprintf(stderr, "node init: %v\n", err)
 				return 2
 			}
 			start, err := dependencies.workingDir()

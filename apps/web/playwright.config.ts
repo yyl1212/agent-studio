@@ -17,13 +17,13 @@ export default defineConfig({
     {
       command: 'cd ../api && CGO_ENABLED=0 DATABASE_URL=postgres://agent:agent@127.0.0.1:5432/agent_studio?sslmode=disable MODEL_PROVIDER=mock HTTP_ADDR=127.0.0.1:8080 go run ./cmd/server',
       url: 'http://127.0.0.1:8080/readyz',
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       timeout: 120_000,
     },
     {
       command: 'corepack pnpm@10.34.5 dev --host 127.0.0.1',
       url: 'http://127.0.0.1:5173/workflows',
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       timeout: 120_000,
     },
   ],

@@ -10,21 +10,41 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/yyl1212/agent-studio/internal/nodemanifest"
+	"github.com/yyl1212/agent-studio/internal/safepath"
+	"golang.org/x/mod/modfile"
 )
+
+var extensionPackageNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 
 type Generator struct {
 	ListPackage func(ctx context.Context, root, importPath string) error
 }
 
 func (generator Generator) Generate(ctx context.Context, root string, manifest nodemanifest.Manifest, outputPath string) (bool, error) {
+	if !filepath.IsAbs(outputPath) {
+		outputPath = filepath.Join(root, outputPath)
+	}
+	if err := safepath.ValidateWriteTarget(root, outputPath); err != nil {
+		return false, fmt.Errorf("validate generated nodes target: %w", err)
+	}
+	modulePath, err := readModulePath(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return false, fmt.Errorf("read project module: %w", err)
+	}
 	nodes := append([]nodemanifest.NodePackage(nil), manifest.Nodes...)
 	sort.Slice(nodes, func(left, right int) bool {
 		return nodes[left].Package < nodes[right].Package
 	})
+	for _, node := range nodes {
+		if err := validateExtensionPackage(modulePath, node.Package); err != nil {
+			return false, err
+		}
+	}
 	listPackage := generator.ListPackage
 	if listPackage == nil {
 		listPackage = listGoPackage
@@ -38,9 +58,6 @@ func (generator Generator) Generate(ctx context.Context, root string, manifest n
 	if err != nil {
 		return false, err
 	}
-	if !filepath.IsAbs(outputPath) {
-		outputPath = filepath.Join(root, outputPath)
-	}
 	existing, err := os.ReadFile(outputPath)
 	if err == nil && bytes.Equal(existing, generated) {
 		return false, nil
@@ -52,6 +69,33 @@ func (generator Generator) Generate(ctx context.Context, root string, manifest n
 		return false, err
 	}
 	return true, nil
+}
+
+func readModulePath(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	module, err := modfile.Parse(path, data, nil)
+	if err != nil {
+		return "", err
+	}
+	if module.Module == nil || module.Module.Mod.Path == "" {
+		return "", fmt.Errorf("module path is missing")
+	}
+	return module.Module.Mod.Path, nil
+}
+
+func validateExtensionPackage(modulePath, importPath string) error {
+	prefix := strings.TrimSuffix(modulePath, "/") + "/extensions/"
+	if !strings.HasPrefix(importPath, prefix) {
+		return fmt.Errorf("node package %s must be a direct child of %s", importPath, prefix)
+	}
+	name := strings.TrimPrefix(importPath, prefix)
+	if !extensionPackageNamePattern.MatchString(name) {
+		return fmt.Errorf("node package %s must use one lowercase kebab-case extension name", importPath)
+	}
+	return nil
 }
 
 func render(nodes []nodemanifest.NodePackage) ([]byte, error) {

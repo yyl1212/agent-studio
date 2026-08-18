@@ -49,12 +49,18 @@ func runNodeTest(ctx context.Context, root, packageArg string, stdout, stderr io
 	if err := runner(ctx, list); err != nil {
 		return 1
 	}
+	temporaryMod, cleanup, err := prepareTemporaryModfile(root)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "node test: prepare temporary module: %v\n", err)
+		return 1
+	}
+	defer cleanup()
 
 	test := processCall{
 		Name:        "go",
-		Args:        []string{"test", packageArg, "-count=1"},
+		Args:        []string{"test", "-mod=mod", "-modfile=" + temporaryMod, packageArg, "-count=1"},
 		Dir:         root,
-		Environment: map[string]string{"CGO_ENABLED": "0", "GOFLAGS": "-mod=mod"},
+		Environment: map[string]string{"CGO_ENABLED": "0", "GOPROXY": "off", "GOFLAGS": ""},
 		Stdout:      stdout,
 		Stderr:      stderr,
 	}
@@ -62,6 +68,42 @@ func runNodeTest(ctx context.Context, root, packageArg string, stdout, stderr io
 		return 1
 	}
 	return 0
+}
+
+func prepareTemporaryModfile(root string) (string, func(), error) {
+	moduleData, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return "", func() {}, err
+	}
+	temporary, err := os.CreateTemp(root, ".agent-studio-node-test-*.mod")
+	if err != nil {
+		return "", func() {}, err
+	}
+	modPath := temporary.Name()
+	sumPath := strings.TrimSuffix(modPath, ".mod") + ".sum"
+	cleanup := func() {
+		_ = os.Remove(modPath)
+		_ = os.Remove(sumPath)
+	}
+	if _, err := temporary.Write(moduleData); err != nil {
+		_ = temporary.Close()
+		cleanup()
+		return "", func() {}, err
+	}
+	if err := temporary.Close(); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	if sumData, err := os.ReadFile(filepath.Join(root, "go.sum")); err == nil {
+		if err := os.WriteFile(sumPath, sumData, 0o600); err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+	} else if !os.IsNotExist(err) {
+		cleanup()
+		return "", func() {}, err
+	}
+	return modPath, cleanup, nil
 }
 
 func isNodeExtensionPackage(root, packageArg string) bool {

@@ -44,6 +44,25 @@ func TestRunNodeTestRequiresPackage(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnexpectedArguments(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"version", "unexpected"}, want: "version takes no arguments\n"},
+		{args: []string{"doctor", "unexpected"}, want: "doctor takes no arguments\n"},
+		{args: []string{"generate", "unexpected"}, want: "generate takes no arguments\n"},
+	} {
+		t.Run(test.args[0], func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := run(context.Background(), test.args, io.Discard, &stderr, appDependencies{})
+			if code != 2 || stderr.String() != test.want {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
 func TestRunNodeTestDelegatesFromWorkingDirectory(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
