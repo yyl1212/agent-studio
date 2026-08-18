@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -29,6 +30,7 @@ type fixtureOptions struct {
 	extraTarget     bool
 	extraSBOM       bool
 	symlinkArchive  string
+	spdxVariant     string
 }
 
 type fixtureTarget struct {
@@ -84,6 +86,66 @@ func TestVerifyCollectionRejectsInvalidSPDX(t *testing.T) {
 	dist := makeFixture(t, fixtureOptions{invalidSPDX: "linux_amd64"})
 	err := VerifyCollection(Config{DistDir: dist, Version: fixtureVersion})
 	assertErrorContains(t, err, "invalid SPDX JSON")
+}
+
+func TestVerifyCollectionRejectsInvalidSPDXStructure(t *testing.T) {
+	tests := []struct {
+		name     string
+		variant  string
+		expected string
+	}{
+		{name: "wrong version", variant: "wrong-version", expected: "invalid SPDX version"},
+		{name: "missing document id", variant: "missing-id", expected: "invalid SPDX document"},
+		{name: "relative namespace", variant: "relative-namespace", expected: "invalid SPDX document"},
+		{name: "missing creation info", variant: "missing-creation", expected: "invalid SPDX document"},
+		{name: "wrong archive mapping", variant: "wrong-name", expected: "SPDX name mismatch"},
+		{name: "trailing json", variant: "trailing-json", expected: "invalid SPDX JSON"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dist := makeFixture(t, fixtureOptions{spdxVariant: test.variant})
+			err := VerifyCollection(Config{DistDir: dist, Version: fixtureVersion})
+			assertErrorContains(t, err, test.expected)
+		})
+	}
+}
+
+func TestVerifyCollectionRejectsOversizedFiles(t *testing.T) {
+	tests := []struct {
+		name     string
+		fileName string
+		maxBytes int64
+		expected string
+	}{
+		{
+			name:     "archive",
+			fileName: "agent-studio_" + fixtureVersion + "_linux_amd64.tar.gz",
+			maxBytes: maxArchiveFileBytes,
+			expected: "archive exceeds size limit",
+		},
+		{
+			name:     "sbom",
+			fileName: "agent-studio_" + fixtureVersion + "_linux_amd64.tar.gz.spdx.json",
+			maxBytes: maxSPDXFileBytes,
+			expected: "SBOM exceeds size limit",
+		},
+		{
+			name:     "checksums",
+			fileName: "checksums.txt",
+			maxBytes: maxChecksumFileBytes,
+			expected: "checksums.txt exceeds size limit",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dist := makeFixture(t, fixtureOptions{})
+			if err := os.Truncate(filepath.Join(dist, test.fileName), test.maxBytes+1); err != nil {
+				t.Fatal(err)
+			}
+			err := VerifyCollection(Config{DistDir: dist, Version: fixtureVersion})
+			assertErrorContains(t, err, test.expected)
+		})
+	}
 }
 
 func TestVerifyCollectionRejectsSymlinkArchive(t *testing.T) {
@@ -154,6 +216,47 @@ func TestVerifyTargetRejectsNonExecutableCLI(t *testing.T) {
 	assertErrorContains(t, err, "agent-studio is not executable")
 }
 
+func TestExtractTargetRejectsMemberAndTotalSizeLimits(t *testing.T) {
+	dist := makeFixture(t, fixtureOptions{})
+	archivePath := filepath.Join(dist, "agent-studio_"+fixtureVersion+"_linux_amd64.tar.gz")
+	t.Run("member", func(t *testing.T) {
+		err := extractTargetWithLimits(archivePath, t.TempDir(), extractionLimits{
+			MemberBytes: map[string]int64{"agent-studio": 8, "README.md": 1024, "LICENSE": 1024},
+			TotalBytes:  4096,
+		})
+		assertErrorContains(t, err, "archive member exceeds size limit")
+	})
+	t.Run("total", func(t *testing.T) {
+		err := extractTargetWithLimits(archivePath, t.TempDir(), extractionLimits{
+			MemberBytes: map[string]int64{"agent-studio": 1024, "README.md": 1024, "LICENSE": 1024},
+			TotalBytes:  16,
+		})
+		assertErrorContains(t, err, "archive exceeds extracted size limit")
+	})
+}
+
+func TestRunVersionCommandBoundsTimeAndOutput(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		cliPath := writeExecutable(t, "#!/bin/sh\nwhile :; do :; done\n")
+		_, err := runVersionCommand(cliPath, 50*time.Millisecond, 1024)
+		assertErrorContains(t, err, "timed out")
+	})
+	t.Run("output", func(t *testing.T) {
+		cliPath := writeExecutable(t, "#!/bin/sh\nwhile :; do printf '0123456789'; done\n")
+		_, err := runVersionCommand(cliPath, 2*time.Second, 64)
+		assertErrorContains(t, err, "output exceeds size limit")
+	})
+}
+
+func writeExecutable(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "agent-studio")
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func assertErrorContains(t *testing.T, err error, expected string) {
 	t.Helper()
 	if err == nil || !strings.Contains(err.Error(), expected) {
@@ -189,7 +292,13 @@ func makeFixture(t *testing.T, options fixtureOptions) string {
 		}
 		checksums = append(checksums, digest+"  "+archiveName)
 		sbomPath := archivePath + ".spdx.json"
-		writeSPDX(t, sbomPath, archiveName, options.invalidSPDX == key)
+		variant := ""
+		if options.invalidSPDX == key {
+			variant = "malformed"
+		} else if key == "linux_amd64" {
+			variant = options.spdxVariant
+		}
+		writeSPDX(t, sbomPath, archiveName, variant)
 		sbomDigest := fileDigest(t, sbomPath)
 		if options.badSBOMChecksum == key {
 			sbomDigest = strings.Repeat("0", 64)
@@ -202,7 +311,7 @@ func makeFixture(t *testing.T, options fixtureOptions) string {
 		writeArchive(t, filepath.Join(dist, extraName), "windows_amd64", fixtureOptions{})
 	}
 	if options.extraSBOM {
-		writeSPDX(t, filepath.Join(dist, "agent-studio_"+fixtureVersion+"_windows_amd64.tar.gz.spdx.json"), "extra", false)
+		writeSPDX(t, filepath.Join(dist, "agent-studio_"+fixtureVersion+"_windows_amd64.tar.gz.spdx.json"), "extra", "")
 	}
 
 	sort.Strings(checksums)
@@ -277,11 +386,34 @@ func writeArchive(t *testing.T, archivePath, key string, options fixtureOptions)
 	}
 }
 
-func writeSPDX(t *testing.T, path, archiveName string, invalid bool) {
+func writeSPDX(t *testing.T, path, archiveName, variant string) {
 	t.Helper()
-	content := fmt.Sprintf("{\"spdxVersion\":\"SPDX-2.3\",\"name\":%q}\n", archiveName)
-	if invalid {
+	version := "SPDX-2.3"
+	dataLicense := "CC0-1.0"
+	spdxID := "SPDXRef-DOCUMENT"
+	name := archiveName
+	namespace := "https://example.com/spdx/" + archiveName
+	creationInfo := `{"created":"2026-08-19T00:00:00Z","creators":["Tool: fixture"]}`
+	switch variant {
+	case "wrong-version":
+		version = "SPDX-garbage"
+	case "missing-id":
+		spdxID = ""
+	case "relative-namespace":
+		namespace = "relative"
+	case "missing-creation":
+		creationInfo = `{}`
+	case "wrong-name":
+		name = "other.tar.gz"
+	}
+	content := fmt.Sprintf(
+		"{\"spdxVersion\":%q,\"dataLicense\":%q,\"SPDXID\":%q,\"name\":%q,\"documentNamespace\":%q,\"creationInfo\":%s}\n",
+		version, dataLicense, spdxID, name, namespace, creationInfo,
+	)
+	if variant == "malformed" {
 		content = "{\"spdxVersion\":\n"
+	} else if variant == "trailing-json" {
+		content += "{}\n"
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)

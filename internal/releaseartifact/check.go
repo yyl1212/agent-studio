@@ -3,7 +3,9 @@ package releaseartifact
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -11,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -18,6 +21,17 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	maxArchiveFileBytes   int64 = 128 << 20
+	maxSPDXFileBytes      int64 = 16 << 20
+	maxChecksumFileBytes  int64 = 64 << 10
+	maxExtractedBytes     int64 = 133 << 20
+	maxVersionOutputBytes       = 64 << 10
+	versionCommandTimeout       = 10 * time.Second
 )
 
 type Config struct {
@@ -77,12 +91,12 @@ func VerifyCollection(config Config) error {
 		name := entry.Name()
 		switch {
 		case strings.HasSuffix(name, ".tar.gz"):
-			if err := requireRegularEntry(entry, "archive"); err != nil {
+			if err := requireRegularEntry(entry, "archive", maxArchiveFileBytes); err != nil {
 				return err
 			}
 			actualArchives[name] = struct{}{}
 		case strings.HasSuffix(name, ".tar.gz.spdx.json"):
-			if err := requireRegularEntry(entry, "SBOM"); err != nil {
+			if err := requireRegularEntry(entry, "SBOM", maxSPDXFileBytes); err != nil {
 				return err
 			}
 			actualSBOMs[name] = struct{}{}
@@ -96,7 +110,7 @@ func VerifyCollection(config Config) error {
 	}
 
 	checksumPath := filepath.Join(config.DistDir, "checksums.txt")
-	if err := requireRegularFile(checksumPath, "checksums.txt"); err != nil {
+	if err := requireRegularFile(checksumPath, "checksums.txt", maxChecksumFileBytes); err != nil {
 		return err
 	}
 	checksums, err := readChecksums(checksumPath)
@@ -133,7 +147,7 @@ func verifyDigest(filePath, fileName string, expectedDigest []byte) error {
 	return nil
 }
 
-func requireRegularEntry(entry os.DirEntry, kind string) error {
+func requireRegularEntry(entry os.DirEntry, kind string, maxBytes int64) error {
 	info, err := entry.Info()
 	if err != nil {
 		return fmt.Errorf("inspect %s %s: %w", kind, entry.Name(), err)
@@ -141,16 +155,22 @@ func requireRegularEntry(entry os.DirEntry, kind string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file: %s", kind, entry.Name())
 	}
+	if info.Size() > maxBytes {
+		return fmt.Errorf("%s exceeds size limit: %s", kind, entry.Name())
+	}
 	return nil
 }
 
-func requireRegularFile(filePath, kind string) error {
+func requireRegularFile(filePath, kind string, maxBytes int64) error {
 	info, err := os.Lstat(filePath)
 	if err != nil {
 		return fmt.Errorf("inspect %s: %w", kind, err)
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", kind)
+	}
+	if info.Size() > maxBytes {
+		return fmt.Errorf("%s exceeds size limit", kind)
 	}
 	return nil
 }
@@ -185,12 +205,11 @@ func VerifyTarget(config Config) error {
 		return errors.New("agent-studio is not executable")
 	}
 
-	command := exec.Command(cliPath, "version")
-	output, err := command.CombinedOutput()
+	output, err := runVersionCommand(cliPath, versionCommandTimeout, maxVersionOutputBytes)
 	if err != nil {
-		return fmt.Errorf("execute agent-studio version: %w: %s", err, strings.TrimSpace(string(output)))
+		return err
 	}
-	actual := strings.TrimSpace(string(output))
+	actual := strings.TrimSpace(output)
 	expected := fmt.Sprintf(
 		"agent-studio %s (sdk 0.2.0; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
 		config.Version,
@@ -200,6 +219,65 @@ func VerifyTarget(config Config) error {
 		return fmt.Errorf("version output mismatch: got %q want %q", actual, expected)
 	}
 	return nil
+}
+
+var errOutputLimit = errors.New("command output exceeds size limit")
+
+type cappedBuffer struct {
+	mu       sync.Mutex
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (buffer *cappedBuffer) Write(content []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	remaining := buffer.limit - buffer.buffer.Len()
+	if remaining <= 0 {
+		buffer.exceeded = true
+		return 0, errOutputLimit
+	}
+	if len(content) > remaining {
+		written, _ := buffer.buffer.Write(content[:remaining])
+		buffer.exceeded = true
+		return written, errOutputLimit
+	}
+	return buffer.buffer.Write(content)
+}
+
+func (buffer *cappedBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.String()
+}
+
+func (buffer *cappedBuffer) Exceeded() bool {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.exceeded
+}
+
+func runVersionCommand(cliPath string, timeout time.Duration, outputLimit int) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, cliPath, "version")
+	command.WaitDelay = time.Second
+	output := &cappedBuffer{limit: outputLimit}
+	command.Stdout = output
+	command.Stderr = output
+	err := command.Run()
+	content := output.String()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return content, errors.New("agent-studio version timed out")
+	}
+	if output.Exceeded() {
+		return content, errors.New("agent-studio version output exceeds size limit")
+	}
+	if err != nil {
+		return content, fmt.Errorf("execute agent-studio version: %w: %s", err, strings.TrimSpace(content))
+	}
+	return content, nil
 }
 
 func compareFileSet(kind string, expected, actual map[string]struct{}) error {
@@ -280,6 +358,9 @@ func digestFile(filePath string) ([]byte, error) {
 }
 
 func verifySPDX(sbomPath, archiveName string) error {
+	if err := requireRegularFile(sbomPath, "SBOM", maxSPDXFileBytes); err != nil {
+		return err
+	}
 	file, err := os.Open(sbomPath)
 	if err != nil {
 		return fmt.Errorf("open SPDX for %s: %w", archiveName, err)
@@ -287,10 +368,17 @@ func verifySPDX(sbomPath, archiveName string) error {
 	defer file.Close()
 
 	var document struct {
-		SPDXVersion string `json:"spdxVersion"`
-		Name        string `json:"name"`
+		SPDXVersion       string `json:"spdxVersion"`
+		DataLicense       string `json:"dataLicense"`
+		SPDXID            string `json:"SPDXID"`
+		Name              string `json:"name"`
+		DocumentNamespace string `json:"documentNamespace"`
+		CreationInfo      struct {
+			Created  string   `json:"created"`
+			Creators []string `json:"creators"`
+		} `json:"creationInfo"`
 	}
-	decoder := json.NewDecoder(file)
+	decoder := json.NewDecoder(io.LimitReader(file, maxSPDXFileBytes+1))
 	if err := decoder.Decode(&document); err != nil {
 		return fmt.Errorf("invalid SPDX JSON for %s: %w", archiveName, err)
 	}
@@ -301,16 +389,50 @@ func verifySPDX(sbomPath, archiveName string) error {
 		}
 		return fmt.Errorf("invalid SPDX JSON for %s: %w", archiveName, err)
 	}
-	if !strings.HasPrefix(document.SPDXVersion, "SPDX-") {
+	if document.SPDXVersion != "SPDX-2.3" {
 		return fmt.Errorf("invalid SPDX version for %s: %q", archiveName, document.SPDXVersion)
+	}
+	if document.DataLicense != "CC0-1.0" || document.SPDXID != "SPDXRef-DOCUMENT" {
+		return fmt.Errorf("invalid SPDX document for %s: dataLicense=%q SPDXID=%q", archiveName, document.DataLicense, document.SPDXID)
 	}
 	if document.Name != archiveName {
 		return fmt.Errorf("SPDX name mismatch for %s: got %q", archiveName, document.Name)
+	}
+	namespace, err := url.ParseRequestURI(document.DocumentNamespace)
+	if err != nil || !namespace.IsAbs() || namespace.Fragment != "" {
+		return fmt.Errorf("invalid SPDX document for %s: documentNamespace=%q", archiveName, document.DocumentNamespace)
+	}
+	if _, err := time.Parse(time.RFC3339, document.CreationInfo.Created); err != nil || len(document.CreationInfo.Creators) == 0 {
+		return fmt.Errorf("invalid SPDX document for %s: creationInfo is incomplete", archiveName)
+	}
+	for _, creator := range document.CreationInfo.Creators {
+		if strings.TrimSpace(creator) == "" {
+			return fmt.Errorf("invalid SPDX document for %s: creationInfo contains an empty creator", archiveName)
+		}
 	}
 	return nil
 }
 
 func extractTarget(archivePath, destination string) error {
+	return extractTargetWithLimits(archivePath, destination, extractionLimits{
+		MemberBytes: map[string]int64{
+			"agent-studio": 128 << 20,
+			"README.md":    4 << 20,
+			"LICENSE":      1 << 20,
+		},
+		TotalBytes: maxExtractedBytes,
+	})
+}
+
+type extractionLimits struct {
+	MemberBytes map[string]int64
+	TotalBytes  int64
+}
+
+func extractTargetWithLimits(archivePath, destination string, limits extractionLimits) error {
+	if err := requireRegularFile(archivePath, "archive", maxArchiveFileBytes); err != nil {
+		return err
+	}
 	file, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
@@ -328,6 +450,7 @@ func extractTarget(archivePath, destination string) error {
 		"LICENSE":      {},
 	}
 	seen := make(map[string]struct{}, len(expectedMembers))
+	var extractedBytes int64
 	tarReader := tar.NewReader(gzipReader)
 	for {
 		header, err := tarReader.Next()
@@ -347,6 +470,14 @@ func extractTarget(archivePath, destination string) error {
 		if _, ok := expectedMembers[header.Name]; !ok {
 			return fmt.Errorf("archive members mismatch: unexpected %q", header.Name)
 		}
+		memberLimit := limits.MemberBytes[header.Name]
+		if header.Size < 0 || header.Size > memberLimit {
+			return fmt.Errorf("archive member exceeds size limit: %q", header.Name)
+		}
+		if header.Size > limits.TotalBytes-extractedBytes {
+			return errors.New("archive exceeds extracted size limit")
+		}
+		extractedBytes += header.Size
 		if _, duplicate := seen[header.Name]; duplicate {
 			return fmt.Errorf("archive members mismatch: duplicate %q", header.Name)
 		}
@@ -357,7 +488,7 @@ func extractTarget(archivePath, destination string) error {
 		if err != nil {
 			return fmt.Errorf("create archive member %q: %w", header.Name, err)
 		}
-		_, copyErr := io.Copy(output, tarReader)
+		_, copyErr := io.CopyN(output, tarReader, header.Size)
 		closeErr := output.Close()
 		if copyErr != nil {
 			return fmt.Errorf("extract archive member %q: %w", header.Name, copyErr)
