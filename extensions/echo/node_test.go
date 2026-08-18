@@ -1,0 +1,46 @@
+package echo
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
+	"github.com/yyl1212/agent-studio/sdk/go/agenttest"
+)
+
+func TestNodeContract(t *testing.T) {
+	inputKind := agentnode.ErrorKindInput
+	agenttest.Run(t, agenttest.Contract{
+		Node:           Node{},
+		ValidConfigs:   []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{"prefix":"回答："}`)},
+		InvalidConfigs: []json.RawMessage{json.RawMessage(`{"unknown":true}`)},
+		Executions: []agenttest.ExecutionCase{
+			{
+				Name:        "without prefix",
+				Request:     agentnode.Request{Config: json.RawMessage(`{}`), Inputs: map[string][]any{"text": {"你好"}}},
+				WantOutputs: map[string]any{"text": "你好"},
+			},
+			{
+				Name:        "with prefix",
+				Request:     agentnode.Request{Config: json.RawMessage(`{"prefix":"回答："}`), Inputs: map[string][]any{"text": {"你好"}}},
+				WantOutputs: map[string]any{"text": "回答：你好"},
+			},
+			{
+				Name:          "invalid input",
+				Request:       agentnode.Request{Config: json.RawMessage(`{}`), Inputs: map[string][]any{}},
+				WantErrorKind: &inputKind,
+			},
+		},
+	})
+}
+
+func TestExecuteHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := (Node{}).Execute(ctx, agentnode.Request{})
+	if !errors.Is(err, context.Canceled) || agentnode.KindOf(err) != agentnode.ErrorKindCanceled {
+		t.Fatalf("error=%v kind=%q", err, agentnode.KindOf(err))
+	}
+}

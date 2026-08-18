@@ -2,8 +2,16 @@
 
 package generated
 
-import "github.com/yyl1212/agent-studio/sdk/go/agentnode"
+import (
+	"fmt"
 
-func RegisterNodes(agentnode.Registrar) error {
+	node0 "github.com/yyl1212/agent-studio/extensions/echo"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
+)
+
+func RegisterNodes(registrar agentnode.Registrar) error {
+	if err := node0.Register(registrar); err != nil {
+		return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/echo: %w", err)
+	}
 	return nil
 }

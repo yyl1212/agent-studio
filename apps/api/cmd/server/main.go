@@ -13,6 +13,7 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/config"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
+	"github.com/yyl1212/agent-studio/apps/api/internal/generated"
 	"github.com/yyl1212/agent-studio/apps/api/internal/httpapi"
 	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
@@ -60,6 +61,9 @@ func run(logger *slog.Logger) error {
 	if err := builtin.RegisterIntegrationNodes(registry, builtin.HTTPOptions{AllowPrivateNetwork: cfg.HTTPNodeAllowPrivate}); err != nil {
 		return fmt.Errorf("register integration nodes: %w", err)
 	}
+	if err := registerExtensionNodes(registry); err != nil {
+		return fmt.Errorf("register extension nodes: %w", err)
+	}
 
 	compiler := engine.NewCompiler(registry)
 	runtime := engine.New(engine.Options{MaxParallel: cfg.MaxParallelNodes, Timeout: cfg.WorkflowTimeout})
@@ -104,6 +108,10 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	return nil
+}
+
+func registerExtensionNodes(registry *nodes.Registry) error {
+	return generated.RegisterNodes(registry)
 }
 
 func createModelProvider(cfg config.Config) (modelprovider.Provider, string, error) {

@@ -1,2 +1,3 @@
 apiVersion: agent-studio.dev/v1alpha1
-nodes: []
+nodes:
+  - package: github.com/yyl1212/agent-studio/extensions/echo

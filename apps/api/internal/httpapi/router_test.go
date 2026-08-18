@@ -11,9 +11,11 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
+	"github.com/yyl1212/agent-studio/apps/api/internal/generated"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 type fixtureWorkflowService struct {
@@ -158,6 +160,34 @@ func TestNodeAPIRendersMissingPortSlicesAsArrays(t *testing.T) {
 	resolveRecorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/node-types/start/1/resolve", `{"config":{"fields":[]}}`)
 	if resolveRecorder.Code != http.StatusOK || !strings.Contains(resolveRecorder.Body.String(), `"inputs":[]`) {
 		t.Fatalf("status=%d body=%s", resolveRecorder.Code, resolveRecorder.Body.String())
+	}
+}
+
+func TestNodeAPIIncludesGeneratedEchoExtension(t *testing.T) {
+	dependencies := fixtureDeps()
+	if err := generated.RegisterNodes(dependencies.Registry); err != nil {
+		t.Fatal(err)
+	}
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/node-types", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var definitions []agentnode.Definition
+	if err := json.Unmarshal(recorder.Body.Bytes(), &definitions); err != nil {
+		t.Fatal(err)
+	}
+	if len(definitions) != 1 {
+		t.Fatalf("definitions=%+v", definitions)
+	}
+	definition := definitions[0]
+	if definition.Type != "extension.echo" || definition.Version != "1.0.0" || definition.Category != "扩展" {
+		t.Fatalf("definition=%+v", definition)
+	}
+	if len(definition.Inputs) != 1 || len(definition.Outputs) != 1 {
+		t.Fatalf("inputs=%+v outputs=%+v", definition.Inputs, definition.Outputs)
+	}
+	if !strings.Contains(recorder.Body.String(), `"inputs":[`) || !strings.Contains(recorder.Body.String(), `"outputs":[`) {
+		t.Fatalf("ports must be JSON arrays: %s", recorder.Body.String())
 	}
 }
 
