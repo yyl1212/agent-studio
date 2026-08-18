@@ -47,7 +47,7 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
       return
     }
     if (!validate(normalized)) {
-      setErrors(mapErrors(validate.errors ?? [], properties))
+      setErrors(mapErrors(validate.errors ?? [], schema))
       return
     }
     setDraft(normalized)
@@ -68,17 +68,21 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
   )
 }
 
-function mapErrors(errors: ErrorObject[], properties: Record<string, JSONSchema>) {
+function mapErrors(errors: ErrorObject[], rootSchema: JSONSchema) {
   const mapped: Record<string, string> = {}
   for (const error of errors) {
     const requiredName = error.keyword === 'required' ? String(error.params.missingProperty) : undefined
-    const path = requiredName ? `/${requiredName}` : error.instancePath
-    const name = requiredName ?? path.split('/').filter(Boolean).at(-1) ?? ''
-    const title = properties[name]?.title ?? name
+    const tokens = decodePointer(error.instancePath)
+    if (requiredName !== undefined) tokens.push(requiredName)
+    const path = `/${tokens.join('/')}`
+    const name = tokens.at(-1) ?? ''
+    const title = schemaAtPath(rootSchema, tokens)?.title ?? name
     if (!mapped[path]) {
       if (error.keyword === 'required') mapped[path] = `${title}为必填项`
       else if (error.keyword === 'minLength') mapped[path] = `${title}长度不能少于 ${String(error.params.limit)} 个字符`
       else if (error.keyword === 'maxLength') mapped[path] = `${title}长度不能超过 ${String(error.params.limit)} 个字符`
+      else if (error.keyword === 'minItems') mapped[path] = `${title}至少需要 ${String(error.params.limit)} 项`
+      else if (error.keyword === 'maxItems') mapped[path] = `${title}最多允许 ${String(error.params.limit)} 项`
       else if (error.keyword === 'minimum') mapped[path] = `${title}不能小于 ${String(error.params.limit)}`
       else if (error.keyword === 'maximum') mapped[path] = `${title}不能大于 ${String(error.params.limit)}`
       else if (error.keyword === 'pattern') mapped[path] = `${title}格式不正确`
@@ -86,4 +90,19 @@ function mapErrors(errors: ErrorObject[], properties: Record<string, JSONSchema>
     }
   }
   return mapped
+}
+
+function decodePointer(path: string): string[] {
+  if (path === '') return []
+  return path.slice(1).split('/').map((token) => token.replace(/~1/g, '/').replace(/~0/g, '~'))
+}
+
+function schemaAtPath(rootSchema: JSONSchema, tokens: string[]): JSONSchema | undefined {
+  let current: JSONSchema | undefined = rootSchema
+  for (const token of tokens) {
+    if (!current) return undefined
+    if (current.type === 'array') current = current.items
+    else current = current.properties?.[token]
+  }
+  return current
 }

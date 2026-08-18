@@ -12,8 +12,13 @@ interface ArrayFieldProps {
 
 export function ArrayField({ id, label, schema, value, onChange, errors }: ArrayFieldProps) {
   const itemSchema = schema.items ?? { type: 'string' }
+  const atMinimum = schema.minItems !== undefined && value.length <= schema.minItems
+  const atMaximum = schema.maxItems !== undefined && value.length >= schema.maxItems
+  const error = errors[`/${id}`]
+  const fieldID = `field-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+  const errorID = error ? `${fieldID}-error` : undefined
   return (
-    <fieldset className="schema-array">
+    <fieldset className="schema-array" aria-invalid={Boolean(error)} aria-describedby={errorID}>
       <legend>{label}</legend>
       {value.map((item, index) => (
         <div className="schema-array-row" key={`${id}-${index}`}>
@@ -30,10 +35,27 @@ export function ArrayField({ id, label, schema, value, onChange, errors }: Array
               onChange(next)
             }}
           />
-          <button type="button" onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>移除</button>
+          <button type="button" aria-label={`移除${label} ${index + 1}`} disabled={atMinimum} onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>移除</button>
         </div>
       ))}
-      <button type="button" onClick={() => onChange([...value, itemSchema.default ?? ''])}>添加一项</button>
+      {error && <span className="field-error" id={errorID}>{error}</span>}
+      <button type="button" disabled={atMaximum} onClick={() => onChange([...value, defaultItem(itemSchema)])}>添加一项</button>
     </fieldset>
   )
+}
+
+function defaultItem(schema: JSONSchema): unknown {
+  if (schema.default !== undefined) return structuredClone(schema.default)
+  if (schema.type === 'object') {
+    return Object.fromEntries(
+      Object.entries(schema.properties ?? {})
+        .map(([name, child]) => [name, defaultItem(child)] as const)
+        .filter(([, child]) => child !== undefined),
+    )
+  }
+  if (schema.type === 'array') return []
+  if (schema.type === 'boolean') return false
+  if (schema.enum?.length) return structuredClone(schema.enum[0])
+  if (schema.type === 'string') return ''
+  return undefined
 }

@@ -10,6 +10,8 @@ export interface JSONSchema {
   properties?: Record<string, JSONSchema>
   required?: string[]
   items?: JSONSchema
+  minItems?: number
+  maxItems?: number
   minimum?: number
   maximum?: number
   minLength?: number
