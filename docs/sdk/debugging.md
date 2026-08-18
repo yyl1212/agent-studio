@@ -18,6 +18,18 @@ CGO_ENABLED=0 go run ./cmd/agent-studio node test ./extensions/<节点名>
 | `duplicate node type` | 两个节点使用相同的 `Type + Version` | 修改新节点的 `Type` 或 `Version`，重新测试并生成。 |
 | `encoded outputs` | 契约测试编码后的输出超过 SDK 上限 | 缩小输出，删除无关内容，并改用结构化字段；不要返回完整响应或二进制正文。 |
 
+## Webhook 稳定错误
+
+| 错误 | 原因 | 处理 |
+|---|---|---|
+| `internal/missing_webhook_configuration` | URL 缺失或非法 | 检查 API 进程环境中的 http/https 基地址。 |
+| `config/invalid_config` | path 或 timeout 非法 | 使用不含 host、query、fragment、`..` 的相对路径，以及 1–30000 毫秒超时。 |
+| `input/invalid_body` | 类型、基数、编码或请求体超限 | 传入一个不超过 1 MiB 的 JSON 值。 |
+| `input/webhook_rejected` | 普通上游 4xx | 修正业务请求；节点不会输出上游响应正文。 |
+| `temporary/upstream_failed` | 超时、429、5xx、重定向、响应超限或非法 JSON | 检查受信任上游后重试。 |
+
+这些错误不会包含 Webhook 基地址、Token、请求正文或底层网络错误。URL 留空不影响 API 启动；执行对应节点时才返回缺少配置错误。
+
 ## 常见流程问题
 
 ### 修改 manifest 后生成失败

@@ -162,6 +162,15 @@ func Register(registrar agentnode.Registrar) error {
 
 长耗时网络、文件或计算操作必须持续监听 `ctx.Done()`，并把主动取消映射为 `canceled/run_canceled`，把上游 deadline 映射为 `temporary/upstream_timeout`。禁止启动无法在 context 取消后退出的永久 goroutine。
 
+## 官方参考实现
+
+仓库的 `extensions/retriever` 与 `extensions/webhook` 展示了两种互补边界：
+
+- Retriever 的打分、排序和分词是本地纯计算；相同配置与输入产生相同输出。节点不保留请求状态，不修改输入容器，并在计算循环中检查 context。
+- Webhook 声明 `network`、`secrets` capability，固定使用 JSON `POST`，主机和 Token 只从 API 进程环境读取。请求体与响应体均限制为 1 MiB，禁止重定向，并持续使用 request context 处理取消与超时。
+
+Webhook 用稳定哨兵构造 `NodeError` 错误链，公开层只看到 kind、code 与安全消息。外部节点同样不得把 DNS、连接地址、代理信息、上游响应正文或其他底层 transport 错误直接作为 `NodeError` cause；应先映射到不含动态敏感内容的本地哨兵，再交给宿主处理。
+
 ## 契约测试
 
 在节点包测试中导入 `agentnode` 与 `agenttest` 后调用：

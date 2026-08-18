@@ -88,6 +88,23 @@ CGO_ENABLED=0 go run ./cmd/agent-studio version
 
 完整步骤见 [30 分钟创建第一个扩展节点](docs/sdk/quickstart.md)，错误处理见 [节点开发排错](docs/sdk/debugging.md)。扩展与 API 同进程运行，只应加载可信源码。
 
+### 官方扩展节点
+
+根 manifest 默认登记三个可直接在通用画布使用的扩展：
+
+- Echo：最小文本节点示例，为输入添加前缀。
+- Retriever：基于本地 Jaccard 相似度的确定性演示，不使用向量数据库或 Embedding，也不作为生产知识库。
+- Webhook：固定向运维指定的基地址发送 JSON `POST`；工作流只能保存受约束的相对 `path`。
+
+使用 Webhook 前，在 `.env` 配置 API 进程环境：
+
+```dotenv
+AGENT_STUDIO_WEBHOOK_URL=https://hooks.example.com/agent-studio
+AGENT_STUDIO_WEBHOOK_TOKEN=
+```
+
+Token 可选，只能由运维环境提供，不得写入工作流配置。修改这两个变量后需重启 API；URL 留空不影响启动，只会在执行 Webhook 时返回安全的缺少配置错误。
+
 ## 模型配置
 
 默认配置：

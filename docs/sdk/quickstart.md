@@ -51,6 +51,26 @@ make dev-web
 3. 把开始节点的文本输出连接到 `My Echo.text`，再把 `My Echo.text` 连接到结束节点。
 4. 点击“测试运行”，填写开始参数并确认结果。
 
+### 使用仓库官方扩展
+
+根 `agent-studio.nodes.yaml` 已登记 Echo、Retriever 和 Webhook。运行 `generate` 后，API 会按确定顺序注册三个包，通用画布根据 Definition 和 JSON Schema 自动显示它们，不需要节点专用前端组件。
+
+Retriever 示例连线：
+
+1. 在开始节点增加字符串字段 `query`。
+2. 添加 Retriever，在“文档”中录入 ID/内容，并设置 `topK`。
+3. 连接 `start.query → extension.retriever.query`。
+4. 连接 `extension.retriever.matches → end.result`，测试相同查询可得到确定性排序。
+
+Retriever 是本地 Jaccard 演示，不是向量检索或生产知识库。Webhook 运行前需在 API 的 `.env` 中准备：
+
+```dotenv
+AGENT_STUDIO_WEBHOOK_URL=https://hooks.example.com/agent-studio
+AGENT_STUDIO_WEBHOOK_TOKEN=
+```
+
+Token 可选且不得进入节点配置；工作流只填写相对 `path` 和超时。修改环境后重启 API，再连接 JSON 输入到 `extension.webhook.body`。Webhook 固定发送 `POST`，不允许工作流选择主机、请求头或凭据。
+
 ## 4. 提交前验证
 
 ```bash
