@@ -493,11 +493,18 @@ func TestExecuteHonorsCallerCancellation(t *testing.T) {
 
 func TestExecuteCancelsInFlightRequest(t *testing.T) {
 	reached := make(chan struct{})
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 		close(reached)
-		<-request.Context().Done()
+		select {
+		case <-request.Context().Done():
+		case <-release:
+		}
 	}))
-	defer server.Close()
+	t.Cleanup(func() {
+		close(release)
+		server.Close()
+	})
 	node := New(Options{LookupEnv: envLookup(map[string]string{webhookURLEnv: server.URL})})
 	ctx, cancel := context.WithCancel(context.Background())
 	resultChannel := make(chan struct {
@@ -530,10 +537,17 @@ func TestExecuteCancelsInFlightRequest(t *testing.T) {
 }
 
 func TestExecuteMapsNodeTimeoutToTemporaryError(t *testing.T) {
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
-		<-request.Context().Done()
+		select {
+		case <-request.Context().Done():
+		case <-release:
+		}
 	}))
-	defer server.Close()
+	t.Cleanup(func() {
+		close(release)
+		server.Close()
+	})
 	node := New(Options{LookupEnv: envLookup(map[string]string{webhookURLEnv: server.URL})})
 	request := validRequest(map[string]any{"ok": true})
 	request.Config = json.RawMessage(`{"path":"hook","timeoutMs":20}`)
