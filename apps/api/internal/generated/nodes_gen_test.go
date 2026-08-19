@@ -8,6 +8,7 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
+	"github.com/yyl1212/agent-studio/sdk/go/nodepackage"
 )
 
 type recordingRegistrar struct {
@@ -18,6 +19,10 @@ func (registrar *recordingRegistrar) Register(node agentnode.Node) error {
 	definition := node.Definition()
 	registrar.types = append(registrar.types, definition.Type+"@"+definition.Version)
 	return nil
+}
+
+func (registrar *recordingRegistrar) RegisterPackage(_ nodepackage.RuntimeRecord, register func(agentnode.Registrar) error) error {
+	return register(registrar)
 }
 
 func TestRegisterNodesUsesGeneratedOrder(t *testing.T) {
