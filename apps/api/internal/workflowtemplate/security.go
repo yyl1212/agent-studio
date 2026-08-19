@@ -31,8 +31,8 @@ func securityIssues(graph domain.Graph, definitions map[string]agentnode.Definit
 			issues = append(issues, templateIssue("TEMPLATE_LIMIT_EXCEEDED", "节点配置嵌套层级超过限制", node.ID, "config"))
 			continue
 		}
-		var config any
-		if err := json.Unmarshal(node.Config, &config); err != nil {
+		config, err := decodeJSONValue(node.Config)
+		if err != nil {
 			issues = append(issues, templateIssue("TEMPLATE_CONFIG_JSON_INVALID", "节点配置 JSON 无效", node.ID, "config"))
 			continue
 		}
@@ -48,8 +48,8 @@ func securityIssues(graph domain.Graph, definitions map[string]agentnode.Definit
 }
 
 func configDepth(raw json.RawMessage) (int, error) {
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
+	value, err := decodeJSONValue(raw)
+	if err != nil {
 		return 0, err
 	}
 	return valueDepth(value, 1), nil

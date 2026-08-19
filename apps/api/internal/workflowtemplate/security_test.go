@@ -129,6 +129,21 @@ func TestConfigDepthRejectsMoreThanMaximum(t *testing.T) {
 	}
 }
 
+func TestConfigDepthAndSecurityAcceptLargeJSONExponent(t *testing.T) {
+	raw := json.RawMessage(`{"value":1e400}`)
+	depth, err := configDepth(raw)
+	if err != nil {
+		t.Fatalf("valid JSON number rejected: %v", err)
+	}
+	if depth != 2 {
+		t.Fatalf("depth=%d, want 2", depth)
+	}
+	issues := securityIssues(domain.Graph{Nodes: []domain.Node{{ID: "number", Config: raw}}}, nil)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
 func TestSecurityIssuesRejectsInvalidConfigWithoutEchoingInput(t *testing.T) {
 	issues := securityIssues(domain.Graph{Nodes: []domain.Node{{ID: "broken", Config: json.RawMessage(`{"password":"top-secret"`)}}}, nil)
 	if len(issues) != 1 || issues[0].Code != "TEMPLATE_CONFIG_JSON_INVALID" {

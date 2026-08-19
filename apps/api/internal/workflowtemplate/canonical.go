@@ -22,16 +22,8 @@ func Canonicalize(input Template) (Template, error) {
 		output.Spec.Graph.Edges = []domain.Edge{}
 	}
 	for index := range output.Spec.Graph.Nodes {
-		var value any
-		decoder := json.NewDecoder(bytes.NewReader(output.Spec.Graph.Nodes[index].Config))
-		decoder.UseNumber()
-		if err := decoder.Decode(&value); err != nil {
-			return Template{}, fmt.Errorf("canonicalize config for node %s: %w", output.Spec.Graph.Nodes[index].ID, err)
-		}
-		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-			if err == nil {
-				err = errors.New("multiple JSON values")
-			}
+		value, err := decodeJSONValue(output.Spec.Graph.Nodes[index].Config)
+		if err != nil {
 			return Template{}, fmt.Errorf("canonicalize config for node %s: %w", output.Spec.Graph.Nodes[index].ID, err)
 		}
 		encoded, err := json.Marshal(value)
@@ -47,6 +39,22 @@ func Canonicalize(input Template) (Template, error) {
 		return output.Spec.Graph.Edges[i].ID < output.Spec.Graph.Edges[j].ID
 	})
 	return output, nil
+}
+
+func decodeJSONValue(raw json.RawMessage) (any, error) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return nil, err
+	}
+	return value, nil
 }
 
 func Encode(input Template) ([]byte, error) {
