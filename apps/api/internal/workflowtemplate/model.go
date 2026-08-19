@@ -21,6 +21,8 @@ type Template struct {
 	Kind       string   `json:"kind"`
 	Metadata   Metadata `json:"metadata"`
 	Spec       Spec     `json:"spec"`
+
+	missingRequired []string
 }
 
 type Metadata struct {

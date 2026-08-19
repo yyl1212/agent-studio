@@ -25,6 +25,7 @@ type fixtureWorkflowService struct {
 	panicOnList        bool
 	templateExport     workflow.TemplateExport
 	templatePreview    workflowtemplate.Preview
+	templatePreviewErr error
 	templateExportErr  error
 	templateImportErr  error
 	lastExportRevision int64
@@ -69,8 +70,8 @@ func (service *fixtureWorkflowService) ExportTemplate(_ context.Context, _ strin
 	return service.templateExport, service.templateExportErr
 }
 
-func (service *fixtureWorkflowService) PreviewTemplate(context.Context, workflowtemplate.Template) workflowtemplate.Preview {
-	return service.templatePreview
+func (service *fixtureWorkflowService) PreviewTemplate(context.Context, json.RawMessage) (workflowtemplate.Preview, error) {
+	return service.templatePreview, service.templatePreviewErr
 }
 
 func (service *fixtureWorkflowService) ImportTemplate(_ context.Context, input workflow.ImportWorkflowTemplateInput) (domain.Workflow, error) {
@@ -205,6 +206,20 @@ func TestWorkflowTemplateRoutesRejectUnknownAndTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestWorkflowTemplatePreviewMapsTemplateDecodeErrorToBadRequest(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.Workflows.(*fixtureWorkflowService).templatePreviewErr = errors.New("decode workflow template: unknown field")
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflow-templates/preview", validTemplateEnvelopeJSON())
+	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+}
+
+func TestWorkflowTemplateImportMapsTemplateDecodeErrorToBadRequest(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.Workflows.(*fixtureWorkflowService).templateImportErr = workflow.ErrInvalidWorkflowTemplate
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflow-templates/import", validImportJSON())
+	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+}
+
 func TestWorkflowTemplatePreviewReturnsInvalidAsSuccessfulAnalysis(t *testing.T) {
 	dependencies := fixtureDeps()
 	dependencies.Workflows.(*fixtureWorkflowService).templatePreview = workflowtemplate.Preview{
@@ -252,16 +267,24 @@ func fixtureWorkflowTemplate() workflowtemplate.Template {
 
 func validTemplateEnvelopeJSON() string {
 	encoded, _ := json.Marshal(struct {
-		Template workflowtemplate.Template `json:"template"`
-	}{Template: fixtureWorkflowTemplate()})
+		Template json.RawMessage `json:"template"`
+	}{Template: mustMarshalTemplate(fixtureWorkflowTemplate())})
 	return string(encoded)
 }
 
 func validImportJSON() string {
 	encoded, _ := json.Marshal(workflow.ImportWorkflowTemplateInput{
-		Template: fixtureWorkflowTemplate(), Name: "演示副本", Slug: "demo-copy", Description: "",
+		Template: mustMarshalTemplate(fixtureWorkflowTemplate()), Name: "演示副本", Slug: "demo-copy", Description: "",
 	})
 	return string(encoded)
+}
+
+func mustMarshalTemplate(template workflowtemplate.Template) json.RawMessage {
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
 }
 
 func TestRecovererReturnsSafeRequestID(t *testing.T) {

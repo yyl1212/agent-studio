@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	ErrInvalidWorkflowInput = errors.New("invalid workflow input")
-	slugPattern             = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	ErrInvalidWorkflowInput    = errors.New("invalid workflow input")
+	ErrInvalidWorkflowTemplate = errors.New("invalid workflow template")
+	slugPattern                = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 )
 
 type ValidationError struct {
@@ -39,10 +40,10 @@ type TemplateExport struct {
 }
 
 type ImportWorkflowTemplateInput struct {
-	Template    workflowtemplate.Template `json:"template"`
-	Name        string                    `json:"name"`
-	Slug        string                    `json:"slug"`
-	Description string                    `json:"description"`
+	Template    json.RawMessage `json:"template"`
+	Name        string          `json:"name"`
+	Slug        string          `json:"slug"`
+	Description string          `json:"description"`
 }
 
 type TemplateValidationError struct {
@@ -145,18 +146,34 @@ func (service *Service) ExportTemplate(ctx context.Context, id string, revision 
 	return TemplateExport{Filename: loaded.Slug + ".workflow.json", Data: data}, nil
 }
 
-func (service *Service) PreviewTemplate(_ context.Context, template workflowtemplate.Template) workflowtemplate.Preview {
-	return service.templates.Analyze(template).Preview
+func (service *Service) PreviewTemplate(_ context.Context, raw json.RawMessage) (workflowtemplate.Preview, error) {
+	template, err := decodeWorkflowTemplate(raw)
+	if err != nil {
+		return workflowtemplate.Preview{}, err
+	}
+	return service.templates.Analyze(template).Preview, nil
 }
 
 func (service *Service) ImportTemplate(ctx context.Context, input ImportWorkflowTemplateInput) (domain.Workflow, error) {
-	analysis := service.templates.Analyze(input.Template)
+	template, err := decodeWorkflowTemplate(input.Template)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	analysis := service.templates.Analyze(template)
 	if !analysis.Preview.Valid {
 		return domain.Workflow{}, &TemplateValidationError{Issues: analysis.Preview.Issues}
 	}
 	return service.createWithGraph(ctx, CreateWorkflowInput{
 		Name: input.Name, Slug: input.Slug, Description: input.Description,
 	}, analysis.Normalized.Spec.Graph)
+}
+
+func decodeWorkflowTemplate(raw json.RawMessage) (workflowtemplate.Template, error) {
+	template, err := workflowtemplate.Decode(raw)
+	if err != nil {
+		return workflowtemplate.Template{}, fmt.Errorf("%w: %v", ErrInvalidWorkflowTemplate, err)
+	}
+	return template, nil
 }
 
 func (service *Service) SaveDraft(ctx context.Context, id string, revision int64, graph domain.Graph) (domain.Workflow, error) {

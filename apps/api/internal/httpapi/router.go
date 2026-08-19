@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -24,7 +25,7 @@ type WorkflowService interface {
 	Publish(context.Context, string, int64) (domain.WorkflowVersion, error)
 	AgentManifest(context.Context, string) (workflow.AgentManifest, error)
 	ExportTemplate(context.Context, string, int64) (workflow.TemplateExport, error)
-	PreviewTemplate(context.Context, workflowtemplate.Template) workflowtemplate.Preview
+	PreviewTemplate(context.Context, json.RawMessage) (workflowtemplate.Preview, error)
 	ImportTemplate(context.Context, workflow.ImportWorkflowTemplateInput) (domain.Workflow, error)
 }
 

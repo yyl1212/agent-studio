@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
-	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 )
 
 func (handler *handler) listWorkflows(writer http.ResponseWriter, request *http.Request) {
@@ -65,13 +65,17 @@ func (handler *handler) exportWorkflowTemplate(writer http.ResponseWriter, reque
 
 func (handler *handler) previewWorkflowTemplate(writer http.ResponseWriter, request *http.Request) {
 	var body struct {
-		Template workflowtemplate.Template `json:"template"`
+		Template json.RawMessage `json:"template"`
 	}
 	if err := decodeJSON(writer, request, &body); err != nil {
 		writeRequestError(writer, request, err)
 		return
 	}
-	preview := handler.dependencies.Workflows.PreviewTemplate(request.Context(), body.Template)
+	preview, err := handler.dependencies.Workflows.PreviewTemplate(request.Context(), body.Template)
+	if err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
 	writeJSON(writer, http.StatusOK, preview)
 }
 

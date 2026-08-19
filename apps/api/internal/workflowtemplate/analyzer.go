@@ -88,6 +88,9 @@ func (analyzer *Analyzer) Analyze(input Template) Analysis {
 
 func envelopeIssues(template Template) []domain.ValidationIssue {
 	issues := make([]domain.ValidationIssue, 0)
+	for _, path := range template.missingRequired {
+		issues = append(issues, templateIssue("TEMPLATE_FIELD_REQUIRED", "工作流模板缺少必填字段", "", path))
+	}
 	if template.APIVersion != APIVersion {
 		issues = append(issues, templateIssue("TEMPLATE_API_VERSION_UNSUPPORTED", "工作流模板 apiVersion 不受支持", "", "apiVersion"))
 	}
