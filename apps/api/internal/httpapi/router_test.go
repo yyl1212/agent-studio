@@ -16,12 +16,19 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 type fixtureWorkflowService struct {
-	workflow    domain.Workflow
-	panicOnList bool
+	workflow           domain.Workflow
+	panicOnList        bool
+	templateExport     workflow.TemplateExport
+	templatePreview    workflowtemplate.Preview
+	templateExportErr  error
+	templateImportErr  error
+	lastExportRevision int64
+	lastImported       workflow.ImportWorkflowTemplateInput
 }
 
 func (service *fixtureWorkflowService) List(context.Context) ([]domain.Workflow, error) {
@@ -55,6 +62,20 @@ func (*fixtureWorkflowService) Publish(context.Context, string, int64) (domain.W
 
 func (*fixtureWorkflowService) AgentManifest(context.Context, string) (workflow.AgentManifest, error) {
 	return workflow.AgentManifest{WorkflowVersionID: "v1", Version: 1, Title: "Demo", InputSchema: json.RawMessage(`{"type":"object"}`)}, nil
+}
+
+func (service *fixtureWorkflowService) ExportTemplate(_ context.Context, _ string, revision int64) (workflow.TemplateExport, error) {
+	service.lastExportRevision = revision
+	return service.templateExport, service.templateExportErr
+}
+
+func (service *fixtureWorkflowService) PreviewTemplate(context.Context, workflowtemplate.Template) workflowtemplate.Preview {
+	return service.templatePreview
+}
+
+func (service *fixtureWorkflowService) ImportTemplate(_ context.Context, input workflow.ImportWorkflowTemplateInput) (domain.Workflow, error) {
+	service.lastImported = input
+	return service.workflow, service.templateImportErr
 }
 
 type fixtureRunner struct {
@@ -126,6 +147,121 @@ func TestRouterRejectsUnknownJSONAndAppliesCORS(t *testing.T) {
 func TestRouterRejectsTrailingJSON(t *testing.T) {
 	recorder := performRequest(NewRouter(fixtureDeps()), http.MethodPost, "/api/workflows", `{"name":"Demo","slug":"demo"}{}`)
 	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+}
+
+func TestWorkflowTemplateRoutesUseStableShapes(t *testing.T) {
+	dependencies := fixtureDeps()
+	service := dependencies.Workflows.(*fixtureWorkflowService)
+	service.templateExport = workflow.TemplateExport{Filename: "demo.workflow.json", Data: []byte("{\n  \"kind\": \"WorkflowTemplate\"\n}\n")}
+	service.templatePreview = workflowtemplate.Preview{Valid: true, Issues: []domain.ValidationIssue{}, Summary: workflowtemplate.Summary{InputSchema: json.RawMessage(`{}`), NodeTypes: []workflowtemplate.NodeTypeSummary{}}}
+
+	exported := performRequest(NewRouter(dependencies), http.MethodGet, "/api/workflows/w1/template?draftRevision=2", "")
+	if exported.Code != http.StatusOK || service.lastExportRevision != 2 {
+		t.Fatalf("status=%d revision=%d body=%s", exported.Code, service.lastExportRevision, exported.Body.String())
+	}
+	if exported.Header().Get("Content-Disposition") != `attachment; filename="demo.workflow.json"` ||
+		exported.Header().Get("Cache-Control") != "no-store" || exported.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("headers=%v", exported.Header())
+	}
+
+	preview := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflow-templates/preview", validTemplateEnvelopeJSON())
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), `"valid":true`) {
+		t.Fatalf("status=%d body=%s", preview.Code, preview.Body.String())
+	}
+
+	imported := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflow-templates/import", validImportJSON())
+	if imported.Code != http.StatusCreated || service.lastImported.Slug != "demo-copy" {
+		t.Fatalf("status=%d body=%s", imported.Code, imported.Body.String())
+	}
+}
+
+func TestWorkflowTemplateExportRejectsInvalidRevision(t *testing.T) {
+	for _, path := range []string{
+		"/api/workflows/w1/template",
+		"/api/workflows/w1/template?draftRevision=0",
+		"/api/workflows/w1/template?draftRevision=-1",
+		"/api/workflows/w1/template?draftRevision=not-a-number",
+	} {
+		t.Run(path, func(t *testing.T) {
+			recorder := performRequest(NewRouter(fixtureDeps()), http.MethodGet, path, "")
+			assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+		})
+	}
+}
+
+func TestWorkflowTemplateRoutesRejectUnknownAndTrailingJSON(t *testing.T) {
+	tests := []struct {
+		path string
+		body string
+	}{
+		{path: "/api/workflow-templates/preview", body: strings.TrimSuffix(validTemplateEnvelopeJSON(), "}") + `,"unknown":true}`},
+		{path: "/api/workflow-templates/preview", body: validTemplateEnvelopeJSON() + `{}`},
+		{path: "/api/workflow-templates/import", body: strings.TrimSuffix(validImportJSON(), "}") + `,"unknown":true}`},
+		{path: "/api/workflow-templates/import", body: validImportJSON() + `{}`},
+	}
+	for _, test := range tests {
+		recorder := performRequest(NewRouter(fixtureDeps()), http.MethodPost, test.path, test.body)
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+	}
+}
+
+func TestWorkflowTemplatePreviewReturnsInvalidAsSuccessfulAnalysis(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.Workflows.(*fixtureWorkflowService).templatePreview = workflowtemplate.Preview{
+		Valid:   false,
+		Issues:  []domain.ValidationIssue{{Code: "NODE_TYPE_NOT_FOUND", Message: "节点类型或版本未注册", NodeID: "missing"}},
+		Summary: workflowtemplate.Summary{InputSchema: json.RawMessage(`{}`), NodeTypes: []workflowtemplate.NodeTypeSummary{}},
+	}
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflow-templates/preview", validTemplateEnvelopeJSON())
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"valid":false`) || !strings.Contains(recorder.Body.String(), "NODE_TYPE_NOT_FOUND") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestWorkflowTemplateImportMapsValidationAndSlugConflict(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		code   string
+		status int
+	}{
+		{name: "invalid template", err: &workflow.TemplateValidationError{Issues: []domain.ValidationIssue{{Code: "TEMPLATE_SECRET_CONFIG_FOUND", Message: "节点配置包含不允许导出的凭据字段", Path: "config.api_token"}}}, code: "WORKFLOW_TEMPLATE_INVALID", status: http.StatusUnprocessableEntity},
+		{name: "slug conflict", err: domain.ErrSlugConflict, code: "WORKFLOW_SLUG_CONFLICT", status: http.StatusConflict},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dependencies := fixtureDeps()
+			dependencies.Workflows.(*fixtureWorkflowService).templateImportErr = test.err
+			recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflow-templates/import", validImportJSON())
+			assertJSONError(t, recorder, test.status, test.code)
+			if strings.Contains(recorder.Body.String(), "top-secret") {
+				t.Fatalf("secret leaked: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func fixtureWorkflowTemplate() workflowtemplate.Template {
+	return workflowtemplate.Template{
+		APIVersion: workflowtemplate.APIVersion,
+		Kind:       workflowtemplate.Kind,
+		Metadata:   workflowtemplate.Metadata{Name: "演示", Description: "HTTP 测试"},
+		Spec:       workflowtemplate.Spec{Graph: domain.Graph{SchemaVersion: 1, Nodes: []domain.Node{}, Edges: []domain.Edge{}}},
+	}
+}
+
+func validTemplateEnvelopeJSON() string {
+	encoded, _ := json.Marshal(struct {
+		Template workflowtemplate.Template `json:"template"`
+	}{Template: fixtureWorkflowTemplate()})
+	return string(encoded)
+}
+
+func validImportJSON() string {
+	encoded, _ := json.Marshal(workflow.ImportWorkflowTemplateInput{
+		Template: fixtureWorkflowTemplate(), Name: "演示副本", Slug: "demo-copy", Description: "",
+	})
+	return string(encoded)
 }
 
 func TestRecovererReturnsSafeRequestID(t *testing.T) {
@@ -251,8 +387,11 @@ func TestNodeAPIRejectsUnsafeOfficialExtensionConfigWithoutLeaks(t *testing.T) {
 func fixtureDeps() Dependencies {
 	registry := nodes.NewRegistry()
 	return Dependencies{
-		Registry:  registry,
-		Workflows: &fixtureWorkflowService{workflow: domain.Workflow{ID: "w1", DraftRevision: 2}},
+		Registry: registry,
+		Workflows: &fixtureWorkflowService{
+			workflow:        domain.Workflow{ID: "w1", DraftRevision: 2},
+			templatePreview: workflowtemplate.Preview{Issues: []domain.ValidationIssue{}, Summary: workflowtemplate.Summary{InputSchema: json.RawMessage(`{}`), NodeTypes: []workflowtemplate.NodeTypeSummary{}}},
+		},
 		Runner:    &fixtureRunner{},
 		Runs:      fixtureRunReader{},
 		Readiness: fixtureReady{},

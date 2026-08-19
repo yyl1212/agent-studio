@@ -1,9 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { api } from '../../lib/api/client'
+import { APIError, api } from '../../lib/api/client'
 import { StudioPage } from './StudioPage'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -68,6 +68,8 @@ const definitions = [
 ]
 
 describe('StudioPage', () => {
+  afterEach(() => vi.restoreAllMocks())
+
   beforeEach(() => {
     vi.spyOn(api, 'getWorkflow').mockResolvedValue(workflow)
     vi.spyOn(api, 'listNodeTypes').mockResolvedValue(definitions)
@@ -161,4 +163,44 @@ describe('StudioPage', () => {
     expect(screen.getByLabelText('相对路径')).toHaveValue('hooks/run')
     expect(screen.getByLabelText('超时毫秒')).toHaveValue(2500)
   })
+
+  it('导出前等待保存并使用最新 revision', async () => {
+    let resolveSave!: (value: typeof workflow) => void
+    vi.mocked(api.saveWorkflow).mockReturnValueOnce(new Promise((resolve) => { resolveSave = resolve }))
+    vi.spyOn(api, 'exportWorkflowTemplate').mockResolvedValue(new Blob(['template']))
+    const createObjectURL = installURLMethod('createObjectURL', vi.fn().mockReturnValue('blob:template'))
+    const revokeObjectURL = installURLMethod('revokeObjectURL', vi.fn())
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: '提示词模板' }))
+    await userEvent.click(screen.getByRole('button', { name: '导出模板' }))
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalled())
+    expect(api.exportWorkflowTemplate).not.toHaveBeenCalled()
+    resolveSave({ ...workflow, draftRevision: 2 })
+    await vi.waitFor(() => expect(api.exportWorkflowTemplate).toHaveBeenCalledWith('w1', 2, expect.any(AbortSignal)))
+    expect(createObjectURL).toHaveBeenCalled()
+    expect(click).toHaveBeenCalled()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:template')
+  })
+
+  it.each([
+    ['revision 冲突', new APIError(409, 'WORKFLOW_REVISION_CONFLICT', '草稿版本已变化，请刷新后重试'), '草稿版本已变化，请刷新后重试'],
+    ['网络失败', new TypeError('network failed'), '操作失败，请稍后重试'],
+  ])('导出%s时显示错误且不创建下载', async (_name, failure, message) => {
+    vi.spyOn(api, 'exportWorkflowTemplate').mockRejectedValue(failure)
+    const createObjectURL = installURLMethod('createObjectURL', vi.fn())
+    installURLMethod('revokeObjectURL', vi.fn())
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '导出模板' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
 })
+
+function installURLMethod(name: 'createObjectURL' | 'revokeObjectURL', implementation: ReturnType<typeof vi.fn>) {
+  Object.defineProperty(URL, name, { configurable: true, writable: true, value: implementation })
+  return implementation
+}

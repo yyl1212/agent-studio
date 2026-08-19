@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,18 +11,21 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
+	"github.com/yyl1212/agent-studio/apps/api/internal/generated"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 )
 
 type fakeStore struct {
-	workflow   domain.Workflow
-	versions   map[string]domain.WorkflowVersion
-	currentID  string
-	runs       []domain.Run
-	nodeRuns   map[string]domain.NodeRun
-	failUpsert error
-	sequence   int
+	workflow    domain.Workflow
+	versions    map[string]domain.WorkflowVersion
+	currentID   string
+	runs        []domain.Run
+	nodeRuns    map[string]domain.NodeRun
+	failUpsert  error
+	sequence    int
+	createCalls int
 }
 
 func newFakeStore(t *testing.T) *fakeStore {
@@ -48,6 +52,7 @@ func (store *fakeStore) ListWorkflows(context.Context) ([]domain.Workflow, error
 }
 
 func (store *fakeStore) CreateWorkflow(_ context.Context, workflow domain.Workflow) (domain.Workflow, error) {
+	store.createCalls++
 	store.workflow = workflow
 	return workflow, nil
 }
@@ -218,10 +223,134 @@ func TestPublishValidatesGraphAndBuildsAgentManifest(t *testing.T) {
 	}
 }
 
+func TestImportTemplateCreatesNewUnpublishedDraft(t *testing.T) {
+	service, store := newServiceFixture(t)
+	input := ImportWorkflowTemplateInput{
+		Template: validEchoTemplateFixture(t),
+		Name:     "导入副本", Slug: "imported-copy", Description: "本地模板",
+	}
+	created, err := service.ImportTemplate(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.createCalls != 1 || created.DraftRevision != 1 || created.PublishedVersionID != nil || created.PublishedVersion != nil {
+		t.Fatalf("created=%+v calls=%d", created, store.createCalls)
+	}
+	if created.ID == "workflow-1" || created.Slug != "imported-copy" {
+		t.Fatalf("created=%+v", created)
+	}
+}
+
+func TestInvalidTemplateDoesNotWrite(t *testing.T) {
+	service, store := newServiceFixture(t)
+	input := ImportWorkflowTemplateInput{Template: validEchoTemplateFixture(t), Name: "副本", Slug: "copy"}
+	input.Template.Spec.Graph.Nodes[1].TypeVersion = "9.9.9"
+	_, err := service.ImportTemplate(context.Background(), input)
+	var validation *TemplateValidationError
+	if !errors.As(err, &validation) || store.createCalls != 0 {
+		t.Fatalf("err=%v calls=%d", err, store.createCalls)
+	}
+}
+
+func TestImportTemplateRejectsInvalidIdentityWithoutWriting(t *testing.T) {
+	service, store := newServiceFixture(t)
+	_, err := service.ImportTemplate(context.Background(), ImportWorkflowTemplateInput{
+		Template: validEchoTemplateFixture(t), Name: "副本", Slug: "Bad Slug",
+	})
+	if !errors.Is(err, ErrInvalidWorkflowInput) || store.createCalls != 0 {
+		t.Fatalf("err=%v calls=%d", err, store.createCalls)
+	}
+}
+
+func TestPreviewTemplateDoesNotWrite(t *testing.T) {
+	service, store := newServiceFixture(t)
+	preview := service.PreviewTemplate(context.Background(), validEchoTemplateFixture(t))
+	if !preview.Valid || store.createCalls != 0 {
+		t.Fatalf("preview=%+v calls=%d", preview, store.createCalls)
+	}
+}
+
+func TestExportTemplateRequiresExactRevisionBeforeGraphValidation(t *testing.T) {
+	service, store := newServiceFixture(t)
+	store.workflow.DraftGraph = json.RawMessage(`{"broken":`)
+	_, err := service.ExportTemplate(context.Background(), store.workflow.ID, store.workflow.DraftRevision-1)
+	if !errors.Is(err, domain.ErrRevisionConflict) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestExportTemplateUsesStoredIdentityWithoutDatabaseFields(t *testing.T) {
+	service, store := newServiceFixture(t)
+	exported, err := service.ExportTemplate(context.Background(), store.workflow.ID, store.workflow.DraftRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exported.Filename != "demo.workflow.json" {
+		t.Fatalf("filename=%q", exported.Filename)
+	}
+	if bytes.Contains(exported.Data, []byte(store.workflow.ID)) || bytes.Contains(exported.Data, []byte(`"draftRevision"`)) {
+		t.Fatalf("database fields leaked: %s", exported.Data)
+	}
+}
+
+func TestTemplateExportImportExportRoundTripIsStable(t *testing.T) {
+	service, store := newServiceFixture(t)
+	first, err := service.ExportTemplate(context.Background(), store.workflow.ID, store.workflow.DraftRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var template workflowtemplate.Template
+	if err := json.Unmarshal(first.Data, &template); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.ImportTemplate(context.Background(), ImportWorkflowTemplateInput{
+		Template: template, Name: store.workflow.Name, Slug: "demo-copy", Description: store.workflow.Description,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.ExportTemplate(context.Background(), created.ID, created.DraftRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.Data, second.Data) {
+		t.Fatalf("round trip drifted\n%s\n%s", first.Data, second.Data)
+	}
+}
+
+func validEchoTemplateFixture(t *testing.T) workflowtemplate.Template {
+	t.Helper()
+	return workflowtemplate.Template{
+		APIVersion: workflowtemplate.APIVersion,
+		Kind:       workflowtemplate.Kind,
+		Metadata:   workflowtemplate.Metadata{Name: "Echo 模板", Description: "Service 测试"},
+		Spec: workflowtemplate.Spec{Graph: domain.Graph{
+			SchemaVersion: 1,
+			Nodes: []domain.Node{
+				{ID: "start", Type: "start", TypeVersion: "1", Config: json.RawMessage(`{"fields":[{"key":"topic","label":"主题","type":"text"}]}`)},
+				{ID: "echo", Type: "extension.echo", TypeVersion: "1.0.0", Config: json.RawMessage(`{"prefix":""}`)},
+				{ID: "end", Type: "end", TypeVersion: "1", Config: json.RawMessage(`{}`)},
+			},
+			Edges: []domain.Edge{
+				{ID: "e1", Source: "start", SourcePort: "topic", Target: "echo", TargetPort: "text"},
+				{ID: "e2", Source: "echo", SourcePort: "text", Target: "end", TargetPort: "result"},
+			},
+		}},
+	}
+}
+
 func newServiceFixture(t *testing.T) (*Service, *fakeStore) {
 	t.Helper()
 	store := newFakeStore(t)
-	return NewService(store, newRealCompiler(t)), store
+	registry := nodes.NewRegistry()
+	if err := builtin.RegisterCore(registry); err != nil {
+		t.Fatal(err)
+	}
+	if err := generated.RegisterNodes(registry); err != nil {
+		t.Fatal(err)
+	}
+	compiler := engine.NewCompiler(registry)
+	return NewService(store, compiler, registry), store
 }
 
 func newRealCompiler(t *testing.T) *engine.Compiler {

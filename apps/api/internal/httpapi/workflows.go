@@ -1,11 +1,15 @@
 package httpapi
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 )
 
 func (handler *handler) listWorkflows(writer http.ResponseWriter, request *http.Request) {
@@ -38,6 +42,51 @@ func (handler *handler) getWorkflow(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	writeJSON(writer, http.StatusOK, loaded)
+}
+
+func (handler *handler) exportWorkflowTemplate(writer http.ResponseWriter, request *http.Request) {
+	revision, err := strconv.ParseInt(request.URL.Query().Get("draftRevision"), 10, 64)
+	if err != nil || revision < 1 {
+		writeRequestError(writer, request, errors.New("invalid draft revision"))
+		return
+	}
+	exported, err := handler.dependencies.Workflows.ExportTemplate(request.Context(), chi.URLParam(request, "id"), revision)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, exported.Filename))
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(exported.Data)
+}
+
+func (handler *handler) previewWorkflowTemplate(writer http.ResponseWriter, request *http.Request) {
+	var body struct {
+		Template workflowtemplate.Template `json:"template"`
+	}
+	if err := decodeJSON(writer, request, &body); err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	preview := handler.dependencies.Workflows.PreviewTemplate(request.Context(), body.Template)
+	writeJSON(writer, http.StatusOK, preview)
+}
+
+func (handler *handler) importWorkflowTemplate(writer http.ResponseWriter, request *http.Request) {
+	var input workflow.ImportWorkflowTemplateInput
+	if err := decodeJSON(writer, request, &input); err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	created, err := handler.dependencies.Workflows.ImportTemplate(request.Context(), input)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, created)
 }
 
 func (handler *handler) saveWorkflow(writer http.ResponseWriter, request *http.Request) {

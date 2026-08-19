@@ -2,12 +2,14 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { APIError, api, type Workflow } from '../../lib/api/client'
+import { ImportWorkflowTemplateDialog } from './ImportWorkflowTemplateDialog'
 
 export function WorkflowListPage() {
   const navigate = useNavigate()
   const [workflows, setWorkflows] = useState<Workflow[] | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -45,7 +47,10 @@ export function WorkflowListPage() {
     <main className="page-container">
       <div className="page-heading">
         <div><p className="eyebrow">WORKFLOWS</p><h2>工作流</h2><p>在画布上组合节点，发布为可直接运行的 Agent。</p></div>
-        <button className="primary-button" type="button" onClick={() => setCreating(true)}>新建工作流</button>
+        <div className="page-actions">
+          <button type="button" onClick={() => setImporting(true)}>导入模板</button>
+          <button className="primary-button" type="button" onClick={() => setCreating(true)}>新建工作流</button>
+        </div>
       </div>
       {loadError && <div className="state-card" role="alert">加载工作流失败，请刷新重试</div>}
       {!loadError && workflows === null && <div className="state-card" aria-live="polite">正在加载工作流…</div>}
@@ -80,6 +85,12 @@ export function WorkflowListPage() {
             </form>
           </dialog>
         </div>
+      )}
+      {importing && (
+        <ImportWorkflowTemplateDialog
+          onClose={() => setImporting(false)}
+          onImported={(workflow) => navigate(`/workflows/${workflow.id}`)}
+        />
       )}
     </main>
   )

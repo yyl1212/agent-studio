@@ -138,6 +138,19 @@ button { cursor: pointer; }
 
 .primary-button:disabled { cursor: wait; opacity: .6; }
 
+.page-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.page-actions > button:not(.primary-button) {
+  padding: 9px 14px;
+  border: 1px solid #cbd3e1;
+  border-radius: 9px;
+  background: white;
+  font-weight: 650;
+}
+
 .state-card {
   padding: 48px;
   border: 1px dashed #cbd3e1;
@@ -190,6 +203,8 @@ dialog {
 }
 
 dialog h3 { margin-top: 0; }
+dialog fieldset { margin: 18px 0 0; padding: 0; border: 0; }
+dialog legend { font-weight: 750; }
 dialog label, .schema-field { display: grid; gap: 7px; margin: 16px 0; font-weight: 650; }
 dialog input, dialog textarea, .schema-field input, .schema-field textarea, .schema-field select {
   width: 100%;
@@ -218,8 +233,33 @@ dialog textarea, .schema-field textarea { min-height: 100px; resize: vertical; }
 .run-detail article span { color: #667085; }
 .run-detail pre { overflow: auto; padding: 10px; border-radius: 8px; background: #f3f5f8; white-space: pre-wrap; }
 
+.template-import-dialog {
+  width: min(620px, calc(100% - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.template-summary {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #dfe5ef;
+  border-radius: 12px;
+  background: #f8faff;
+}
+
+.template-summary h4 { margin: 0 0 8px; }
+.template-summary p { margin: 6px 0 0; color: #667085; }
+.template-summary ul { margin: 0; padding-left: 20px; }
+.template-node-list { display: grid; gap: 8px; list-style: none; padding: 0 !important; }
+.template-node-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.template-node-list li span:nth-child(2) { color: #667085; font-size: 13px; }
+.capability-badge { padding: 3px 7px; border-radius: 999px; color: #2446ae; background: #e8edff; font-size: 12px; font-weight: 700; }
+
 @media (max-width: 600px) {
   .page-heading { align-items: stretch; flex-direction: column; }
+  .page-actions { flex-direction: column; }
   .run-history-layout { grid-template-columns: 1fr; }
   .run-table button { grid-template-columns: 1fr 1fr; }
 }

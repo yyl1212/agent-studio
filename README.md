@@ -213,6 +213,7 @@ corepack pnpm@10.34.5 build
 - `apps/web`：React 工作流列表、画布 Studio、通用 Schema 表单、Agent 页与运行记录。
 - `sdk/go/agentnode`：公开节点协议；`sdk/go/agenttest`：第三方节点契约测试工具。
 - `contracts/openapi.yaml`：前后端唯一 HTTP 契约来源。
+- [工作流模板导入导出](docs/workflow-templates.md)：本地 JSON 模板的使用方法与安全边界。
 - `docs/node-development.md`：无需修改前端的节点扩展示例。
 - `docs/sdk/quickstart.md`：仓库节点创建、测试、生成和画布验证的黄金路径。
 

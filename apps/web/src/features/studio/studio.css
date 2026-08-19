@@ -6,6 +6,8 @@
 .studio-title small { color: #6d7687; }
 .studio-actions button, .studio-actions a { padding: 8px 12px; border: 1px solid #dce3ee; border-radius: 9px; background: white; }
 .studio-actions .primary-button { border-color: #3157d5; background: #3157d5; }
+.studio-actions button:disabled { cursor: wait; opacity: .6; }
+.studio-toolbar-error { max-width: 260px; color: #b42318; font-size: 13px; font-weight: 650; }
 .workflow-canvas { width: 100%; height: 100%; }
 .generic-node { position: relative; display: grid; min-width: 170px; gap: 4px; padding: 16px 18px; border: 1px solid #ccd5e3; border-radius: 14px; background: white; box-shadow: 0 9px 24px rgb(23 32 51 / 10%); }
 .generic-node.selected { border-color: #3157d5; box-shadow: 0 0 0 3px rgb(49 87 213 / 14%), 0 9px 24px rgb(23 32 51 / 10%); }
