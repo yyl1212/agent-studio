@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 )
 
 var (
@@ -32,6 +33,26 @@ type CreateWorkflowInput struct {
 	Description string `json:"description"`
 }
 
+type TemplateExport struct {
+	Filename string
+	Data     []byte
+}
+
+type ImportWorkflowTemplateInput struct {
+	Template    workflowtemplate.Template `json:"template"`
+	Name        string                    `json:"name"`
+	Slug        string                    `json:"slug"`
+	Description string                    `json:"description"`
+}
+
+type TemplateValidationError struct {
+	Issues []domain.ValidationIssue
+}
+
+func (err *TemplateValidationError) Error() string {
+	return "工作流模板校验失败"
+}
+
 type AgentManifest struct {
 	WorkflowVersionID string          `json:"workflowVersionId"`
 	Version           int             `json:"version"`
@@ -41,12 +62,13 @@ type AgentManifest struct {
 }
 
 type Service struct {
-	store    Store
-	compiler Compiler
+	store     Store
+	compiler  Compiler
+	templates *workflowtemplate.Analyzer
 }
 
-func NewService(store Store, compiler Compiler) *Service {
-	return &Service{store: store, compiler: compiler}
+func NewService(store Store, compiler Compiler, catalog workflowtemplate.NodeCatalog) *Service {
+	return &Service{store: store, compiler: compiler, templates: workflowtemplate.NewAnalyzer(compiler, catalog)}
 }
 
 func (service *Service) List(ctx context.Context) ([]domain.Workflow, error) {
@@ -58,11 +80,6 @@ func (service *Service) Get(ctx context.Context, id string) (domain.Workflow, er
 }
 
 func (service *Service) Create(ctx context.Context, input CreateWorkflowInput) (domain.Workflow, error) {
-	input.Name = strings.TrimSpace(input.Name)
-	input.Slug = strings.TrimSpace(input.Slug)
-	if input.Name == "" || !slugPattern.MatchString(input.Slug) {
-		return domain.Workflow{}, ErrInvalidWorkflowInput
-	}
 	graph := domain.Graph{
 		SchemaVersion: 1,
 		Nodes: []domain.Node{
@@ -70,6 +87,15 @@ func (service *Service) Create(ctx context.Context, input CreateWorkflowInput) (
 			{ID: uuid.NewString(), Type: "end", TypeVersion: "1", Position: domain.Position{X: 520, Y: 180}, Config: json.RawMessage(`{}`)},
 		},
 		Edges: []domain.Edge{},
+	}
+	return service.createWithGraph(ctx, input, graph)
+}
+
+func (service *Service) createWithGraph(ctx context.Context, input CreateWorkflowInput, graph domain.Graph) (domain.Workflow, error) {
+	input.Name = strings.TrimSpace(input.Name)
+	input.Slug = strings.TrimSpace(input.Slug)
+	if input.Name == "" || !slugPattern.MatchString(input.Slug) {
+		return domain.Workflow{}, ErrInvalidWorkflowInput
 	}
 	raw, err := json.Marshal(graph)
 	if err != nil {
@@ -87,6 +113,50 @@ func (service *Service) Create(ctx context.Context, input CreateWorkflowInput) (
 		return domain.Workflow{}, domain.ErrSlugConflict
 	}
 	return workflow, err
+}
+
+func (service *Service) ExportTemplate(ctx context.Context, id string, revision int64) (TemplateExport, error) {
+	loaded, err := service.store.GetWorkflow(ctx, id)
+	if err != nil {
+		return TemplateExport{}, err
+	}
+	if loaded.DraftRevision != revision {
+		return TemplateExport{}, domain.ErrRevisionConflict
+	}
+	var graph domain.Graph
+	if err := json.Unmarshal(loaded.DraftGraph, &graph); err != nil {
+		return TemplateExport{}, &TemplateValidationError{Issues: []domain.ValidationIssue{{
+			Code: "GRAPH_JSON_INVALID", Message: "工作流图 JSON 无效", Path: "spec.graph",
+		}}}
+	}
+	analysis := service.templates.Analyze(workflowtemplate.Template{
+		APIVersion: workflowtemplate.APIVersion,
+		Kind:       workflowtemplate.Kind,
+		Metadata:   workflowtemplate.Metadata{Name: loaded.Name, Description: loaded.Description},
+		Spec:       workflowtemplate.Spec{Graph: graph},
+	})
+	if !analysis.Preview.Valid {
+		return TemplateExport{}, &TemplateValidationError{Issues: analysis.Preview.Issues}
+	}
+	data, err := workflowtemplate.Encode(analysis.Normalized)
+	if err != nil {
+		return TemplateExport{}, fmt.Errorf("encode workflow template: %w", err)
+	}
+	return TemplateExport{Filename: loaded.Slug + ".workflow.json", Data: data}, nil
+}
+
+func (service *Service) PreviewTemplate(_ context.Context, template workflowtemplate.Template) workflowtemplate.Preview {
+	return service.templates.Analyze(template).Preview
+}
+
+func (service *Service) ImportTemplate(ctx context.Context, input ImportWorkflowTemplateInput) (domain.Workflow, error) {
+	analysis := service.templates.Analyze(input.Template)
+	if !analysis.Preview.Valid {
+		return domain.Workflow{}, &TemplateValidationError{Issues: analysis.Preview.Issues}
+	}
+	return service.createWithGraph(ctx, CreateWorkflowInput{
+		Name: input.Name, Slug: input.Slug, Description: input.Description,
+	}, analysis.Normalized.Spec.Graph)
 }
 
 func (service *Service) SaveDraft(ctx context.Context, id string, revision int64, graph domain.Graph) (domain.Workflow, error) {
