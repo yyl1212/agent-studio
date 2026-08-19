@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { APIError, api, type Workflow, type WorkflowTemplate, type WorkflowTemplatePreview } from './client'
+import { APIError, api, parseWorkflowTemplateJSON, type Workflow, type WorkflowTemplate, type WorkflowTemplatePreview } from './client'
 
 describe('API client', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -71,6 +71,20 @@ describe('API client', () => {
 		await expect(api.exportWorkflowTemplate('w1', 2)).rejects.toEqual(
 			expect.objectContaining<Partial<APIError>>({ status: 422, code: 'WORKFLOW_TEMPLATE_INVALID' }),
 		)
+	})
+
+	it('预览和导入请求保留模板中的大整数原文', async () => {
+		const raw = '{"apiVersion":"agent-studio.dev/v1alpha1","kind":"WorkflowTemplate","metadata":{"name":"大整数","description":""},"spec":{"graph":{"schemaVersion":1,"nodes":[{"id":"n","type":"custom","typeVersion":"1","position":{"x":0,"y":0},"config":{"value":9007199254740993}}],"edges":[]}}}'
+		const template = parseWorkflowTemplateJSON(raw)
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify(previewFixture()), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(workflowFixture()), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+		vi.stubGlobal('fetch', fetchMock)
+		await api.previewWorkflowTemplate(template)
+		await api.importWorkflowTemplate({ template, name: '副本', slug: 'copy', description: '' })
+		expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('9007199254740993')
+		expect(fetchMock.mock.calls[1]?.[1]?.body).toContain('9007199254740993')
+		expect(fetchMock.mock.calls[0]?.[1]?.body).not.toContain('9007199254740992')
 	})
 })
 

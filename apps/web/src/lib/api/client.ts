@@ -65,6 +65,24 @@ async function throwAPIError(response: Response): Promise<never> {
 }
 
 const jsonBody = (value: unknown) => JSON.stringify(value)
+const rawWorkflowTemplates = new WeakMap<object, string>()
+
+export function parseWorkflowTemplateJSON(source: string): WorkflowTemplate {
+  const value: unknown = JSON.parse(source)
+  if (typeof value === 'object' && value !== null) rawWorkflowTemplates.set(value, source)
+  return value as WorkflowTemplate
+}
+
+export function serializePreviewWorkflowTemplateRequest(template: WorkflowTemplate) {
+  const raw = rawWorkflowTemplates.get(template)
+  return raw === undefined ? jsonBody({ template }) : `{"template":${raw}}`
+}
+
+export function serializeImportWorkflowTemplateRequest(body: ImportWorkflowTemplateRequest) {
+  const raw = rawWorkflowTemplates.get(body.template)
+  if (raw === undefined) return jsonBody(body)
+  return `{"template":${raw},"name":${JSON.stringify(body.name)},"slug":${JSON.stringify(body.slug)},"description":${JSON.stringify(body.description)}}`
+}
 
 export const api = {
   listNodeTypes: (signal?: AbortSignal) => request<NodeDefinition[]>('/api/node-types', { signal }),
@@ -75,9 +93,9 @@ export const api = {
   listWorkflows: (signal?: AbortSignal) => request<Workflow[]>('/api/workflows', { signal }),
   createWorkflow: (body: CreateWorkflowRequest) => request<Workflow>('/api/workflows', { method: 'POST', body: jsonBody(body) }),
   previewWorkflowTemplate: (template: WorkflowTemplate, signal?: AbortSignal) =>
-    request<WorkflowTemplatePreview>('/api/workflow-templates/preview', { method: 'POST', body: jsonBody({ template }), signal }),
+    request<WorkflowTemplatePreview>('/api/workflow-templates/preview', { method: 'POST', body: serializePreviewWorkflowTemplateRequest(template), signal }),
   importWorkflowTemplate: (body: ImportWorkflowTemplateRequest, signal?: AbortSignal) =>
-    request<Workflow>('/api/workflow-templates/import', { method: 'POST', body: jsonBody(body), signal }),
+    request<Workflow>('/api/workflow-templates/import', { method: 'POST', body: serializeImportWorkflowTemplateRequest(body), signal }),
   exportWorkflowTemplate: (id: string, draftRevision: number, signal?: AbortSignal) =>
     requestBlob(`/api/workflows/${encodeURIComponent(id)}/template?draftRevision=${encodeURIComponent(String(draftRevision))}`, signal),
   getWorkflow: (id: string, signal?: AbortSignal) => request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { signal }),

@@ -3,6 +3,9 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'r
 import {
   APIError,
   api,
+  parseWorkflowTemplateJSON,
+  serializeImportWorkflowTemplateRequest,
+  serializePreviewWorkflowTemplateRequest,
   type Workflow,
   type WorkflowTemplate,
   type WorkflowTemplatePreview,
@@ -58,7 +61,7 @@ export function ImportWorkflowTemplateDialog({ onClose, onImported }: Props) {
     try {
       const text = await file.text()
       if (currentController.signal.aborted) return
-      const value: unknown = JSON.parse(text)
+      const value: unknown = parseWorkflowTemplateJSON(text)
       if (!isRecord(value)) {
         setError('JSON 根节点必须是模板对象')
         return
@@ -69,7 +72,7 @@ export function ImportWorkflowTemplateDialog({ onClose, onImported }: Props) {
       return
     }
 
-    const previewBody = JSON.stringify({ template: parsed })
+    const previewBody = serializePreviewWorkflowTemplateRequest(parsed)
     if (new Blob([previewBody]).size > maxTemplateBytes) {
       setError('模板预览请求不能超过 2 MiB')
       return
@@ -101,7 +104,7 @@ export function ImportWorkflowTemplateDialog({ onClose, onImported }: Props) {
       return
     }
     const body = { template, name: normalizedName, slug: normalizedSlug, description }
-    if (new Blob([JSON.stringify(body)]).size > maxTemplateBytes) {
+    if (new Blob([serializeImportWorkflowTemplateRequest(body)]).size > maxTemplateBytes) {
       setError('模板导入请求不能超过 2 MiB')
       return
     }
