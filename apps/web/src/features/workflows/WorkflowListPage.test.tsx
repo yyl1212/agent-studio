@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '../../lib/api/client'
@@ -34,5 +34,40 @@ describe('WorkflowListPage', () => {
     await userEvent.type(screen.getByLabelText('Agent 地址标识'), 'demo')
     await userEvent.click(screen.getByRole('button', { name: '创建' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Agent 地址标识已存在')
+  })
+
+  it('从列表页打开模板导入并导航到新工作流', async () => {
+    vi.spyOn(api, 'listWorkflows').mockResolvedValue([])
+    vi.spyOn(api, 'previewWorkflowTemplate').mockResolvedValue({
+      valid: true,
+      metadata: { name: '模板', description: '' },
+      summary: { nodeCount: 0, edgeCount: 0, inputSchema: {}, nodeTypes: [] },
+      issues: [],
+    })
+    vi.spyOn(api, 'importWorkflowTemplate').mockResolvedValue({
+      id: 'imported', name: '模板', slug: 'imported-workflow', description: '',
+      draftGraph: { schemaVersion: 1, nodes: [], edges: [] }, draftRevision: 1,
+      createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
+    })
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<WorkflowListPage />} />
+          <Route path="/workflows/:id" element={<p>已打开导入工作流</p>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByText('还没有工作流')
+    await userEvent.click(screen.getByRole('button', { name: '导入模板' }))
+    const template = {
+      apiVersion: 'agent-studio.dev/v1alpha1' as const,
+      kind: 'WorkflowTemplate' as const,
+      metadata: { name: '模板', description: '' },
+      spec: { graph: { schemaVersion: 1 as const, nodes: [], edges: [] } },
+    }
+    await userEvent.upload(screen.getByLabelText('选择模板文件'), new File([JSON.stringify(template)], 'template.json', { type: 'application/json' }))
+    await screen.findByText('0 个节点 · 0 条连线')
+    await userEvent.click(screen.getByRole('button', { name: '导入并打开' }))
+    expect(await screen.findByText('已打开导入工作流')).toBeInTheDocument()
   })
 })

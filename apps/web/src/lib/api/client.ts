@@ -14,6 +14,9 @@ export type CreateWorkflowRequest = components['schemas']['CreateWorkflowRequest
 export type SaveDraftRequest = components['schemas']['SaveDraftRequest']
 export type DraftRunRequest = components['schemas']['DraftRunRequest']
 export type AgentRunRequest = components['schemas']['AgentRunRequest']
+export type WorkflowTemplate = components['schemas']['WorkflowTemplate']
+export type WorkflowTemplatePreview = components['schemas']['WorkflowTemplatePreview']
+export type ImportWorkflowTemplateRequest = components['schemas']['ImportWorkflowTemplateRequest']
 
 export class APIError extends Error {
   constructor(
@@ -65,6 +68,10 @@ export const api = {
     }),
   listWorkflows: (signal?: AbortSignal) => request<Workflow[]>('/api/workflows', { signal }),
   createWorkflow: (body: CreateWorkflowRequest) => request<Workflow>('/api/workflows', { method: 'POST', body: jsonBody(body) }),
+  previewWorkflowTemplate: (template: WorkflowTemplate, signal?: AbortSignal) =>
+    request<WorkflowTemplatePreview>('/api/workflow-templates/preview', { method: 'POST', body: jsonBody({ template }), signal }),
+  importWorkflowTemplate: (body: ImportWorkflowTemplateRequest, signal?: AbortSignal) =>
+    request<Workflow>('/api/workflow-templates/import', { method: 'POST', body: jsonBody(body), signal }),
   getWorkflow: (id: string, signal?: AbortSignal) => request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { signal }),
   saveWorkflow: (id: string, body: SaveDraftRequest, signal?: AbortSignal) =>
     request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { method: 'PUT', body: jsonBody(body), signal }),
