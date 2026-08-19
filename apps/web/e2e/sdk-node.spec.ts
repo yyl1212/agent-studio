@@ -7,6 +7,7 @@ test('扩展 Echo 无需前端专用组件即可运行', async ({ page }) => {
   await page.goto(workflowURL)
   await configureStartTextField(page, 'topic', '主题')
   await page.getByRole('button', { name: '添加节点' }).click()
+  await expect(page.getByRole('button', { name: /Echo.*Agent Studio 官方扩展节点/ })).toBeVisible()
   await page.getByRole('button', { name: 'Echo' }).click()
   await page.getByLabel('前缀').fill('回答：')
   await page.getByRole('button', { name: '关闭节点配置' }).click()
