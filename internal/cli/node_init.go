@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/yyl1212/agent-studio/internal/nodemanifest"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/internal/scaffold"
 	"golang.org/x/mod/modfile"
 )
@@ -39,11 +40,28 @@ func initializeNode(ctx context.Context, start, name string) (nodeInitResult, er
 	if err != nil {
 		return nodeInitResult{}, err
 	}
+	packageManifestPath := filepath.Join(root, nodepackage.Filename)
+	packageManifestData, err := os.ReadFile(packageManifestPath)
+	if err != nil {
+		return nodeInitResult{}, fmt.Errorf("read node package manifest %s: %w", packageManifestPath, err)
+	}
+	packageManifest, err := nodepackage.Parse(nodepackage.Filename, packageManifestData)
+	if err != nil {
+		return nodeInitResult{}, err
+	}
+	if packageManifest.Metadata.Name != parsedModule.Module.Mod.Path {
+		return nodeInitResult{}, fmt.Errorf(
+			"node package manifest module %q does not match go.mod module %q",
+			packageManifest.Metadata.Name,
+			parsedModule.Module.Mod.Path,
+		)
+	}
 	plan, err := scaffold.Plan(scaffold.Request{
-		RootDir:    root,
-		ModulePath: parsedModule.Module.Mod.Path,
-		Name:       name,
-		Manifest:   manifest,
+		RootDir:         root,
+		ModulePath:      parsedModule.Module.Mod.Path,
+		Name:            name,
+		Manifest:        manifest,
+		PackageManifest: packageManifest,
 	})
 	if err != nil {
 		return nodeInitResult{}, err

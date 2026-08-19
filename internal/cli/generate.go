@@ -60,6 +60,27 @@ func findProjectRoot(start string) (string, error) {
 	}
 }
 
+func findGoModuleRoot(start string) (string, error) {
+	current, err := filepath.Abs(start)
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory %s: %w", start, err)
+	}
+	for {
+		goModule, moduleErr := regularFile(filepath.Join(current, "go.mod"))
+		if moduleErr != nil {
+			return "", moduleErr
+		}
+		if goModule {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("find Go module root from %s: go.mod was not found", start)
+		}
+		current = parent
+	}
+}
+
 func regularFile(path string) (bool, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, fs.ErrNotExist) {

@@ -2,23 +2,26 @@ package cli
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/yyl1212/agent-studio/internal/buildinfo"
 	"github.com/yyl1212/agent-studio/internal/scaffold"
 )
 
-const helpText = "doctor\ngenerate\nnode init\nnode test\nversion\n"
+const helpText = "doctor\ngenerate\nnode init\nnode package init\nnode test\nversion\n"
 
 type appDependencies struct {
-	workingDir func() (string, error)
-	buildInfo  func() buildinfo.Info
-	diagnose   func(context.Context, string) []CheckResult
-	generate   func(context.Context, string) (generateResult, error)
-	nodeInit   func(context.Context, string, string) (nodeInitResult, error)
-	nodeTest   func(context.Context, string, string, io.Writer, io.Writer) int
+	workingDir      func() (string, error)
+	buildInfo       func() buildinfo.Info
+	diagnose        func(context.Context, string) []CheckResult
+	generate        func(context.Context, string) (generateResult, error)
+	nodeInit        func(context.Context, string, string) (nodeInitResult, error)
+	nodePackageInit func(context.Context, string, packageInitInput) error
+	nodeTest        func(context.Context, string, string, io.Writer, io.Writer) int
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -28,9 +31,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		diagnose: func(ctx context.Context, root string) []CheckResult {
 			return Diagnose(ctx, root, defaultDoctorDeps(root))
 		},
-		generate: generateNodes,
-		nodeInit: initializeNode,
-		nodeTest: testNodePackage,
+		generate:        generateNodes,
+		nodeInit:        initializeNode,
+		nodePackageInit: initializeNodePackage,
+		nodeTest:        testNodePackage,
 	})
 }
 
@@ -107,7 +111,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 		return 0
 	case "node":
 		if len(args) < 2 {
-			_, _ = io.WriteString(stderr, "node requires init or test\n")
+			_, _ = io.WriteString(stderr, "node requires init, package, or test\n")
 			return 2
 		}
 		switch args[1] {
@@ -145,6 +149,43 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 				return 1
 			}
 			return dependencies.nodeTest(ctx, start, args[2], stdout, stderr)
+		case "package":
+			if len(args) < 3 || args[2] != "init" {
+				_, _ = io.WriteString(stderr, "node package requires init\n")
+				return 2
+			}
+			flags := flag.NewFlagSet("node package init", flag.ContinueOnError)
+			flags.SetOutput(stderr)
+			input := packageInitInput{}
+			flags.StringVar(&input.DisplayName, "display-name", "", "package display name")
+			flags.StringVar(&input.Description, "description", "", "package description")
+			flags.StringVar(&input.License, "license", "", "package license")
+			flags.StringVar(&input.Repository, "repository", "", "package repository")
+			flags.StringVar(&input.RuntimeMin, "runtime-min", "", "minimum runtime version")
+			flags.StringVar(&input.RuntimeMaxExclusive, "runtime-max-exclusive", "", "exclusive maximum runtime version")
+			if err := flags.Parse(args[3:]); err != nil {
+				return 2
+			}
+			if flags.NArg() != 0 {
+				_, _ = io.WriteString(stderr, "node package init takes flags only\n")
+				return 2
+			}
+			missing := missingPackageInitFlags(input)
+			if len(missing) != 0 {
+				_, _ = fmt.Fprintf(stderr, "node package init required flags: %s\n", strings.Join(missing, ", "))
+				return 2
+			}
+			start, err := dependencies.workingDir()
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "determine working directory: %v\n", err)
+				return 1
+			}
+			if err := dependencies.nodePackageInit(ctx, start, input); err != nil {
+				_, _ = fmt.Fprintf(stderr, "initialize node package: %v\n", err)
+				return 1
+			}
+			_, _ = io.WriteString(stdout, "created agent-studio.node-package.json\n")
+			return 0
 		default:
 			_, _ = fmt.Fprintf(stderr, "unknown node command %q\n", args[1])
 			return 2
