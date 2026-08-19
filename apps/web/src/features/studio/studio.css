@@ -27,6 +27,7 @@
 .studio-drawer section h3 { margin: 24px 0 8px; color: #687387; font-size: 12px; text-transform: uppercase; }
 .library-node { display: grid; width: 100%; gap: 4px; margin: 8px 0; padding: 14px; border: 1px solid #dce3ee; border-radius: 11px; text-align: left; background: #fbfcfe; }
 .library-node small { color: #6d7687; }
+.library-node .package-summary { color: #475467; font-weight: 600; }
 .test-run-drawer { position: absolute; z-index: 13; right: 16px; bottom: 16px; left: 16px; max-height: 68%; padding: 22px; overflow: auto; border: 1px solid #dce3ee; border-radius: 16px; background: white; box-shadow: 0 -16px 55px rgb(23 32 51 / 18%); }
 .test-columns { display: grid; grid-template-columns: minmax(260px, 420px) 1fr; gap: 28px; }
 .run-output { max-height: 220px; padding: 14px; overflow: auto; border-radius: 10px; color: #d9e2f1; background: #172033; white-space: pre-wrap; }

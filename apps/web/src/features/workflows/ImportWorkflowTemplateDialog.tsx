@@ -138,6 +138,7 @@ export function ImportWorkflowTemplateDialog({ onClose, onImported }: Props) {
           </label>
 
           {loading && <p aria-live="polite">正在分析模板…</p>}
+          {template?.apiVersion === 'agent-studio.dev/v1alpha1' && <p className="template-upgrade-note">旧版模板，导入后将升级为 v1alpha2</p>}
           {preview && (
             <section className="template-summary" aria-label="模板预览">
               <div>
@@ -166,7 +167,13 @@ export function ImportWorkflowTemplateDialog({ onClose, onImported }: Props) {
               {preview.issues.length > 0 && (
                 <div>
                   <h4>需要处理</h4>
-                  <ul>{preview.issues.map((issue, index) => <li key={`${issue.code}-${issue.nodeId ?? ''}-${issue.path ?? ''}-${index}`}>{issue.message}</li>)}</ul>
+                  <ul>{preview.issues.map((issue, index) => (
+                    <li key={`${issue.code}-${issue.nodeId ?? ''}-${issue.path ?? ''}-${index}`}>
+                      {issue.packageName
+                        ? `需要节点包 ${issue.packageName}${issue.packageVersion ? ` · 导出环境 ${issue.packageVersion}` : ''} · ${issue.message}`
+                        : issue.message}
+                    </li>
+                  ))}</ul>
                 </div>
               )}
             </section>

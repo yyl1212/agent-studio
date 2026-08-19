@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { APIError, api } from '../../lib/api/client'
+import { APIError, api, type NodeDefinition } from '../../lib/api/client'
 import { StudioPage } from './StudioPage'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -24,7 +24,7 @@ const workflow = {
   createdAt: '2026-08-17T00:00:00Z', updatedAt: '2026-08-17T00:00:00Z',
 }
 
-const definitions = [
+const rawDefinitions = [
   { type: 'start', version: '1', title: '开始', description: '', category: '流程', configSchema: { type: 'object' }, inputs: [], outputs: [] },
   { type: 'end', version: '1', title: '结束', description: '', category: '流程', configSchema: { type: 'object' }, inputs: [], outputs: [] },
   { type: 'template', version: '1', title: '提示词模板', description: '', category: '文本', configSchema: { type: 'object', properties: { template: { type: 'string', title: '模板', 'x-ui-widget': 'textarea' } }, required: ['template'] }, inputs: [], outputs: [{ key: 'text', title: '文本', type: 'string' as const, required: false, cardinality: 'one' as const }] },
@@ -67,6 +67,14 @@ const definitions = [
   },
 ]
 
+const definitions = rawDefinitions.map((definition) => ({
+  ...definition,
+  capabilities: 'capabilities' in definition ? (definition.capabilities ?? []) : [],
+  package: definition.type.startsWith('extension.')
+    ? { name: 'github.com/yyl1212/agent-studio', displayName: 'Agent Studio 官方扩展节点', license: 'Apache-2.0', repository: 'https://github.com/yyl1212/agent-studio', source: 'development' as const }
+    : { name: 'agent-studio.dev/core', displayName: 'Agent Studio Core', version: 'v0.3.0', license: 'Apache-2.0', repository: 'https://github.com/yyl1212/agent-studio', source: 'builtin' as const },
+})) satisfies NodeDefinition[]
+
 describe('StudioPage', () => {
   afterEach(() => vi.restoreAllMocks())
 
@@ -81,7 +89,7 @@ describe('StudioPage', () => {
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     expect(await screen.findByText('演示助手')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
-    await userEvent.click(screen.getByRole('button', { name: '提示词模板' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
     expect(screen.getByRole('dialog', { name: '节点配置' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
     await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
@@ -97,7 +105,7 @@ describe('StudioPage', () => {
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
-    await userEvent.click(screen.getByRole('button', { name: '提示词模板' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
     await userEvent.click(screen.getByRole('button', { name: '发布' }))
     await userEvent.click(screen.getByRole('button', { name: '确认发布' }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalled())
@@ -174,7 +182,7 @@ describe('StudioPage', () => {
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
-    await userEvent.click(screen.getByRole('button', { name: '提示词模板' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
     await userEvent.click(screen.getByRole('button', { name: '导出模板' }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalled())
     expect(api.exportWorkflowTemplate).not.toHaveBeenCalled()

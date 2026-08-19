@@ -12,7 +12,8 @@ export function NodeLibraryDrawer({ definitions, onAdd, onClose }: NodeLibraryDr
   const [query, setQuery] = useState('')
   const groups = useMemo(() => {
     const filtered = definitions.filter((definition) => definition.type !== 'start' && definition.type !== 'end')
-      .filter((definition) => `${definition.title} ${definition.description}`.toLowerCase().includes(query.toLowerCase()))
+      .filter((definition) => [definition.title, definition.description, definition.type, definition.package.name, definition.package.displayName]
+        .join(' ').toLowerCase().includes(query.toLowerCase()))
     const grouped = new Map<string, NodeDefinition[]>()
     for (const definition of filtered) grouped.set(definition.category, [...(grouped.get(definition.category) ?? []), definition])
     return grouped
@@ -25,6 +26,7 @@ export function NodeLibraryDrawer({ definitions, onAdd, onClose }: NodeLibraryDr
         <section key={category}><h3>{category}</h3>{items.map((definition) => (
           <button className="library-node" type="button" key={`${definition.type}@${definition.version}`} onClick={() => onAdd(definition)}>
             <strong>{definition.title}</strong><small>{definition.description}</small>
+            <small className="package-summary">{definition.package.displayName}{definition.package.version ? ` · ${definition.package.version}` : ''}</small>
           </button>
         ))}</section>
       ))}

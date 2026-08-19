@@ -14,7 +14,7 @@ export type CreateWorkflowRequest = components['schemas']['CreateWorkflowRequest
 export type SaveDraftRequest = components['schemas']['SaveDraftRequest']
 export type DraftRunRequest = components['schemas']['DraftRunRequest']
 export type AgentRunRequest = components['schemas']['AgentRunRequest']
-export type WorkflowTemplate = components['schemas']['WorkflowTemplate']
+export type WorkflowTemplate = components['schemas']['WorkflowTemplateV1Alpha1'] | components['schemas']['WorkflowTemplateV1Alpha2']
 export type WorkflowTemplatePreview = components['schemas']['WorkflowTemplatePreview']
 export type ImportWorkflowTemplateRequest = components['schemas']['ImportWorkflowTemplateRequest']
 

@@ -16,6 +16,7 @@ describe('ImportWorkflowTemplateDialog', () => {
 
     await userEvent.upload(screen.getByLabelText('选择模板文件'), templateFile())
     expect(await screen.findByText('3 个节点 · 2 条连线')).toBeInTheDocument()
+    expect(screen.getByText('旧版模板，导入后将升级为 v1alpha2')).toBeInTheDocument()
     expect(screen.getByText('topic · 主题 · 必填')).toBeInTheDocument()
     expect(screen.getByText('Echo · 1.0.0')).toBeInTheDocument()
     expect(screen.getByText('network')).toBeInTheDocument()
@@ -63,13 +64,25 @@ describe('ImportWorkflowTemplateDialog', () => {
         ...previewFixture().summary,
         nodeTypes: [{ type: 'extension.missing', version: '9.9.9', title: 'extension.missing', count: 1, available: false, capabilities: [] }],
       },
-      issues: [{ code: 'NODE_TYPE_NOT_FOUND', message: '节点类型或版本未注册', nodeId: 'missing' }],
+      issues: [{ code: 'NODE_TYPE_NOT_FOUND', message: '节点类型或版本未注册', nodeId: 'missing', packageName: 'github.com/example/missing', packageVersion: 'v1.2.3' }],
     })
     render(<ImportWorkflowTemplateDialog onClose={vi.fn()} onImported={vi.fn()} />)
     await userEvent.upload(screen.getByLabelText('选择模板文件'), templateFile())
-    expect(await screen.findByText('节点类型或版本未注册')).toBeInTheDocument()
+    expect(await screen.findByText(/需要节点包 github.com\/example\/missing · 导出环境 v1.2.3/)).toBeInTheDocument()
     expect(screen.getByText('不可用')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '导入并打开' })).toBeDisabled()
+  })
+
+  it('把恶意包名作为纯文本显示', async () => {
+    const packageName = '<img src=x onerror=alert(1)>'
+    vi.spyOn(api, 'previewWorkflowTemplate').mockResolvedValue({
+      ...previewFixture(), valid: false,
+      issues: [{ code: 'NODE_TYPE_NOT_FOUND', message: '节点类型或版本未注册', nodeId: 'missing', packageName }],
+    })
+    render(<ImportWorkflowTemplateDialog onClose={vi.fn()} onImported={vi.fn()} />)
+    await userEvent.upload(screen.getByLabelText('选择模板文件'), templateFile())
+    expect(await screen.findByText(new RegExp(packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeInTheDocument()
+    expect(document.querySelector('img')).toBeNull()
   })
 
   it('显示 slug 冲突且不关闭 Dialog', async () => {
