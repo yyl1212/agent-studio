@@ -1,15 +1,113 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yyl1212/agent-studio/internal/nodepackage"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
+
+func TestInspectNodePackagePrintsHumanAndJSONOutput(t *testing.T) {
+	root := nodePackageFixtureProject(t)
+	if err := os.WriteFile(filepath.Join(root, "agent-studio.nodes.yaml"), []byte("apiVersion: agent-studio.dev/v1alpha1\nnodes: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inspector := inspectFixtureInspector(t)
+	for _, test := range []struct {
+		name       string
+		jsonOutput bool
+	}{
+		{name: "human"},
+		{name: "json", jsonOutput: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := inspectNodePackageWithInspector(context.Background(), root, "example.com/nodes/echo", test.jsonOutput, &stdout, &stderr, inspector)
+			if code != 0 || stderr.Len() != 0 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if test.jsonOutput {
+				var output inspectOutput
+				if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+					t.Fatal(err)
+				}
+				if output.Package.Name != "example.com/nodes" || output.Package.Version != "v1.2.3" ||
+					output.Registration.Package != "example.com/nodes/echo" || len(output.Diagnostics) != 0 {
+					t.Fatalf("output=%+v", output)
+				}
+				return
+			}
+			for _, want := range []string{"example.com/nodes", "v1.2.3", agentnode.APIVersion, "v0.2.0", "v0.4.0", "extension.echo@1.0.0"} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("human output missing %q: %s", want, stdout.String())
+				}
+			}
+		})
+	}
+}
+
+func TestInspectNodePackageFailureDoesNotExposeLocalPath(t *testing.T) {
+	root := nodePackageFixtureProject(t)
+	if err := os.WriteFile(filepath.Join(root, "agent-studio.nodes.yaml"), []byte("apiVersion: agent-studio.dev/v1alpha1\nnodes: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inspector := inspectFixtureInspector(t)
+	inspector.Command = func(context.Context, string, map[string]string, string, ...string) ([]byte, error) {
+		return []byte("/Users/example/private/module"), errors.New("go list failed")
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := inspectNodePackageWithInspector(context.Background(), root, "example.com/nodes/echo", true, &stdout, &stderr, inspector)
+	if code != 1 || stderr.Len() != 0 || strings.Contains(stdout.String(), "/Users/example/private") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var output inspectOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil || !nodepackage.HasErrors(output.Diagnostics) {
+		t.Fatalf("output=%+v err=%v", output, err)
+	}
+}
+
+func inspectFixtureInspector(t *testing.T) nodepackage.Inspector {
+	t.Helper()
+	manifest := nodepackage.Manifest{
+		APIVersion: nodepackage.APIVersion, Kind: nodepackage.Kind,
+		Metadata:      nodepackage.Metadata{Name: "example.com/nodes", DisplayName: "Example Nodes", Description: "", License: "Apache-2.0", Repository: "https://example.com/nodes"},
+		Compatibility: nodepackage.Compatibility{NodeAPI: agentnode.APIVersion, Runtime: nodepackage.RuntimeRange{MinVersion: "v0.2.0", MaxVersionExclusive: "v0.4.0"}},
+		Registrations: []nodepackage.Registration{{Package: "example.com/nodes/echo", Nodes: []nodepackage.NodeRef{{Type: "extension.echo", Version: "1.0.0"}}}},
+	}
+	manifestData, err := nodepackage.Encode(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nodepackage.Inspector{
+		Command: func(_ context.Context, _ string, _ map[string]string, _ string, args ...string) ([]byte, error) {
+			return json.Marshal(map[string]any{
+				"ImportPath": args[len(args)-1],
+				"Module":     map[string]any{"Path": "example.com/nodes", "Version": "v1.2.3", "Dir": "/Users/example/private/module"},
+			})
+		},
+		ReadFile: func(path string) ([]byte, error) {
+			switch path {
+			case "/Users/example/private/module/agent-studio.node-package.json":
+				return manifestData, nil
+			case "/Users/example/private/module/go.mod":
+				return []byte("module example.com/nodes\n\ngo 1.26.0\n\nrequire github.com/yyl1212/agent-studio v0.2.0\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected read")
+			}
+		},
+		RuntimeVersion: "v0.3.0", SDKVersion: "0.2.0", NodeAPIVersion: agentnode.APIVersion,
+	}
+}
 
 func TestInitializeNodePackageCreatesExplicitManifest(t *testing.T) {
 	root := nodePackageFixtureProject(t)

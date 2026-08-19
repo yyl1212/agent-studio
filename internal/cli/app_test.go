@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/yyl1212/agent-studio/internal/buildinfo"
@@ -17,10 +18,10 @@ func TestRunTopLevelCommands(t *testing.T) {
 		wantOut  string
 		wantErr  string
 	}{
-		{name: "empty shows help", wantCode: 0, wantOut: "doctor\ngenerate\nnode init\nnode package init\nnode test\nversion\n"},
-		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "doctor\ngenerate\nnode init\nnode package init\nnode test\nversion\n"},
+		{name: "empty shows help", wantCode: 0, wantOut: "doctor\ngenerate\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"},
+		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "doctor\ngenerate\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"},
 		{name: "unknown", args: []string{"missing"}, wantCode: 2, wantErr: "unknown command \"missing\"\n"},
-		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires init, package, or test\n"},
+		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires init, inspect, package, or test\n"},
 		{name: "unknown node subcommand", args: []string{"node", "missing"}, wantCode: 2, wantErr: "unknown node command \"missing\"\n"},
 	}
 
@@ -33,6 +34,49 @@ func TestRunTopLevelCommands(t *testing.T) {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunNodeInspectRoutesSupportedArguments(t *testing.T) {
+	for _, test := range []struct {
+		args       []string
+		jsonOutput bool
+	}{
+		{args: []string{"node", "inspect", "example.com/nodes/echo"}},
+		{args: []string{"node", "inspect", "--json", "example.com/nodes/echo"}, jsonOutput: true},
+	} {
+		t.Run(strings.Join(test.args, "_"), func(t *testing.T) {
+			called := false
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run(context.Background(), test.args, &stdout, &stderr, appDependencies{
+				workingDir: func() (string, error) { return "/repo/subdir", nil },
+				nodeInspect: func(_ context.Context, start, importPath string, jsonOutput bool, gotStdout, gotStderr io.Writer) int {
+					called = true
+					if start != "/repo/subdir" || importPath != "example.com/nodes/echo" || jsonOutput != test.jsonOutput || gotStdout != &stdout || gotStderr != &stderr {
+						t.Fatalf("start=%q path=%q json=%t", start, importPath, jsonOutput)
+					}
+					return 7
+				},
+			})
+			if code != 7 || !called {
+				t.Fatalf("code=%d called=%t", code, called)
+			}
+		})
+	}
+}
+
+func TestRunNodeInspectRejectsInvalidArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"node", "inspect"},
+		{"node", "inspect", "--unknown", "example.com/nodes/echo"},
+		{"node", "inspect", "one", "two"},
+	} {
+		var stderr bytes.Buffer
+		code := run(context.Background(), args, io.Discard, &stderr, appDependencies{})
+		if code != 2 || stderr.String() != "node inspect usage: node inspect [--json] <import-path>\n" {
+			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
+		}
 	}
 }
 

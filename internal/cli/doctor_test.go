@@ -3,10 +3,13 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 )
 
 func TestDiagnoseClassifiesRequiredToolsAndPorts(t *testing.T) {
@@ -83,6 +86,35 @@ func TestDiagnoseChecksNodeManifestWhenPresent(t *testing.T) {
 	}
 }
 
+func TestDiagnoseChecksInstalledNodePackagesInStableOrder(t *testing.T) {
+	deps, _ := healthyDoctorDeps()
+	deps.ReadFile = func(string) ([]byte, error) {
+		return []byte("apiVersion: agent-studio.dev/v1alpha1\nnodes:\n  - package: example.com/zeta/node\n  - package: example.com/alpha/node\n"), nil
+	}
+	deps.InspectMany = func(_ context.Context, root string, importPaths []string) []nodepackage.Inspection {
+		if root != "/repo" || !equalStrings(importPaths, []string{"example.com/alpha/node", "example.com/zeta/node"}) {
+			t.Fatalf("root=%q paths=%v", root, importPaths)
+		}
+		return []nodepackage.Inspection{
+			{Diagnostics: []nodepackage.Diagnostic{{Severity: nodepackage.SeverityWarning, Code: "NODE_PACKAGE_LOCAL_REPLACE", Message: "节点包来自本地 replace"}}},
+			{Diagnostics: []nodepackage.Diagnostic{{Severity: nodepackage.SeverityError, Code: "NODE_PACKAGE_RUNTIME_INCOMPATIBLE", Message: "节点包不兼容当前 Runtime"}}},
+		}
+	}
+	results := Diagnose(context.Background(), "/repo", deps)
+	alpha := checkIndex(t, results, "node package example.com/alpha/node", checkWarn)
+	zeta := checkIndex(t, results, "node package example.com/zeta/node", checkFail)
+	if alpha >= zeta {
+		t.Fatalf("package checks are not sorted: %#v", results)
+	}
+	code := run(context.Background(), []string{"doctor"}, io.Discard, io.Discard, appDependencies{
+		workingDir: func() (string, error) { return "/repo", nil },
+		diagnose:   func(context.Context, string) []CheckResult { return results },
+	})
+	if code != 1 {
+		t.Fatalf("doctor exit code=%d", code)
+	}
+}
+
 func healthyDoctorDeps() (DoctorDeps, []*doctorTestListener) {
 	listeners := make([]*doctorTestListener, 0, 3)
 	return DoctorDeps{
@@ -133,6 +165,20 @@ func assertCheck(t *testing.T, results []CheckResult, name, status string) {
 		}
 	}
 	t.Fatalf("check %q missing: %#v", name, results)
+}
+
+func checkIndex(t *testing.T, results []CheckResult, name, status string) int {
+	t.Helper()
+	for index, result := range results {
+		if result.Name == name {
+			if result.Status != status {
+				t.Fatalf("check %q status=%q detail=%q, want %q", name, result.Status, result.Detail, status)
+			}
+			return index
+		}
+	}
+	t.Fatalf("check %q missing: %#v", name, results)
+	return -1
 }
 
 func equalStrings(left, right []string) bool {

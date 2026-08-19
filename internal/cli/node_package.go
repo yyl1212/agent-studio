@@ -2,14 +2,98 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 	"golang.org/x/mod/modfile"
 )
+
+type inspectOutput struct {
+	Package      nodepackage.Summary      `json:"package"`
+	Registration nodepackage.Registration `json:"registration"`
+	Diagnostics  []nodepackage.Diagnostic `json:"diagnostics"`
+}
+
+func inspectNodePackage(ctx context.Context, start, importPath string, jsonOutput bool, stdout, stderr io.Writer) int {
+	return inspectNodePackageWithInspector(ctx, start, importPath, jsonOutput, stdout, stderr, nodepackage.NewInspector(buildinfo.Current()))
+}
+
+func inspectNodePackageWithInspector(
+	ctx context.Context,
+	start string,
+	importPath string,
+	jsonOutput bool,
+	stdout io.Writer,
+	stderr io.Writer,
+	inspector nodepackage.Inspector,
+) int {
+	root, err := findProjectRoot(start)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "locate project: %v\n", err)
+		return 1
+	}
+	inspection := inspector.Inspect(ctx, root, importPath)
+	diagnostics := nodepackage.SortDiagnostics(inspection.Diagnostics)
+	registration := inspection.Record.Registration
+	registration.Nodes = append([]nodepackage.NodeRef(nil), registration.Nodes...)
+	if registration.Nodes == nil {
+		registration.Nodes = []nodepackage.NodeRef{}
+	}
+	output := inspectOutput{
+		Package: inspection.Record.Summary, Registration: registration, Diagnostics: diagnostics,
+	}
+	if jsonOutput {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(output); err != nil {
+			_, _ = fmt.Fprintf(stderr, "encode node package inspection: %v\n", err)
+			return 1
+		}
+	} else {
+		writeHumanInspection(stdout, inspection, diagnostics)
+	}
+	if nodepackage.HasErrors(diagnostics) {
+		return 1
+	}
+	return 0
+}
+
+func writeHumanInspection(stdout io.Writer, inspection nodepackage.Inspection, diagnostics []nodepackage.Diagnostic) {
+	if inspection.Record.Summary.Name != "" {
+		version := inspection.Record.Summary.Version
+		if version == "" {
+			version = string(inspection.Record.Summary.Source)
+		}
+		_, _ = fmt.Fprintf(stdout, "包: %s\n", inspection.Record.Summary.Name)
+		_, _ = fmt.Fprintf(stdout, "版本/状态: %s\n", version)
+		_, _ = fmt.Fprintf(stdout, "Node API: %s\n", inspection.Record.Manifest.Compatibility.NodeAPI)
+		_, _ = fmt.Fprintf(stdout, "Runtime: %s <= version < %s\n",
+			inspection.Record.Manifest.Compatibility.Runtime.MinVersion,
+			inspection.Record.Manifest.Compatibility.Runtime.MaxVersionExclusive,
+		)
+		nodes := append([]nodepackage.NodeRef(nil), inspection.Record.Registration.Nodes...)
+		sort.Slice(nodes, func(left, right int) bool {
+			if nodes[left].Type != nodes[right].Type {
+				return nodes[left].Type < nodes[right].Type
+			}
+			return nodes[left].Version < nodes[right].Version
+		})
+		_, _ = io.WriteString(stdout, "节点:\n")
+		for _, node := range nodes {
+			_, _ = fmt.Fprintf(stdout, "- %s@%s\n", node.Type, node.Version)
+		}
+	}
+	for _, diagnostic := range diagnostics {
+		_, _ = fmt.Fprintf(stdout, "[%s] %s: %s\n", diagnostic.Severity, diagnostic.Code, diagnostic.Message)
+	}
+}
 
 type packageInitInput struct {
 	DisplayName         string

@@ -12,7 +12,7 @@ import (
 	"github.com/yyl1212/agent-studio/internal/scaffold"
 )
 
-const helpText = "doctor\ngenerate\nnode init\nnode package init\nnode test\nversion\n"
+const helpText = "doctor\ngenerate\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"
 
 type appDependencies struct {
 	workingDir      func() (string, error)
@@ -20,6 +20,7 @@ type appDependencies struct {
 	diagnose        func(context.Context, string) []CheckResult
 	generate        func(context.Context, string) (generateResult, error)
 	nodeInit        func(context.Context, string, string) (nodeInitResult, error)
+	nodeInspect     func(context.Context, string, string, bool, io.Writer, io.Writer) int
 	nodePackageInit func(context.Context, string, packageInitInput) error
 	nodeTest        func(context.Context, string, string, io.Writer, io.Writer) int
 }
@@ -33,6 +34,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		},
 		generate:        generateNodes,
 		nodeInit:        initializeNode,
+		nodeInspect:     inspectNodePackage,
 		nodePackageInit: initializeNodePackage,
 		nodeTest:        testNodePackage,
 	})
@@ -111,7 +113,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 		return 0
 	case "node":
 		if len(args) < 2 {
-			_, _ = io.WriteString(stderr, "node requires init, package, or test\n")
+			_, _ = io.WriteString(stderr, "node requires init, inspect, package, or test\n")
 			return 2
 		}
 		switch args[1] {
@@ -149,6 +151,25 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 				return 1
 			}
 			return dependencies.nodeTest(ctx, start, args[2], stdout, stderr)
+		case "inspect":
+			jsonOutput := false
+			importPath := ""
+			switch {
+			case len(args) == 3 && !strings.HasPrefix(args[2], "-"):
+				importPath = args[2]
+			case len(args) == 4 && args[2] == "--json" && !strings.HasPrefix(args[3], "-"):
+				jsonOutput = true
+				importPath = args[3]
+			default:
+				_, _ = io.WriteString(stderr, "node inspect usage: node inspect [--json] <import-path>\n")
+				return 2
+			}
+			start, err := dependencies.workingDir()
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "determine working directory: %v\n", err)
+				return 1
+			}
+			return dependencies.nodeInspect(ctx, start, importPath, jsonOutput, stdout, stderr)
 		case "package":
 			if len(args) < 3 || args[2] != "init" {
 				_, _ = io.WriteString(stderr, "node package requires init\n")
