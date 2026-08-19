@@ -16,18 +16,18 @@ flowchart LR
 
 ## 开发者预览版本
 
-当前候选版本为 `v0.2.0-rc.1`，面向源码使用者和节点开发者试用，不代表生产稳定性。完整能力、安全边界和已知限制见 [v0.2.0-rc.1 Release Notes](docs/releases/v0.2.0-rc.1.md)。
+当前候选版本为 `v0.2.0-rc.2`，面向源码使用者和节点开发者试用，不代表生产稳定性。本次发布准备不预先声明远端标签或 GitHub Release 已存在；源码安装仅在远端标签存在后可用，附件下载仅在标签工作流成功公开 Release 后可用，使用时以远端状态为准。完整能力、安全边界、升级说明和已知限制见 [v0.2.0-rc.2 Release Notes](docs/releases/v0.2.0-rc.2.md)。
 
-安装带版本信息的 CLI：
+标签创建后的源码安装命令：
 
 ```bash
-CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.2.0-rc.1
+CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.2.0-rc.2
 agent-studio version
 ```
 
 ### 预编译 CLI 附件
 
-`v0.2.0-rc.1` 仍是只包含源码的版本。某个后续 Release 实际列出附件后，可以按下面的文件名下载；示例版本号需替换成该 Release 的标签：
+`v0.2.0-rc.2` 仅在标签工作流全部成功并公开 GitHub Release 后提供 Linux/macOS 的 amd64、arm64 CLI 归档、SHA-256 校验和与逐归档 SPDX JSON SBOM。下载示例：
 
 ```bash
 VERSION=v0.2.0-rc.2
