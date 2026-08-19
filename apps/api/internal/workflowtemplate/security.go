@@ -119,7 +119,9 @@ func walkSchemaSecrets(nodeID, path string, config, schema, root any, visiting m
 	if !ok {
 		return nil
 	}
-	if writeOnly, _ := schemaObject["writeOnly"].(bool); writeOnly && hasCredentialValue(config) {
+	writeOnly, _ := schemaObject["writeOnly"].(bool)
+	agentStudioSecret, _ := schemaObject["x-agent-studio-secret"].(bool)
+	if (writeOnly || agentStudioSecret) && hasCredentialValue(config) {
 		return []domain.ValidationIssue{templateIssue("TEMPLATE_SECRET_CONFIG_FOUND", "节点配置包含 Schema 标记的只写凭据", nodeID, path)}
 	}
 	issues := make([]domain.ValidationIssue, 0)

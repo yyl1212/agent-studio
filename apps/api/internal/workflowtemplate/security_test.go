@@ -89,6 +89,31 @@ func TestSecurityIssuesTraversesSchemaCompositionAndStopsReferenceCycles(t *test
 	}
 }
 
+func TestSecurityIssuesRejectsAgentStudioSecretSchemaExtension(t *testing.T) {
+	definition := agentnode.Definition{
+		Type: "secure-extension", Version: "1",
+		ConfigSchema: json.RawMessage(`{
+          "type":"object",
+          "properties":{"credential":{"type":"string","x-agent-studio-secret":true}}
+        }`),
+	}
+	node := domain.Node{
+		ID: "n", Type: "secure-extension", TypeVersion: "1",
+		Config: json.RawMessage(`{"credential":"hidden-value"}`),
+	}
+	issues := securityIssues(domain.Graph{Nodes: []domain.Node{node}}, definitionIndex([]agentnode.Definition{definition}))
+	if len(issues) != 1 || issues[0].Code != "TEMPLATE_SECRET_CONFIG_FOUND" || issues[0].Path != "config.credential" {
+		t.Fatalf("issues=%+v", issues)
+	}
+	encoded, err := json.Marshal(issues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("hidden-value")) {
+		t.Fatalf("secret leaked: %s", encoded)
+	}
+}
+
 func TestConfigDepthRejectsMoreThanMaximum(t *testing.T) {
 	raw := json.RawMessage(strings.Repeat(`{"child":`, MaxDepth) + `null` + strings.Repeat(`}`, MaxDepth))
 	depth, err := configDepth(raw)
