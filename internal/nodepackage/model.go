@@ -53,3 +53,38 @@ type NodeRef struct {
 	Type    string `json:"type"`
 	Version string `json:"version"`
 }
+
+type Source string
+
+const (
+	SourceModule      Source = "module"
+	SourceDevelopment Source = "development"
+	SourceReplacement Source = "replacement"
+	SourceBuiltin     Source = "builtin"
+)
+
+type Summary struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	Version     string `json:"version,omitempty"`
+	License     string `json:"license"`
+	Repository  string `json:"repository"`
+	Source      Source `json:"source"`
+}
+
+type RuntimeRecord struct {
+	Summary Summary
+	Nodes   []NodeRef
+}
+
+type Record struct {
+	Manifest     Manifest
+	Summary      Summary
+	ModulePath   string
+	Registration Registration
+}
+
+type Inspection struct {
+	Record      Record       `json:"record"`
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
