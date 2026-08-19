@@ -48,6 +48,12 @@ async function streamRequest(path: string, init: RequestInit): Promise<Response>
   return response
 }
 
+async function requestBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await fetch(path, { signal })
+  if (!response.ok) await throwAPIError(response)
+  return response.blob()
+}
+
 async function throwAPIError(response: Response): Promise<never> {
   let body: Partial<ErrorResponse> = {}
   try {
@@ -72,6 +78,8 @@ export const api = {
     request<WorkflowTemplatePreview>('/api/workflow-templates/preview', { method: 'POST', body: jsonBody({ template }), signal }),
   importWorkflowTemplate: (body: ImportWorkflowTemplateRequest, signal?: AbortSignal) =>
     request<Workflow>('/api/workflow-templates/import', { method: 'POST', body: jsonBody(body), signal }),
+  exportWorkflowTemplate: (id: string, draftRevision: number, signal?: AbortSignal) =>
+    requestBlob(`/api/workflows/${encodeURIComponent(id)}/template?draftRevision=${encodeURIComponent(String(draftRevision))}`, signal),
   getWorkflow: (id: string, signal?: AbortSignal) => request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { signal }),
   saveWorkflow: (id: string, body: SaveDraftRequest, signal?: AbortSignal) =>
     request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { method: 'PUT', body: jsonBody(body), signal }),

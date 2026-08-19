@@ -51,6 +51,27 @@ describe('API client', () => {
 			}),
 		)
 	})
+
+	it('按草稿 revision 下载模板 Blob', async () => {
+		const response = new Response('{"kind":"WorkflowTemplate"}\n', {
+			status: 200,
+			headers: { 'Content-Type': 'application/json' },
+		})
+		const fetchMock = vi.fn().mockResolvedValue(response)
+		vi.stubGlobal('fetch', fetchMock)
+		const blob = await api.exportWorkflowTemplate('w/1', 7)
+		expect(await blob.text()).toContain('WorkflowTemplate')
+		expect(fetchMock).toHaveBeenCalledWith('/api/workflows/w%2F1/template?draftRevision=7', expect.objectContaining({ signal: undefined }))
+	})
+
+	it('模板下载非 2xx 时抛出 APIError', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+			code: 'WORKFLOW_TEMPLATE_INVALID', message: '工作流模板校验失败',
+		}), { status: 422, headers: { 'Content-Type': 'application/json' } })))
+		await expect(api.exportWorkflowTemplate('w1', 2)).rejects.toEqual(
+			expect.objectContaining<Partial<APIError>>({ status: 422, code: 'WORKFLOW_TEMPLATE_INVALID' }),
+		)
+	})
 })
 
 const templateFixture = (): WorkflowTemplate => ({

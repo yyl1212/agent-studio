@@ -36,6 +36,8 @@ export function StudioPage() {
   const [publishedVersion, setPublishedVersion] = useState<number>()
   const [publishError, setPublishError] = useState('')
   const [publishing, setPublishing] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [loadError, setLoadError] = useState('')
   const [events, setEvents] = useState<RunEvent[]>([])
@@ -43,6 +45,9 @@ export function StudioPage() {
   const [running, setRunning] = useState(false)
   const saveQueue = useRef<SaveQueue | undefined>(undefined)
   const runController = useRef<AbortController | undefined>(undefined)
+  const exportController = useRef<AbortController | undefined>(undefined)
+
+  useEffect(() => () => exportController.current?.abort(), [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -193,6 +198,40 @@ export function StudioPage() {
     }
   }
 
+  const exportTemplate = async () => {
+    if (!workflow || exporting) return
+    exportController.current?.abort()
+    const controller = new AbortController()
+    exportController.current = controller
+    setExporting(true)
+    setExportError('')
+    try {
+      await saveQueue.current?.flush()
+      const revision = saveQueue.current?.getRevision() ?? workflow.draftRevision
+      const blob = await api.exportWorkflowTemplate(workflow.id, revision, controller.signal)
+      const url = URL.createObjectURL(blob)
+      try {
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = `${workflow.slug}.workflow.json`
+        document.body.append(anchor)
+        try {
+          anchor.click()
+        } finally {
+          anchor.remove()
+        }
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
+        setExportError(publicMessage(error))
+      }
+    } finally {
+      if (!controller.signal.aborted) setExporting(false)
+    }
+  }
+
   if (loadError) return <main className="page-container"><p role="alert">{loadError}</p></main>
   if (!workflow) return <main className="page-container" aria-live="polite">正在加载编辑器…</main>
 
@@ -204,7 +243,9 @@ export function StudioPage() {
           <Link to={`/workflows/${workflow.id}/runs`}>运行记录</Link>
           <button type="button" onClick={() => setLibraryOpen(true)}>添加节点</button>
           <button type="button" onClick={() => setTestOpen(true)}>测试运行</button>
+          <button type="button" onClick={exportTemplate} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
           <button className="primary-button" type="button" onClick={() => { setPublishOpen(true); setPublishedVersion(undefined); setPublishError('') }}>发布</button>
+          {exportError && <span className="studio-toolbar-error" role="alert">{exportError}</span>}
         </div>
       </header>
       <WorkflowCanvas nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => setSelectedID(node.id)} />
@@ -279,6 +320,7 @@ function saveLabel(state: SaveState) {
 }
 
 function publicMessage(error: unknown) {
+  if (error instanceof APIError && error.code === 'WORKFLOW_TEMPLATE_INVALID') return '当前草稿不能导出，请先修复工作流问题'
   if (error instanceof APIError) return error.message
   return '操作失败，请稍后重试'
 }
