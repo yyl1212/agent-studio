@@ -9,7 +9,7 @@ import (
 )
 
 func (handler *handler) listNodeTypes(writer http.ResponseWriter, _ *http.Request) {
-	writeJSON(writer, http.StatusOK, handler.dependencies.Registry.Definitions())
+	writeJSON(writer, http.StatusOK, nodeTypeResponses(handler.dependencies.Registry.Catalog()))
 }
 
 func (handler *handler) resolveNodeType(writer http.ResponseWriter, request *http.Request) {

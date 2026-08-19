@@ -333,7 +333,19 @@ export interface components {
             };
             inputs: components["schemas"]["PortDefinition"][];
             outputs: components["schemas"]["PortDefinition"][];
-            capabilities?: ("network" | "secrets" | "filesystem-read" | "filesystem-write")[];
+            capabilities: ("network" | "secrets" | "filesystem-read" | "filesystem-write")[];
+            package: components["schemas"]["NodePackageSummary"];
+        };
+        /** @enum {string} */
+        NodePackageSource: "builtin" | "module" | "development" | "replacement";
+        NodePackageSummary: {
+            name: string;
+            displayName: string;
+            version?: string;
+            license: string;
+            /** Format: uri */
+            repository: string;
+            source: components["schemas"]["NodePackageSource"];
         };
         ValidationIssue: {
             code: string;
@@ -341,27 +353,51 @@ export interface components {
             nodeId?: string;
             edgeId?: string;
             path?: string;
+            packageName?: string;
+            packageVersion?: string;
         };
-        WorkflowTemplate: {
+        WorkflowTemplate: components["schemas"]["WorkflowTemplateV1Alpha2"];
+        WorkflowTemplateV1Alpha1: {
             /** @constant */
             apiVersion: "agent-studio.dev/v1alpha1";
             /** @constant */
             kind: "WorkflowTemplate";
             metadata: components["schemas"]["WorkflowTemplateMetadata"];
-            spec: components["schemas"]["WorkflowTemplateSpec"];
+            spec: components["schemas"]["WorkflowTemplateSpecV1Alpha1"];
+        };
+        WorkflowTemplateV1Alpha2: {
+            /** @constant */
+            apiVersion: "agent-studio.dev/v1alpha2";
+            /** @constant */
+            kind: "WorkflowTemplate";
+            metadata: components["schemas"]["WorkflowTemplateMetadata"];
+            spec: components["schemas"]["WorkflowTemplateSpecV1Alpha2"];
         };
         WorkflowTemplateMetadata: {
             name: string;
             description: string;
         };
-        WorkflowTemplateSpec: {
+        WorkflowTemplateSpecV1Alpha1: {
             graph: components["schemas"]["Graph"];
         };
+        WorkflowTemplateSpecV1Alpha2: {
+            nodePackages?: components["schemas"]["WorkflowTemplateNodePackageRequirement"][];
+            graph: components["schemas"]["Graph"];
+        };
+        WorkflowTemplateNodePackageRequirement: {
+            name: string;
+            version?: string;
+            nodes: components["schemas"]["WorkflowTemplateNodePackageNode"][];
+        };
+        WorkflowTemplateNodePackageNode: {
+            type: string;
+            version: string;
+        };
         PreviewWorkflowTemplateRequest: {
-            template: components["schemas"]["WorkflowTemplate"];
+            template: components["schemas"]["WorkflowTemplateV1Alpha1"] | components["schemas"]["WorkflowTemplateV1Alpha2"];
         };
         ImportWorkflowTemplateRequest: {
-            template: components["schemas"]["WorkflowTemplate"];
+            template: components["schemas"]["WorkflowTemplateV1Alpha1"] | components["schemas"]["WorkflowTemplateV1Alpha2"];
             name: string;
             slug: string;
             description: string;
