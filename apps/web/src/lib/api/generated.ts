@@ -102,6 +102,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/{id}/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get: operations["exportWorkflowTemplate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{id}/validate": {
         parameters: {
             query?: never;
@@ -168,6 +186,38 @@ export interface paths {
         get: operations["listWorkflowRuns"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflow-templates/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewWorkflowTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflow-templates/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["importWorkflowTemplate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -291,6 +341,52 @@ export interface components {
             nodeId?: string;
             edgeId?: string;
             path?: string;
+        };
+        WorkflowTemplate: {
+            /** @constant */
+            apiVersion: "agent-studio.dev/v1alpha1";
+            /** @constant */
+            kind: "WorkflowTemplate";
+            metadata: components["schemas"]["WorkflowTemplateMetadata"];
+            spec: components["schemas"]["WorkflowTemplateSpec"];
+        };
+        WorkflowTemplateMetadata: {
+            name: string;
+            description: string;
+        };
+        WorkflowTemplateSpec: {
+            graph: components["schemas"]["Graph"];
+        };
+        PreviewWorkflowTemplateRequest: {
+            template: components["schemas"]["WorkflowTemplate"];
+        };
+        ImportWorkflowTemplateRequest: {
+            template: components["schemas"]["WorkflowTemplate"];
+            name: string;
+            slug: string;
+            description: string;
+        };
+        WorkflowTemplatePreview: {
+            valid: boolean;
+            metadata: components["schemas"]["WorkflowTemplateMetadata"];
+            summary: components["schemas"]["WorkflowTemplateSummary"];
+            issues: components["schemas"]["ValidationIssue"][];
+        };
+        WorkflowTemplateSummary: {
+            nodeCount: number;
+            edgeCount: number;
+            inputSchema: {
+                [key: string]: unknown;
+            };
+            nodeTypes: components["schemas"]["WorkflowTemplateNodeTypeSummary"][];
+        };
+        WorkflowTemplateNodeTypeSummary: {
+            type: string;
+            version: string;
+            title: string;
+            count: number;
+            available: boolean;
+            capabilities: ("network" | "secrets" | "filesystem-read" | "filesystem-write")[];
         };
         Workflow: {
             /** Format: uuid */
@@ -637,6 +733,36 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
+    exportWorkflowTemplate: {
+        parameters: {
+            query: {
+                draftRevision: number;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 规范化工作流模板下载 */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowTemplate"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
     validateWorkflow: {
         parameters: {
             query?: never;
@@ -744,6 +870,64 @@ export interface operations {
                     "application/json": components["schemas"]["Run"][];
                 };
             };
+        };
+    };
+    previewWorkflowTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewWorkflowTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description 模板兼容性预览 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowTemplatePreview"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    importWorkflowTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportWorkflowTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建未发布工作流草稿 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workflow"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     getAgentManifest: {

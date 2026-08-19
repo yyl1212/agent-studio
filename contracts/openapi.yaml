@@ -133,6 +133,40 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+  /api/workflows/{id}/template:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    get:
+      operationId: exportWorkflowTemplate
+      parameters:
+        - name: draftRevision
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        "200":
+          description: 规范化工作流模板下载
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowTemplate"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
   /api/workflows/{id}/validate:
     parameters:
       - $ref: "#/components/parameters/WorkflowID"
@@ -227,6 +261,58 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Run"
+  /api/workflow-templates/preview:
+    post:
+      operationId: previewWorkflowTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewWorkflowTemplateRequest"
+      responses:
+        "200":
+          description: 模板兼容性预览
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowTemplatePreview"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/workflow-templates/import:
+    post:
+      operationId: importWorkflowTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportWorkflowTemplateRequest"
+      responses:
+        "201":
+          description: 已创建未发布工作流草稿
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
   /api/agents/{slug}:
     parameters:
       - $ref: "#/components/parameters/AgentSlug"
@@ -463,6 +549,114 @@ components:
           type: string
         path:
           type: string
+    WorkflowTemplate:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion:
+          type: string
+          const: agent-studio.dev/v1alpha1
+        kind:
+          type: string
+          const: WorkflowTemplate
+        metadata:
+          $ref: "#/components/schemas/WorkflowTemplateMetadata"
+        spec:
+          $ref: "#/components/schemas/WorkflowTemplateSpec"
+    WorkflowTemplateMetadata:
+      type: object
+      additionalProperties: false
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 2048
+    WorkflowTemplateSpec:
+      type: object
+      additionalProperties: false
+      required: [graph]
+      properties:
+        graph:
+          $ref: "#/components/schemas/Graph"
+    PreviewWorkflowTemplateRequest:
+      type: object
+      additionalProperties: false
+      required: [template]
+      properties:
+        template:
+          $ref: "#/components/schemas/WorkflowTemplate"
+    ImportWorkflowTemplateRequest:
+      type: object
+      additionalProperties: false
+      required: [template, name, slug, description]
+      properties:
+        template:
+          $ref: "#/components/schemas/WorkflowTemplate"
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+    WorkflowTemplatePreview:
+      type: object
+      additionalProperties: false
+      required: [valid, metadata, summary, issues]
+      properties:
+        valid:
+          type: boolean
+        metadata:
+          $ref: "#/components/schemas/WorkflowTemplateMetadata"
+        summary:
+          $ref: "#/components/schemas/WorkflowTemplateSummary"
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationIssue"
+    WorkflowTemplateSummary:
+      type: object
+      additionalProperties: false
+      required: [nodeCount, edgeCount, inputSchema, nodeTypes]
+      properties:
+        nodeCount:
+          type: integer
+          minimum: 0
+        edgeCount:
+          type: integer
+          minimum: 0
+        inputSchema:
+          type: object
+          additionalProperties: true
+        nodeTypes:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowTemplateNodeTypeSummary"
+    WorkflowTemplateNodeTypeSummary:
+      type: object
+      additionalProperties: false
+      required: [type, version, title, count, available, capabilities]
+      properties:
+        type:
+          type: string
+        version:
+          type: string
+        title:
+          type: string
+        count:
+          type: integer
+          minimum: 1
+        available:
+          type: boolean
+        capabilities:
+          type: array
+          items:
+            type: string
+            enum: [network, secrets, filesystem-read, filesystem-write]
     Workflow:
       type: object
       required: [id, name, slug, description, draftGraph, draftRevision, createdAt, updatedAt]

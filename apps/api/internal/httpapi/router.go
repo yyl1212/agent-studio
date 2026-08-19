@@ -12,6 +12,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 )
 
 type WorkflowService interface {
@@ -22,6 +23,9 @@ type WorkflowService interface {
 	Validate(context.Context, string) []domain.ValidationIssue
 	Publish(context.Context, string, int64) (domain.WorkflowVersion, error)
 	AgentManifest(context.Context, string) (workflow.AgentManifest, error)
+	ExportTemplate(context.Context, string, int64) (workflow.TemplateExport, error)
+	PreviewTemplate(context.Context, workflowtemplate.Template) workflowtemplate.Preview
+	ImportTemplate(context.Context, workflow.ImportWorkflowTemplateInput) (domain.Workflow, error)
 }
 
 type Runner interface {
@@ -72,11 +76,14 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Get("/workflows", handler.listWorkflows)
 		api.Post("/workflows", handler.createWorkflow)
 		api.Get("/workflows/{id}", handler.getWorkflow)
+		api.Get("/workflows/{id}/template", handler.exportWorkflowTemplate)
 		api.Put("/workflows/{id}", handler.saveWorkflow)
 		api.Post("/workflows/{id}/validate", handler.validateWorkflow)
 		api.Post("/workflows/{id}/test-runs", handler.runDraft)
 		api.Post("/workflows/{id}/publish", handler.publishWorkflow)
 		api.Get("/workflows/{id}/runs", handler.listRuns)
+		api.Post("/workflow-templates/preview", handler.previewWorkflowTemplate)
+		api.Post("/workflow-templates/import", handler.importWorkflowTemplate)
 		api.Get("/agents/{slug}", handler.getAgentManifest)
 		api.Post("/agents/{slug}/runs", handler.runAgent)
 		api.Get("/runs/{id}", handler.getRun)
