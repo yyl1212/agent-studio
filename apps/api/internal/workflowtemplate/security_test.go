@@ -114,6 +114,27 @@ func TestSecurityIssuesRejectsAgentStudioSecretSchemaExtension(t *testing.T) {
 	}
 }
 
+func TestSecurityIssuesScansSecretMarkersInSchemaWithLargeExponent(t *testing.T) {
+	definition := agentnode.Definition{
+		Type: "secure-number", Version: "1",
+		ConfigSchema: json.RawMessage(`{
+          "type":"object",
+          "properties":{
+            "limit":{"type":"number","maximum":1e400},
+            "credential":{"type":"string","writeOnly":true}
+          }
+        }`),
+	}
+	node := domain.Node{
+		ID: "n", Type: "secure-number", TypeVersion: "1",
+		Config: json.RawMessage(`{"limit":1e400,"credential":"hidden-value"}`),
+	}
+	issues := securityIssues(domain.Graph{Nodes: []domain.Node{node}}, definitionIndex([]agentnode.Definition{definition}))
+	if len(issues) != 1 || issues[0].Code != "TEMPLATE_SECRET_CONFIG_FOUND" || issues[0].Path != "config.credential" {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
 func TestConfigDepthRejectsMoreThanMaximum(t *testing.T) {
 	raw := json.RawMessage(strings.Repeat(`{"child":`, MaxDepth) + `null` + strings.Repeat(`}`, MaxDepth))
 	depth, err := configDepth(raw)

@@ -107,8 +107,8 @@ func schemaSecretIssues(nodeID string, config any, rawSchema json.RawMessage) []
 	if len(rawSchema) == 0 {
 		return nil
 	}
-	var root any
-	if err := json.Unmarshal(rawSchema, &root); err != nil {
+	root, err := decodeJSONValue(rawSchema)
+	if err != nil {
 		return nil
 	}
 	return walkSchemaSecrets(nodeID, "config", config, root, root, map[string]bool{})
