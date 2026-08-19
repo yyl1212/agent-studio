@@ -3,6 +3,7 @@ package releaseartifact
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -241,11 +242,34 @@ func TestRunVersionCommandBoundsTimeAndOutput(t *testing.T) {
 		_, err := runVersionCommand(cliPath, 50*time.Millisecond, 1024)
 		assertErrorContains(t, err, "timed out")
 	})
-	t.Run("output", func(t *testing.T) {
-		cliPath := writeExecutable(t, "#!/bin/sh\nwhile :; do printf '0123456789'; done\n")
-		_, err := runVersionCommand(cliPath, 2*time.Second, 64)
+	t.Run("output limit cancels writer that ignores pipe closure", func(t *testing.T) {
+		cliPath := writeExecutable(t, "#!/bin/sh\ntrap '' PIPE\nwhile :; do printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; done\n")
+		started := time.Now()
+		_, err := runVersionCommand(cliPath, 5*time.Second, 64)
 		assertErrorContains(t, err, "output exceeds size limit")
+		if elapsed := time.Since(started); elapsed >= 4*time.Second {
+			t.Fatalf("output-limited command returned after %s, want active cancellation before timeout", elapsed)
+		}
 	})
+}
+
+func TestCappedBufferCancelsOnOutputLimit(t *testing.T) {
+	canceled := false
+	buffer := &cappedBuffer{
+		limit:  3,
+		cancel: func() { canceled = true },
+	}
+	if _, err := buffer.Write([]byte("four")); err == nil {
+		t.Fatal("Write() error = nil, want output limit error")
+	}
+	if !canceled {
+		t.Fatal("output limit did not invoke cancellation")
+	}
+}
+
+func TestClassifyVersionCommandErrorPrefersOutputLimitToDeadline(t *testing.T) {
+	err := classifyVersionCommandError(nil, context.DeadlineExceeded, true, "")
+	assertErrorContains(t, err, "output exceeds size limit")
 }
 
 func writeExecutable(t *testing.T, content string) string {

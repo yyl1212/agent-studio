@@ -228,6 +228,7 @@ type cappedBuffer struct {
 	buffer   bytes.Buffer
 	limit    int
 	exceeded bool
+	cancel   context.CancelFunc
 }
 
 func (buffer *cappedBuffer) Write(content []byte) (int, error) {
@@ -236,11 +237,17 @@ func (buffer *cappedBuffer) Write(content []byte) (int, error) {
 	remaining := buffer.limit - buffer.buffer.Len()
 	if remaining <= 0 {
 		buffer.exceeded = true
+		if buffer.cancel != nil {
+			buffer.cancel()
+		}
 		return 0, errOutputLimit
 	}
 	if len(content) > remaining {
 		written, _ := buffer.buffer.Write(content[:remaining])
 		buffer.exceeded = true
+		if buffer.cancel != nil {
+			buffer.cancel()
+		}
 		return written, errOutputLimit
 	}
 	return buffer.buffer.Write(content)
@@ -263,21 +270,28 @@ func runVersionCommand(cliPath string, timeout time.Duration, outputLimit int) (
 	defer cancel()
 	command := exec.CommandContext(ctx, cliPath, "version")
 	command.WaitDelay = time.Second
-	output := &cappedBuffer{limit: outputLimit}
+	output := &cappedBuffer{limit: outputLimit, cancel: cancel}
 	command.Stdout = output
 	command.Stderr = output
 	err := command.Run()
 	content := output.String()
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return content, errors.New("agent-studio version timed out")
-	}
-	if output.Exceeded() {
-		return content, errors.New("agent-studio version output exceeds size limit")
-	}
-	if err != nil {
-		return content, fmt.Errorf("execute agent-studio version: %w: %s", err, strings.TrimSpace(content))
+	if err := classifyVersionCommandError(err, ctx.Err(), output.Exceeded(), content); err != nil {
+		return content, err
 	}
 	return content, nil
+}
+
+func classifyVersionCommandError(runErr, contextErr error, outputExceeded bool, content string) error {
+	if outputExceeded {
+		return errors.New("agent-studio version output exceeds size limit")
+	}
+	if errors.Is(contextErr, context.DeadlineExceeded) {
+		return errors.New("agent-studio version timed out")
+	}
+	if runErr != nil {
+		return fmt.Errorf("execute agent-studio version: %w: %s", runErr, strings.TrimSpace(content))
+	}
+	return nil
 }
 
 func compareFileSet(kind string, expected, actual map[string]struct{}) error {
