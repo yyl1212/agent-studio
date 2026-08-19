@@ -1,8 +1,11 @@
 package workflowtemplate
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
@@ -20,7 +23,15 @@ func Canonicalize(input Template) (Template, error) {
 	}
 	for index := range output.Spec.Graph.Nodes {
 		var value any
-		if err := json.Unmarshal(output.Spec.Graph.Nodes[index].Config, &value); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(output.Spec.Graph.Nodes[index].Config))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
+			return Template{}, fmt.Errorf("canonicalize config for node %s: %w", output.Spec.Graph.Nodes[index].ID, err)
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			if err == nil {
+				err = errors.New("multiple JSON values")
+			}
 			return Template{}, fmt.Errorf("canonicalize config for node %s: %w", output.Spec.Graph.Nodes[index].ID, err)
 		}
 		encoded, err := json.Marshal(value)

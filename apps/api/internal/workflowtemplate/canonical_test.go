@@ -70,3 +70,27 @@ func TestCanonicalizeRejectsInvalidConfigJSON(t *testing.T) {
 		t.Fatalf("partial template returned: %+v", normalized)
 	}
 }
+
+func TestEncodeCanonicalTemplatePreservesLargeIntegers(t *testing.T) {
+	input := Template{
+		APIVersion: APIVersion,
+		Kind:       Kind,
+		Metadata:   Metadata{Name: "大整数"},
+		Spec: Spec{Graph: domain.Graph{
+			SchemaVersion: 1,
+			Nodes: []domain.Node{{
+				ID: "number", Type: "custom", TypeVersion: "1",
+				Config: json.RawMessage(`{"value":9007199254740993}`),
+			}},
+			Edges: []domain.Edge{},
+		}},
+	}
+
+	encoded, err := Encode(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`9007199254740993`)) {
+		t.Fatalf("large integer changed during canonicalization: %s", encoded)
+	}
+}
