@@ -74,6 +74,9 @@ replace github.com/yyl1212/agent-studio => %s
 	if !strings.Contains(string(generated), `"example.com/sdkfixture/extensions/echo"`) {
 		t.Fatalf("generated=%s", generated)
 	}
+	if strings.Contains(string(generated), filepath.ToSlash(fixture)) {
+		t.Fatalf("generated output leaks fixture path %q:\n%s", fixture, generated)
+	}
 	if after := gitStatus(t, repository); after != before {
 		t.Fatalf("repository status changed\nbefore:\n%s\nafter:\n%s", before, after)
 	}

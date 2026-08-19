@@ -67,7 +67,7 @@ func TestGenerateNodesFindsProjectRootFromNestedDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "func RegisterNodes(agentnode.Registrar) error") {
+	if !strings.Contains(string(data), "func RegisterNodes(registry packageRegistry) error") {
 		t.Fatalf("generated=%s", data)
 	}
 }

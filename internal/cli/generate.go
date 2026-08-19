@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 	"github.com/yyl1212/agent-studio/internal/nodegen"
 	"github.com/yyl1212/agent-studio/internal/nodemanifest"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 )
 
 const generatedNodesPath = "apps/api/internal/generated/nodes_gen.go"
@@ -28,7 +30,7 @@ func generateNodes(ctx context.Context, start string) (generateResult, error) {
 	if err != nil {
 		return generateResult{}, err
 	}
-	changed, err := (nodegen.Generator{}).Generate(ctx, root, manifest, filepath.FromSlash(generatedNodesPath))
+	changed, err := (nodegen.Generator{Inspector: nodepackage.NewInspector(buildinfo.Current())}).Generate(ctx, root, manifest, filepath.FromSlash(generatedNodesPath))
 	if err != nil {
 		return generateResult{}, err
 	}

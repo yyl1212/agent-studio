@@ -1,0 +1,32 @@
+{
+  "apiVersion": "agent-studio.dev/v1alpha1",
+  "kind": "NodePackage",
+  "metadata": {
+    "name": "github.com/yyl1212/agent-studio",
+    "displayName": "Agent Studio 官方扩展节点",
+    "description": "Agent Studio 官方 Echo、Retriever 与 Webhook 节点",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/yyl1212/agent-studio"
+  },
+  "compatibility": {
+    "nodeAPI": "agent-studio.dev/v1alpha1",
+    "runtime": {
+      "minVersion": "v0.2.0",
+      "maxVersionExclusive": "v0.4.0"
+    }
+  },
+  "registrations": [
+    {
+      "package": "github.com/yyl1212/agent-studio/extensions/echo",
+      "nodes": [{"type": "extension.echo", "version": "1.0.0"}]
+    },
+    {
+      "package": "github.com/yyl1212/agent-studio/extensions/retriever",
+      "nodes": [{"type": "extension.retriever", "version": "1.0.0"}]
+    },
+    {
+      "package": "github.com/yyl1212/agent-studio/extensions/webhook",
+      "nodes": [{"type": "extension.webhook", "version": "1.0.0"}]
+    }
+  ]
+}
