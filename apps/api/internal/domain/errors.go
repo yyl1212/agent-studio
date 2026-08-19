@@ -53,9 +53,11 @@ func publicNodeErrorMessage(kind agentnode.ErrorKind) string {
 }
 
 type ValidationIssue struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	NodeID  string `json:"nodeId,omitempty"`
-	EdgeID  string `json:"edgeId,omitempty"`
-	Path    string `json:"path,omitempty"`
+	Code           string `json:"code"`
+	Message        string `json:"message"`
+	NodeID         string `json:"nodeId,omitempty"`
+	EdgeID         string `json:"edgeId,omitempty"`
+	Path           string `json:"path,omitempty"`
+	PackageName    string `json:"packageName,omitempty"`
+	PackageVersion string `json:"packageVersion,omitempty"`
 }

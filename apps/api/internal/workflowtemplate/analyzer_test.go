@@ -3,6 +3,7 @@ package workflowtemplate
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -43,6 +45,64 @@ func TestAnalyzeBuildsPreviewFromExactRegisteredVersions(t *testing.T) {
 	}
 	if invalid.Normalized.APIVersion != "" {
 		t.Fatalf("invalid template was partially normalized: %+v", invalid.Normalized)
+	}
+}
+
+func TestAnalyzeEnrichesMissingNodeIssueFromPackageHint(t *testing.T) {
+	registry := newTemplateTestRegistry(t)
+	analyzer := NewAnalyzer(engine.NewCompiler(registry), registry)
+	template := validEchoTemplate()
+	template.Spec.Graph.Nodes[1].TypeVersion = "9.9.9"
+	template.Spec.NodePackages = []NodePackageRequirement{{
+		Name: "example.com/missing", Version: "v1.2.3",
+		Nodes: []NodePackageNode{{Type: "extension.echo", Version: "9.9.9"}},
+	}}
+	analysis := analyzer.Analyze(template)
+	for _, issue := range analysis.Preview.Issues {
+		if issue.Code == "NODE_TYPE_NOT_FOUND" && issue.PackageName == "example.com/missing" && issue.PackageVersion == "v1.2.3" {
+			return
+		}
+	}
+	t.Fatalf("enriched issue missing: %+v", analysis.Preview.Issues)
+}
+
+func TestAnalyzePackageHintCannotOverrideExactLocalNode(t *testing.T) {
+	registry := newTemplateTestRegistry(t)
+	analyzer := NewAnalyzer(engine.NewCompiler(registry), registry)
+	template := validEchoTemplate()
+	template.Spec.NodePackages = []NodePackageRequirement{{
+		Name: "example.com/unrelated", Version: "v9.9.9",
+		Nodes: []NodePackageNode{{Type: "extension.echo", Version: "1.0.0"}},
+	}}
+	analysis := analyzer.Analyze(template)
+	if !analysis.Preview.Valid {
+		t.Fatalf("hint blocked exact local node: %+v", analysis.Preview.Issues)
+	}
+	if len(analysis.Normalized.Spec.NodePackages) != 1 || analysis.Normalized.Spec.NodePackages[0].Name != "github.com/yyl1212/agent-studio" {
+		t.Fatalf("normalized hints were not derived from registry: %+v", analysis.Normalized.Spec.NodePackages)
+	}
+}
+
+func TestDerivePackageRequirementsUsesVerifiedSafeSummaries(t *testing.T) {
+	graph := domain.Graph{Nodes: []domain.Node{
+		{Type: "core", TypeVersion: "1"},
+		{Type: "module.node", TypeVersion: "1"},
+		{Type: "development.node", TypeVersion: "1"},
+		{Type: "replacement.node", TypeVersion: "1"},
+	}}
+	catalog := packageCatalog{packages: map[string]nodepackage.Summary{
+		"core@1":             {Name: "agent-studio.dev/core", Version: "v0.3.0", Source: nodepackage.SourceBuiltin},
+		"module.node@1":      {Name: "example.com/module", Version: "v1.2.3", Source: nodepackage.SourceModule},
+		"development.node@1": {Name: "example.com/development", Version: "v9.9.9", Source: nodepackage.SourceDevelopment},
+		"replacement.node@1": {Name: "example.com/replacement", Version: "v9.9.9", Source: nodepackage.SourceReplacement},
+	}}
+	want := []NodePackageRequirement{
+		{Name: "example.com/development", Nodes: []NodePackageNode{{Type: "development.node", Version: "1"}}},
+		{Name: "example.com/module", Version: "v1.2.3", Nodes: []NodePackageNode{{Type: "module.node", Version: "1"}}},
+		{Name: "example.com/replacement", Nodes: []NodePackageNode{{Type: "replacement.node", Version: "1"}}},
+	}
+	if got := derivePackageRequirements(graph, catalog); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requirements=%+v, want %+v", got, want)
 	}
 }
 
@@ -263,4 +323,21 @@ type staticCatalog struct{}
 
 func (staticCatalog) Definitions() []agentnode.Definition {
 	return nil
+}
+
+func (staticCatalog) PackageFor(string, string) (nodepackage.Summary, bool) {
+	return nodepackage.Summary{}, false
+}
+
+type packageCatalog struct {
+	packages map[string]nodepackage.Summary
+}
+
+func (packageCatalog) Definitions() []agentnode.Definition {
+	return nil
+}
+
+func (catalog packageCatalog) PackageFor(nodeType, version string) (nodepackage.Summary, bool) {
+	summary, found := catalog.packages[nodeType+"@"+version]
+	return summary, found
 }

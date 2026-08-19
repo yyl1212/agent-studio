@@ -7,12 +7,52 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
+	"unicode/utf8"
+
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
+
+	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 )
 
 func Decode(raw json.RawMessage) (Template, error) {
+	if !utf8.Valid(raw) {
+		return Template{}, fmt.Errorf("decode workflow template: invalid UTF-8")
+	}
+	var probe struct {
+		APIVersion string `json:"apiVersion"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return Template{}, fmt.Errorf("decode workflow template version: %w", err)
+	}
+
 	var decoded Template
-	if err := decodeStrictJSON(raw, &decoded); err != nil {
-		return Template{}, err
+	if probe.APIVersion == APIVersionV1Alpha1 {
+		var legacy templateV1Alpha1
+		if err := decodeStrictJSON(raw, &legacy); err != nil {
+			return Template{}, err
+		}
+		decoded = Template{
+			APIVersion: APIVersionV1Alpha2,
+			Kind:       legacy.Kind,
+			Metadata:   legacy.Metadata,
+			Spec:       Spec{NodePackages: []NodePackageRequirement{}, Graph: legacy.Spec.Graph},
+		}
+	} else {
+		if err := decodeStrictJSON(raw, &decoded); err != nil {
+			return Template{}, err
+		}
+		if hasNullNodePackages(raw) {
+			return Template{}, fmt.Errorf("decode workflow template: spec.nodePackages must be an array when present")
+		}
+		if decoded.Spec.NodePackages == nil {
+			decoded.Spec.NodePackages = []NodePackageRequirement{}
+		}
+		if err := validatePackageRequirements(decoded.Spec.NodePackages); err != nil {
+			return Template{}, err
+		}
 	}
 	missing, err := requiredV1Alpha1Fields(raw)
 	if err != nil {
@@ -20,6 +60,80 @@ func Decode(raw json.RawMessage) (Template, error) {
 	}
 	decoded.missingRequired = missing
 	return decoded, nil
+}
+
+func hasNullNodePackages(raw json.RawMessage) bool {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil {
+		return false
+	}
+	var spec map[string]json.RawMessage
+	if json.Unmarshal(root["spec"], &spec) != nil {
+		return false
+	}
+	nodePackages, present := spec["nodePackages"]
+	return present && bytes.Equal(bytes.TrimSpace(nodePackages), []byte("null"))
+}
+
+type templateV1Alpha1 struct {
+	APIVersion string       `json:"apiVersion"`
+	Kind       string       `json:"kind"`
+	Metadata   Metadata     `json:"metadata"`
+	Spec       specV1Alpha1 `json:"spec"`
+}
+
+type specV1Alpha1 struct {
+	Graph domain.Graph `json:"graph"`
+}
+
+func validatePackageRequirements(requirements []NodePackageRequirement) error {
+	if len(requirements) > MaxNodePackages {
+		return fmt.Errorf("decode workflow template: nodePackages exceeds %d packages", MaxNodePackages)
+	}
+	packageNames := make(map[string]struct{}, len(requirements))
+	nodeKeys := make(map[string]struct{})
+	totalNodes := 0
+	for packageIndex, requirement := range requirements {
+		path := fmt.Sprintf("spec.nodePackages[%d]", packageIndex)
+		if !utf8.ValidString(requirement.Name) || utf8.RuneCountInString(requirement.Name) > nodepackage.MaxModulePathLength ||
+			strings.TrimSpace(requirement.Name) != requirement.Name || module.CheckPath(requirement.Name) != nil {
+			return fmt.Errorf("decode workflow template: %s.name is invalid", path)
+		}
+		if _, duplicate := packageNames[requirement.Name]; duplicate {
+			return fmt.Errorf("decode workflow template: %s.name is duplicated", path)
+		}
+		packageNames[requirement.Name] = struct{}{}
+		if requirement.Version != "" && (!utf8.ValidString(requirement.Version) ||
+			utf8.RuneCountInString(requirement.Version) > nodepackage.MaxVersionLength || !semver.IsValid(requirement.Version)) {
+			return fmt.Errorf("decode workflow template: %s.version is invalid", path)
+		}
+		if len(requirement.Nodes) == 0 {
+			return fmt.Errorf("decode workflow template: %s.nodes must not be empty", path)
+		}
+		totalNodes += len(requirement.Nodes)
+		if totalNodes > MaxPackageNodes {
+			return fmt.Errorf("decode workflow template: nodePackages exceeds %d node references", MaxPackageNodes)
+		}
+		for nodeIndex, node := range requirement.Nodes {
+			nodePath := fmt.Sprintf("%s.nodes[%d]", path, nodeIndex)
+			if !validHintString(node.Type, nodepackage.MaxNodeTypeLength) {
+				return fmt.Errorf("decode workflow template: %s.type is invalid", nodePath)
+			}
+			if !validHintString(node.Version, nodepackage.MaxVersionLength) {
+				return fmt.Errorf("decode workflow template: %s.version is invalid", nodePath)
+			}
+			key := node.Type + "@" + node.Version
+			if _, duplicate := nodeKeys[key]; duplicate {
+				return fmt.Errorf("decode workflow template: %s is duplicated", nodePath)
+			}
+			nodeKeys[key] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func validHintString(value string, maximum int) bool {
+	return value != "" && utf8.ValidString(value) && strings.TrimSpace(value) == value && utf8.RuneCountInString(value) <= maximum
 }
 
 func decodeStrictJSON(raw json.RawMessage, target any) error {
