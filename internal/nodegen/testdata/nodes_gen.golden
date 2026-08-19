@@ -5,17 +5,36 @@ package generated
 import (
 	"fmt"
 
-	node0 "example.com/studio/extensions/alpha"
-	node1 "example.com/studio/extensions/zeta"
+	node0 "example.com/external/alpha"
+	node1 "example.com/external/zeta"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
+	"github.com/yyl1212/agent-studio/sdk/go/nodepackage"
 )
 
-func RegisterNodes(registrar agentnode.Registrar) error {
-	if err := node0.Register(registrar); err != nil {
-		return fmt.Errorf("register example.com/studio/extensions/alpha: %w", err)
+type packageRegistry interface {
+	RegisterPackage(nodepackage.RuntimeRecord, func(agentnode.Registrar) error) error
+}
+
+func RegisterNodes(registry packageRegistry) error {
+	record0 := nodepackage.RuntimeRecord{
+		Summary: nodepackage.Summary{
+			Name: "example.com/external", DisplayName: "External Nodes", Version: "v0.3.0", License: "Apache-2.0", Repository: "https://example.com/external", Source: nodepackage.Source("module"),
+		},
+		Nodes: []nodepackage.NodeRef{
+			{Type: "external.alpha", Version: "1.0.0"},
+			{Type: "external.zeta", Version: "1.0.0"},
+		},
 	}
-	if err := node1.Register(registrar); err != nil {
-		return fmt.Errorf("register example.com/studio/extensions/zeta: %w", err)
+	if err := registry.RegisterPackage(record0, func(registrar agentnode.Registrar) error {
+		if err := node0.Register(registrar); err != nil {
+			return fmt.Errorf("register example.com/external/alpha: %w", err)
+		}
+		if err := node1.Register(registrar); err != nil {
+			return fmt.Errorf("register example.com/external/zeta: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("register node package example.com/external: %w", err)
 	}
 	return nil
 }

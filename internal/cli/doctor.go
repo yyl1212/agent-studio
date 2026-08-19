@@ -10,10 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 	"github.com/yyl1212/agent-studio/internal/nodemanifest"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 )
 
 const (
@@ -23,10 +26,11 @@ const (
 )
 
 type DoctorDeps struct {
-	LookPath func(string) (string, error)
-	Command  func(context.Context, string, ...string) ([]byte, error)
-	Listen   func(string, string) (net.Listener, error)
-	ReadFile func(string) ([]byte, error)
+	LookPath    func(string) (string, error)
+	Command     func(context.Context, string, ...string) ([]byte, error)
+	Listen      func(string, string) (net.Listener, error)
+	ReadFile    func(string) ([]byte, error)
+	InspectMany func(context.Context, string, []string) []nodepackage.Inspection
 }
 
 type CheckResult struct {
@@ -36,7 +40,6 @@ type CheckResult struct {
 }
 
 func Diagnose(ctx context.Context, root string, deps DoctorDeps) []CheckResult {
-	_ = root
 	results := make([]CheckResult, 0, 10)
 	results = append(results, checkVersion(ctx, deps, "go", []string{"version"}, 1, 26, goVersion))
 	results = append(results, checkVersion(ctx, deps, "node", []string{"--version"}, 24, 0, nodeVersion))
@@ -49,7 +52,11 @@ func Diagnose(ctx context.Context, root string, deps DoctorDeps) []CheckResult {
 		compose = checkCompose(ctx, deps)
 	}
 	results = append(results, compose)
-	results = append(results, checkManifest(root, deps))
+	manifestCheck, manifest, manifestValid := checkManifest(root, deps)
+	results = append(results, manifestCheck)
+	if manifestValid {
+		results = append(results, checkNodePackages(ctx, root, manifest, deps)...)
+	}
 	results = append(results, checkPostgres(ctx, deps, docker.Status == checkOK && compose.Status == checkOK))
 
 	for _, port := range []string{"5432", "8080", "5173"} {
@@ -58,20 +65,66 @@ func Diagnose(ctx context.Context, root string, deps DoctorDeps) []CheckResult {
 	return results
 }
 
-func checkManifest(root string, deps DoctorDeps) CheckResult {
+func checkManifest(root string, deps DoctorDeps) (CheckResult, nodemanifest.Manifest, bool) {
 	path := filepath.Join(root, "agent-studio.nodes.yaml")
 	data, err := deps.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return CheckResult{Name: "manifest", Status: checkWarn, Detail: "agent-studio.nodes.yaml not found"}
+		return CheckResult{Name: "manifest", Status: checkWarn, Detail: "agent-studio.nodes.yaml not found"}, nodemanifest.Manifest{}, false
 	}
 	if err != nil {
-		return CheckResult{Name: "manifest", Status: checkFail, Detail: err.Error()}
+		return CheckResult{Name: "manifest", Status: checkFail, Detail: err.Error()}, nodemanifest.Manifest{}, false
 	}
 	manifest, err := nodemanifest.Parse(path, data)
 	if err != nil {
-		return CheckResult{Name: "manifest", Status: checkFail, Detail: err.Error()}
+		return CheckResult{Name: "manifest", Status: checkFail, Detail: err.Error()}, nodemanifest.Manifest{}, false
 	}
-	return CheckResult{Name: "manifest", Status: checkOK, Detail: fmt.Sprintf("%s; %d node packages", manifest.APIVersion, len(manifest.Nodes))}
+	return CheckResult{Name: "manifest", Status: checkOK, Detail: fmt.Sprintf("%s; %d node packages", manifest.APIVersion, len(manifest.Nodes))}, manifest, true
+}
+
+func checkNodePackages(ctx context.Context, root string, manifest nodemanifest.Manifest, deps DoctorDeps) []CheckResult {
+	paths := make([]string, 0, len(manifest.Nodes))
+	for _, node := range manifest.Nodes {
+		paths = append(paths, node.Package)
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		return []CheckResult{}
+	}
+	if deps.InspectMany == nil {
+		results := make([]CheckResult, 0, len(paths))
+		for _, importPath := range paths {
+			results = append(results, CheckResult{
+				Name: "node package " + importPath, Status: checkFail, Detail: "inspection unavailable",
+			})
+		}
+		return results
+	}
+	inspections := deps.InspectMany(ctx, root, paths)
+	results := make([]CheckResult, 0, len(paths))
+	for index, importPath := range paths {
+		result := CheckResult{Name: "node package " + importPath, Status: checkOK, Detail: "compatible"}
+		if index >= len(inspections) {
+			result.Status = checkFail
+			result.Detail = "inspection result missing"
+			results = append(results, result)
+			continue
+		}
+		diagnostics := nodepackage.SortDiagnostics(inspections[index].Diagnostics)
+		messages := make([]string, 0, len(diagnostics))
+		for _, diagnostic := range diagnostics {
+			messages = append(messages, diagnostic.Message)
+			if diagnostic.Severity == nodepackage.SeverityError {
+				result.Status = checkFail
+			} else if result.Status == checkOK {
+				result.Status = checkWarn
+			}
+		}
+		if len(messages) > 0 {
+			result.Detail = strings.Join(messages, "; ")
+		}
+		results = append(results, result)
+	}
+	return results
 }
 
 func checkVersion(ctx context.Context, deps DoctorDeps, name string, args []string, minimumMajor, minimumMinor int, parse func(string) (int, int, bool)) CheckResult {
@@ -182,6 +235,7 @@ func containsLine(value, want string) bool {
 }
 
 func defaultDoctorDeps(root string) DoctorDeps {
+	inspector := nodepackage.NewInspector(buildinfo.Current())
 	return DoctorDeps{
 		LookPath: exec.LookPath,
 		Command: func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -190,7 +244,8 @@ func defaultDoctorDeps(root string) DoctorDeps {
 			command.Env = append(os.Environ(), "CGO_ENABLED=0")
 			return command.CombinedOutput()
 		},
-		Listen:   net.Listen,
-		ReadFile: os.ReadFile,
+		Listen:      net.Listen,
+		ReadFile:    os.ReadFile,
+		InspectMany: inspector.InspectMany,
 	}
 }

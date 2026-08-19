@@ -226,7 +226,7 @@ func TestPublishValidatesGraphAndBuildsAgentManifest(t *testing.T) {
 func TestImportTemplateCreatesNewUnpublishedDraft(t *testing.T) {
 	service, store := newServiceFixture(t)
 	input := ImportWorkflowTemplateInput{
-		Template: validEchoTemplateFixture(t),
+		Template: marshalTemplateFixture(t, validEchoTemplateFixture(t)),
 		Name:     "导入副本", Slug: "imported-copy", Description: "本地模板",
 	}
 	created, err := service.ImportTemplate(context.Background(), input)
@@ -243,8 +243,9 @@ func TestImportTemplateCreatesNewUnpublishedDraft(t *testing.T) {
 
 func TestInvalidTemplateDoesNotWrite(t *testing.T) {
 	service, store := newServiceFixture(t)
-	input := ImportWorkflowTemplateInput{Template: validEchoTemplateFixture(t), Name: "副本", Slug: "copy"}
-	input.Template.Spec.Graph.Nodes[1].TypeVersion = "9.9.9"
+	template := validEchoTemplateFixture(t)
+	template.Spec.Graph.Nodes[1].TypeVersion = "9.9.9"
+	input := ImportWorkflowTemplateInput{Template: marshalTemplateFixture(t, template), Name: "副本", Slug: "copy"}
 	_, err := service.ImportTemplate(context.Background(), input)
 	var validation *TemplateValidationError
 	if !errors.As(err, &validation) || store.createCalls != 0 {
@@ -255,7 +256,7 @@ func TestInvalidTemplateDoesNotWrite(t *testing.T) {
 func TestImportTemplateRejectsInvalidIdentityWithoutWriting(t *testing.T) {
 	service, store := newServiceFixture(t)
 	_, err := service.ImportTemplate(context.Background(), ImportWorkflowTemplateInput{
-		Template: validEchoTemplateFixture(t), Name: "副本", Slug: "Bad Slug",
+		Template: marshalTemplateFixture(t, validEchoTemplateFixture(t)), Name: "副本", Slug: "Bad Slug",
 	})
 	if !errors.Is(err, ErrInvalidWorkflowInput) || store.createCalls != 0 {
 		t.Fatalf("err=%v calls=%d", err, store.createCalls)
@@ -264,9 +265,26 @@ func TestImportTemplateRejectsInvalidIdentityWithoutWriting(t *testing.T) {
 
 func TestPreviewTemplateDoesNotWrite(t *testing.T) {
 	service, store := newServiceFixture(t)
-	preview := service.PreviewTemplate(context.Background(), validEchoTemplateFixture(t))
+	preview, err := service.PreviewTemplate(context.Background(), marshalTemplateFixture(t, validEchoTemplateFixture(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !preview.Valid || store.createCalls != 0 {
 		t.Fatalf("preview=%+v calls=%d", preview, store.createCalls)
+	}
+}
+
+func TestTemplateDecodeErrorsDoNotWrite(t *testing.T) {
+	service, store := newServiceFixture(t)
+	invalid := json.RawMessage(`{"apiVersion":"agent-studio.dev/v1alpha1","unknown":true}`)
+	if _, err := service.PreviewTemplate(context.Background(), invalid); err == nil {
+		t.Fatal("expected preview decode error")
+	}
+	_, err := service.ImportTemplate(context.Background(), ImportWorkflowTemplateInput{
+		Template: invalid, Name: "副本", Slug: "decode-error",
+	})
+	if err == nil || store.createCalls != 0 {
+		t.Fatalf("err=%v calls=%d", err, store.createCalls)
 	}
 }
 
@@ -291,6 +309,74 @@ func TestExportTemplateUsesStoredIdentityWithoutDatabaseFields(t *testing.T) {
 	if bytes.Contains(exported.Data, []byte(store.workflow.ID)) || bytes.Contains(exported.Data, []byte(`"draftRevision"`)) {
 		t.Fatalf("database fields leaked: %s", exported.Data)
 	}
+	if !bytes.Contains(exported.Data, []byte(`"apiVersion": "agent-studio.dev/v1alpha2"`)) ||
+		bytes.Contains(exported.Data, []byte(`"repository"`)) {
+		t.Fatalf("package hints are incomplete or unsafe: %s", exported.Data)
+	}
+}
+
+func TestExportTemplateDerivesOnlySafeUsedPackageHints(t *testing.T) {
+	service, store := newServiceFixture(t)
+	template := validEchoTemplateFixture(t)
+	graph, err := json.Marshal(template.Spec.Graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.workflow.DraftGraph = graph
+	exported, err := service.ExportTemplate(context.Background(), store.workflow.ID, store.workflow.DraftRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(exported.Data, []byte(`"name": "github.com/yyl1212/agent-studio"`)) ||
+		!bytes.Contains(exported.Data, []byte(`"type": "extension.echo"`)) ||
+		bytes.Contains(exported.Data, []byte(`"repository"`)) ||
+		bytes.Contains(exported.Data, []byte(`"version": "(devel)"`)) {
+		t.Fatalf("derived package hints are incomplete or unsafe: %s", exported.Data)
+	}
+	decoded, err := workflowtemplate.Decode(exported.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Spec.NodePackages) != 1 || decoded.Spec.NodePackages[0].Version != "" ||
+		len(decoded.Spec.NodePackages[0].Nodes) != 1 || decoded.Spec.NodePackages[0].Nodes[0].Type != "extension.echo" {
+		t.Fatalf("derived hints include unused nodes or development version: %+v", decoded.Spec.NodePackages)
+	}
+}
+
+func TestImportV1Alpha1ExportsAsV1Alpha2(t *testing.T) {
+	service, store := newServiceFixture(t)
+	legacy := validEchoTemplateFixture(t)
+	legacy.APIVersion = workflowtemplate.APIVersionV1Alpha1
+	wire := struct {
+		APIVersion string                    `json:"apiVersion"`
+		Kind       string                    `json:"kind"`
+		Metadata   workflowtemplate.Metadata `json:"metadata"`
+		Spec       struct {
+			Graph domain.Graph `json:"graph"`
+		} `json:"spec"`
+	}{APIVersion: legacy.APIVersion, Kind: legacy.Kind, Metadata: legacy.Metadata}
+	wire.Spec.Graph = legacy.Spec.Graph
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.ImportTemplate(context.Background(), ImportWorkflowTemplateInput{
+		Template: raw, Name: "旧模板", Slug: "legacy-template", Description: "迁移",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("createCalls=%d", store.createCalls)
+	}
+	exported, err := service.ExportTemplate(context.Background(), created.ID, created.DraftRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(exported.Data, []byte(`"apiVersion": "agent-studio.dev/v1alpha2"`)) ||
+		!bytes.Contains(exported.Data, []byte(`"nodePackages": [`)) {
+		t.Fatalf("legacy export was not upgraded: %s", exported.Data)
+	}
 }
 
 func TestTemplateExportImportExportRoundTripIsStable(t *testing.T) {
@@ -299,12 +385,8 @@ func TestTemplateExportImportExportRoundTripIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var template workflowtemplate.Template
-	if err := json.Unmarshal(first.Data, &template); err != nil {
-		t.Fatal(err)
-	}
 	created, err := service.ImportTemplate(context.Background(), ImportWorkflowTemplateInput{
-		Template: template, Name: store.workflow.Name, Slug: "demo-copy", Description: store.workflow.Description,
+		Template: first.Data, Name: store.workflow.Name, Slug: "demo-copy", Description: store.workflow.Description,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -324,7 +406,7 @@ func validEchoTemplateFixture(t *testing.T) workflowtemplate.Template {
 		APIVersion: workflowtemplate.APIVersion,
 		Kind:       workflowtemplate.Kind,
 		Metadata:   workflowtemplate.Metadata{Name: "Echo 模板", Description: "Service 测试"},
-		Spec: workflowtemplate.Spec{Graph: domain.Graph{
+		Spec: workflowtemplate.Spec{NodePackages: []workflowtemplate.NodePackageRequirement{}, Graph: domain.Graph{
 			SchemaVersion: 1,
 			Nodes: []domain.Node{
 				{ID: "start", Type: "start", TypeVersion: "1", Config: json.RawMessage(`{"fields":[{"key":"topic","label":"主题","type":"text"}]}`)},
@@ -337,6 +419,15 @@ func validEchoTemplateFixture(t *testing.T) workflowtemplate.Template {
 			},
 		}},
 	}
+}
+
+func marshalTemplateFixture(t *testing.T, template workflowtemplate.Template) json.RawMessage {
+	t.Helper()
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func newServiceFixture(t *testing.T) (*Service, *fakeStore) {

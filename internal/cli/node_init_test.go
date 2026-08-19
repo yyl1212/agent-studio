@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/yyl1212/agent-studio/internal/nodemanifest"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 func TestRunNodeInitCreatesExtensionAndPrintsNextSteps(t *testing.T) {
@@ -41,6 +44,18 @@ func TestRunNodeInitCreatesExtensionAndPrintsNextSteps(t *testing.T) {
 	}
 	if len(manifest.Nodes) != 1 || manifest.Nodes[0].Package != "example.com/project/extensions/echo" {
 		t.Fatalf("manifest=%#v", manifest)
+	}
+	packageData, err := os.ReadFile(filepath.Join(root, nodepackage.Filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageManifest, err := nodepackage.Parse(nodepackage.Filename, packageData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packageManifest.Registrations) != 1 || packageManifest.Registrations[0].Package != "example.com/project/extensions/echo" ||
+		packageManifest.Registrations[0].Nodes[0].Type != "extension.echo" || packageManifest.Registrations[0].Nodes[0].Version != "1.0.0" {
+		t.Fatalf("package manifest=%+v", packageManifest)
 	}
 }
 
@@ -89,12 +104,77 @@ func TestRunNodeInitSecondAttemptDoesNotChangeGeneratedFiles(t *testing.T) {
 	}
 }
 
+func TestInitializeNodeRequiresPackageManifest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/project\n\ngo 1.26.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agent-studio.nodes.yaml"), []byte("apiVersion: agent-studio.dev/v1alpha1\nnodes: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := initializeNode(context.Background(), root, "echo")
+	if err == nil || !strings.Contains(err.Error(), nodepackage.Filename) {
+		t.Fatalf("error=%v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "extensions")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("extensions created: %v", statErr)
+	}
+}
+
+func TestInitializeNodeRejectsPackageManifestForAnotherModule(t *testing.T) {
+	root := t.TempDir()
+	writeNodeInitFixture(t, root)
+	data, err := os.ReadFile(filepath.Join(root, nodepackage.Filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := nodepackage.Parse(nodepackage.Filename, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Metadata.Name = "example.com/other"
+	encoded, err := nodepackage.Encode(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, nodepackage.Filename), encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = initializeNode(context.Background(), root, "echo")
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "extensions")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("extensions created: %v", statErr)
+	}
+}
+
 func writeNodeInitFixture(t *testing.T, root string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/project\n\ngo 1.26.0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "agent-studio.nodes.yaml"), []byte("apiVersion: agent-studio.dev/v1alpha1\nnodes: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packageManifest := nodepackage.Manifest{
+		APIVersion: nodepackage.APIVersion,
+		Kind:       nodepackage.Kind,
+		Metadata: nodepackage.Metadata{
+			Name: "example.com/project", DisplayName: "Project Nodes", Description: "",
+			License: "Apache-2.0", Repository: "https://example.com/project",
+		},
+		Compatibility: nodepackage.Compatibility{
+			NodeAPI: agentnode.APIVersion,
+			Runtime: nodepackage.RuntimeRange{MinVersion: "v0.2.0", MaxVersionExclusive: "v0.4.0"},
+		},
+		Registrations: []nodepackage.Registration{},
+	}
+	data, err := nodepackage.Encode(packageManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, nodepackage.Filename), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

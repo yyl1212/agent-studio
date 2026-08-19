@@ -3,6 +3,7 @@ package scaffold
 import (
 	"bytes"
 	"embed"
+	"errors"
 	"fmt"
 	"go/format"
 	"go/token"
@@ -15,6 +16,7 @@ import (
 	"text/template"
 
 	"github.com/yyl1212/agent-studio/internal/nodemanifest"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/internal/safepath"
 )
 
@@ -24,17 +26,20 @@ var templateFiles embed.FS
 var extensionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 
 type Request struct {
-	RootDir    string
-	ModulePath string
-	Name       string
-	Manifest   nodemanifest.Manifest
+	RootDir         string
+	ModulePath      string
+	Name            string
+	Manifest        nodemanifest.Manifest
+	PackageManifest nodepackage.Manifest
 }
 
 type ScaffoldPlan struct {
-	Directory    string
-	Files        map[string][]byte
-	Manifest     nodemanifest.Manifest
-	ManifestPath string
+	Directory           string
+	Files               map[string][]byte
+	Manifest            nodemanifest.Manifest
+	ManifestPath        string
+	PackageManifest     nodepackage.Manifest
+	PackageManifestPath string
 }
 
 type ApplyDeps struct {
@@ -57,6 +62,15 @@ func Plan(request Request) (ScaffoldPlan, error) {
 	updatedManifest, err := nodemanifest.AddPackage(request.Manifest, importPath)
 	if err != nil {
 		return ScaffoldPlan{}, fmt.Errorf("add node package to manifest: %w", err)
+	}
+	updatedPackageManifest, err := nodepackage.AddRegistration(request.PackageManifest, nodepackage.Registration{
+		Package: importPath,
+		Nodes: []nodepackage.NodeRef{{
+			Type: "extension." + request.Name, Version: "1.0.0",
+		}},
+	})
+	if err != nil {
+		return ScaffoldPlan{}, fmt.Errorf("add node to package manifest: %w", err)
 	}
 	data := templateData{
 		PackageName: packageName,
@@ -88,10 +102,12 @@ func Plan(request Request) (ScaffoldPlan, error) {
 	}
 	root := filepath.Clean(request.RootDir)
 	return ScaffoldPlan{
-		Directory:    filepath.Join(root, "extensions", request.Name),
-		Files:        files,
-		Manifest:     updatedManifest,
-		ManifestPath: filepath.Join(root, "agent-studio.nodes.yaml"),
+		Directory:           filepath.Join(root, "extensions", request.Name),
+		Files:               files,
+		Manifest:            updatedManifest,
+		ManifestPath:        filepath.Join(root, "agent-studio.nodes.yaml"),
+		PackageManifest:     updatedPackageManifest,
+		PackageManifestPath: filepath.Join(root, nodepackage.Filename),
 	}, nil
 }
 
@@ -114,9 +130,24 @@ func Apply(plan ScaffoldPlan, deps ApplyDeps) (returnErr error) {
 	if err := safepath.ValidateWriteTarget(root, plan.ManifestPath); err != nil {
 		return fmt.Errorf("validate node manifest: %w", err)
 	}
+	if err := safepath.ValidateWriteTarget(root, plan.PackageManifestPath); err != nil {
+		return fmt.Errorf("validate node package manifest: %w", err)
+	}
 	manifestData, err := nodemanifest.Marshal(plan.Manifest)
 	if err != nil {
 		return err
+	}
+	packageManifestData, err := nodepackage.Encode(plan.PackageManifest)
+	if err != nil {
+		return err
+	}
+	originalManifest, err := os.ReadFile(plan.ManifestPath)
+	if err != nil {
+		return fmt.Errorf("read node manifest %s: %w", plan.ManifestPath, err)
+	}
+	originalPackageManifest, err := os.ReadFile(plan.PackageManifestPath)
+	if err != nil {
+		return fmt.Errorf("read node package manifest %s: %w", plan.PackageManifestPath, err)
 	}
 	createdDirectory := false
 	entries, err := os.ReadDir(plan.Directory)
@@ -178,7 +209,25 @@ func Apply(plan ScaffoldPlan, deps ApplyDeps) (returnErr error) {
 	if err := writeManifestAtomic(plan.ManifestPath, manifestData, rename); err != nil {
 		return err
 	}
+	if err := writeManifestAtomic(plan.PackageManifestPath, packageManifestData, rename); err != nil {
+		rollbackErr := restoreManifests(plan, originalManifest, originalPackageManifest, rename)
+		if rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("restore manifests: %w", rollbackErr))
+		}
+		return err
+	}
 	return nil
+}
+
+func restoreManifests(plan ScaffoldPlan, manifestData, packageManifestData []byte, rename func(string, string) error) error {
+	var restoreErrors []error
+	if err := writeManifestAtomic(plan.ManifestPath, manifestData, rename); err != nil {
+		restoreErrors = append(restoreErrors, err)
+	}
+	if err := writeManifestAtomic(plan.PackageManifestPath, packageManifestData, rename); err != nil {
+		restoreErrors = append(restoreErrors, err)
+	}
+	return errors.Join(restoreErrors...)
 }
 
 func renderTemplate(name string, data templateData) ([]byte, error) {
@@ -203,7 +252,7 @@ func titleName(name string) string {
 }
 
 func writeManifestAtomic(path string, data []byte, rename func(string, string) error) (returnErr error) {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".agent-studio.nodes.yaml-*")
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
 	if err != nil {
 		return fmt.Errorf("create manifest temporary file: %w", err)
 	}

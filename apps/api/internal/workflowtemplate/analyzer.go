@@ -9,6 +9,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -18,6 +19,7 @@ type Compiler interface {
 
 type NodeCatalog interface {
 	Definitions() []agentnode.Definition
+	PackageFor(nodeType, version string) (nodepackage.Summary, bool)
 }
 
 type Analyzer struct {
@@ -50,6 +52,7 @@ func (analyzer *Analyzer) Analyze(input Template) Analysis {
 	}
 	if len(preview.Issues) == 0 {
 		plan, issues := analyzer.compiler.Compile(input.Spec.Graph)
+		issues = enrichPackageIssues(issues, input.Spec.Graph, input.Spec.NodePackages)
 		preview.Issues = append(preview.Issues, issues...)
 		if len(issues) == 0 {
 			start := plan.Nodes[plan.StartNodeID].Node
@@ -67,6 +70,7 @@ func (analyzer *Analyzer) Analyze(input Template) Analysis {
 	if !preview.Valid {
 		return analysis
 	}
+	input.Spec.NodePackages = derivePackageRequirements(input.Spec.Graph, analyzer.catalog)
 
 	normalized, err := Canonicalize(input)
 	if err != nil {
@@ -88,6 +92,9 @@ func (analyzer *Analyzer) Analyze(input Template) Analysis {
 
 func envelopeIssues(template Template) []domain.ValidationIssue {
 	issues := make([]domain.ValidationIssue, 0)
+	for _, path := range template.missingRequired {
+		issues = append(issues, templateIssue("TEMPLATE_FIELD_REQUIRED", "工作流模板缺少必填字段", "", path))
+	}
 	if template.APIVersion != APIVersion {
 		issues = append(issues, templateIssue("TEMPLATE_API_VERSION_UNSUPPORTED", "工作流模板 apiVersion 不受支持", "", "apiVersion"))
 	}
@@ -170,6 +177,12 @@ func sortTemplateIssues(issues []domain.ValidationIssue) []domain.ValidationIssu
 		if left.Path != right.Path {
 			return left.Path < right.Path
 		}
+		if left.PackageName != right.PackageName {
+			return left.PackageName < right.PackageName
+		}
+		if left.PackageVersion != right.PackageVersion {
+			return left.PackageVersion < right.PackageVersion
+		}
 		return left.Message < right.Message
 	})
 	unique := issues[:0]
@@ -180,4 +193,79 @@ func sortTemplateIssues(issues []domain.ValidationIssue) []domain.ValidationIssu
 		unique = append(unique, issue)
 	}
 	return unique
+}
+
+func enrichPackageIssues(issues []domain.ValidationIssue, graph domain.Graph, requirements []NodePackageRequirement) []domain.ValidationIssue {
+	hints := make(map[string]NodePackageRequirement)
+	for _, requirement := range requirements {
+		for _, node := range requirement.Nodes {
+			hints[node.Type+"@"+node.Version] = requirement
+		}
+	}
+	nodesByID := make(map[string]domain.Node, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		nodesByID[node.ID] = node
+	}
+	enriched := append([]domain.ValidationIssue(nil), issues...)
+	for index := range enriched {
+		if enriched[index].Code != "NODE_TYPE_NOT_FOUND" {
+			continue
+		}
+		node, found := nodesByID[enriched[index].NodeID]
+		if !found {
+			continue
+		}
+		hint, found := hints[node.Type+"@"+node.TypeVersion]
+		if found {
+			enriched[index].PackageName = hint.Name
+			enriched[index].PackageVersion = hint.Version
+		}
+	}
+	return enriched
+}
+
+func derivePackageRequirements(graph domain.Graph, catalog NodeCatalog) []NodePackageRequirement {
+	type packageGroup struct {
+		version string
+		nodes   map[string]NodePackageNode
+	}
+	groups := make(map[string]*packageGroup)
+	for _, node := range graph.Nodes {
+		summary, found := catalog.PackageFor(node.Type, node.TypeVersion)
+		if !found || summary.Source == nodepackage.SourceBuiltin {
+			continue
+		}
+		group := groups[summary.Name]
+		if group == nil {
+			version := summary.Version
+			if summary.Source == nodepackage.SourceDevelopment || summary.Source == nodepackage.SourceReplacement {
+				version = ""
+			}
+			group = &packageGroup{version: version, nodes: make(map[string]NodePackageNode)}
+			groups[summary.Name] = group
+		}
+		key := node.Type + "@" + node.TypeVersion
+		group.nodes[key] = NodePackageNode{Type: node.Type, Version: node.TypeVersion}
+	}
+	packageNames := make([]string, 0, len(groups))
+	for name := range groups {
+		packageNames = append(packageNames, name)
+	}
+	sort.Strings(packageNames)
+	requirements := make([]NodePackageRequirement, 0, len(packageNames))
+	for _, name := range packageNames {
+		group := groups[name]
+		nodes := make([]NodePackageNode, 0, len(group.nodes))
+		for _, node := range group.nodes {
+			nodes = append(nodes, node)
+		}
+		sort.Slice(nodes, func(left, right int) bool {
+			if nodes[left].Type != nodes[right].Type {
+				return nodes[left].Type < nodes[right].Type
+			}
+			return nodes[left].Version < nodes[right].Version
+		})
+		requirements = append(requirements, NodePackageRequirement{Name: name, Version: group.version, Nodes: nodes})
+	}
+	return requirements
 }

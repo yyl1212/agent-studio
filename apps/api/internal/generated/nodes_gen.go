@@ -9,17 +9,37 @@ import (
 	node1 "github.com/yyl1212/agent-studio/extensions/retriever"
 	node2 "github.com/yyl1212/agent-studio/extensions/webhook"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
+	"github.com/yyl1212/agent-studio/sdk/go/nodepackage"
 )
 
-func RegisterNodes(registrar agentnode.Registrar) error {
-	if err := node0.Register(registrar); err != nil {
-		return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/echo: %w", err)
+type packageRegistry interface {
+	RegisterPackage(nodepackage.RuntimeRecord, func(agentnode.Registrar) error) error
+}
+
+func RegisterNodes(registry packageRegistry) error {
+	record0 := nodepackage.RuntimeRecord{
+		Summary: nodepackage.Summary{
+			Name: "github.com/yyl1212/agent-studio", DisplayName: "Agent Studio 官方扩展节点", Version: "", License: "Apache-2.0", Repository: "https://github.com/yyl1212/agent-studio", Source: nodepackage.Source("development"),
+		},
+		Nodes: []nodepackage.NodeRef{
+			{Type: "extension.echo", Version: "1.0.0"},
+			{Type: "extension.retriever", Version: "1.0.0"},
+			{Type: "extension.webhook", Version: "1.0.0"},
+		},
 	}
-	if err := node1.Register(registrar); err != nil {
-		return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/retriever: %w", err)
-	}
-	if err := node2.Register(registrar); err != nil {
-		return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/webhook: %w", err)
+	if err := registry.RegisterPackage(record0, func(registrar agentnode.Registrar) error {
+		if err := node0.Register(registrar); err != nil {
+			return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/echo: %w", err)
+		}
+		if err := node1.Register(registrar); err != nil {
+			return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/retriever: %w", err)
+		}
+		if err := node2.Register(registrar); err != nil {
+			return fmt.Errorf("register github.com/yyl1212/agent-studio/extensions/webhook: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("register node package github.com/yyl1212/agent-studio: %w", err)
 	}
 	return nil
 }

@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 	"github.com/yyl1212/agent-studio/internal/nodegen"
 	"github.com/yyl1212/agent-studio/internal/nodemanifest"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 )
 
 const generatedNodesPath = "apps/api/internal/generated/nodes_gen.go"
@@ -28,7 +30,7 @@ func generateNodes(ctx context.Context, start string) (generateResult, error) {
 	if err != nil {
 		return generateResult{}, err
 	}
-	changed, err := (nodegen.Generator{}).Generate(ctx, root, manifest, filepath.FromSlash(generatedNodesPath))
+	changed, err := (nodegen.Generator{Inspector: nodepackage.NewInspector(buildinfo.Current())}).Generate(ctx, root, manifest, filepath.FromSlash(generatedNodesPath))
 	if err != nil {
 		return generateResult{}, err
 	}
@@ -55,6 +57,27 @@ func findProjectRoot(start string) (string, error) {
 		parent := filepath.Dir(current)
 		if parent == current {
 			return "", fmt.Errorf("find project root from %s: go.mod and agent-studio.nodes.yaml were not found", start)
+		}
+		current = parent
+	}
+}
+
+func findGoModuleRoot(start string) (string, error) {
+	current, err := filepath.Abs(start)
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory %s: %w", start, err)
+	}
+	for {
+		goModule, moduleErr := regularFile(filepath.Join(current, "go.mod"))
+		if moduleErr != nil {
+			return "", moduleErr
+		}
+		if goModule {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("find Go module root from %s: go.mod was not found", start)
 		}
 		current = parent
 	}

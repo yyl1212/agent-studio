@@ -3,12 +3,33 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
 	"github.com/yyl1212/agent-studio/internal/buildinfo"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
+
+func TestRegisterCorePackageIsAtomicWhenMiddleStepFails(t *testing.T) {
+	registry := nodes.NewRegistry()
+	wantErr := errors.New("middle registration failed")
+	record := nodepackage.RuntimeRecord{
+		Summary: nodepackage.Summary{Name: "agent-studio.dev/core", Source: nodepackage.SourceBuiltin},
+		Nodes:   []nodepackage.NodeRef{{Type: "start", Version: "1"}},
+	}
+	err := registerCorePackage(registry, record,
+		func(registrar agentnode.Registrar) error { return registrar.Register(builtin.NewStart()) },
+		func(agentnode.Registrar) error { return wantErr },
+	)
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "register core package") || len(registry.Definitions()) != 0 {
+		t.Fatalf("error=%v definitions=%+v", err, registry.Definitions())
+	}
+}
 
 func TestRegisterExtensionNodesAddsEcho(t *testing.T) {
 	registry := nodes.NewRegistry()

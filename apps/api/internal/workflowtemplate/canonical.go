@@ -13,6 +13,27 @@ import (
 
 func Canonicalize(input Template) (Template, error) {
 	output := input
+	output.APIVersion = APIVersionV1Alpha2
+	output.Spec.NodePackages = append([]NodePackageRequirement(nil), input.Spec.NodePackages...)
+	if output.Spec.NodePackages == nil {
+		output.Spec.NodePackages = []NodePackageRequirement{}
+	}
+	for index := range output.Spec.NodePackages {
+		output.Spec.NodePackages[index].Nodes = append([]NodePackageNode(nil), input.Spec.NodePackages[index].Nodes...)
+		if output.Spec.NodePackages[index].Nodes == nil {
+			output.Spec.NodePackages[index].Nodes = []NodePackageNode{}
+		}
+		sort.Slice(output.Spec.NodePackages[index].Nodes, func(left, right int) bool {
+			leftNode, rightNode := output.Spec.NodePackages[index].Nodes[left], output.Spec.NodePackages[index].Nodes[right]
+			if leftNode.Type != rightNode.Type {
+				return leftNode.Type < rightNode.Type
+			}
+			return leftNode.Version < rightNode.Version
+		})
+	}
+	sort.Slice(output.Spec.NodePackages, func(left, right int) bool {
+		return output.Spec.NodePackages[left].Name < output.Spec.NodePackages[right].Name
+	})
 	output.Spec.Graph.Nodes = append([]domain.Node(nil), input.Spec.Graph.Nodes...)
 	output.Spec.Graph.Edges = append([]domain.Edge(nil), input.Spec.Graph.Edges...)
 	if output.Spec.Graph.Nodes == nil {
@@ -60,6 +81,9 @@ func decodeJSONValue(raw json.RawMessage) (any, error) {
 func Encode(input Template) ([]byte, error) {
 	normalized, err := Canonicalize(input)
 	if err != nil {
+		return nil, err
+	}
+	if err := validatePackageRequirements(normalized.Spec.NodePackages); err != nil {
 		return nil, err
 	}
 	encoded, err := json.MarshalIndent(normalized, "", "  ")

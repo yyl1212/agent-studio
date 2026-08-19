@@ -94,3 +94,37 @@ func TestEncodeCanonicalTemplatePreservesLargeIntegers(t *testing.T) {
 		t.Fatalf("large integer changed during canonicalization: %s", encoded)
 	}
 }
+
+func TestEncodeV1Alpha2SortsPackageHintsAndRoundTrips(t *testing.T) {
+	input := Template{
+		APIVersion: APIVersionV1Alpha2,
+		Kind:       Kind,
+		Metadata:   Metadata{Name: "包提示"},
+		Spec: Spec{
+			NodePackages: []NodePackageRequirement{
+				{Name: "example.com/zeta", Nodes: []NodePackageNode{{Type: "zeta.b", Version: "2"}, {Type: "zeta.a", Version: "1"}}},
+				{Name: "example.com/alpha", Version: "v1.0.0", Nodes: []NodePackageNode{{Type: "alpha.node", Version: "1"}}},
+			},
+			Graph: domain.Graph{SchemaVersion: 1, Nodes: []domain.Node{}, Edges: []domain.Edge{}},
+		},
+	}
+	first, err := Encode(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Index(first, []byte(`example.com/alpha`)) > bytes.Index(first, []byte(`example.com/zeta`)) ||
+		bytes.Index(first, []byte(`zeta.a`)) > bytes.Index(first, []byte(`zeta.b`)) {
+		t.Fatalf("package hints not sorted: %s", first)
+	}
+	decoded, err := Decode(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Encode(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("round trip drifted\n%s\n%s", first, second)
+	}
+}

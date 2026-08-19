@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -25,11 +26,15 @@ type registeredNode struct {
 }
 
 type Registry struct {
-	entries map[string]registeredNode
+	entries       map[string]registeredNode
+	packageByNode map[string]nodepackage.Summary
 }
 
 func NewRegistry() *Registry {
-	return &Registry{entries: make(map[string]registeredNode)}
+	return &Registry{
+		entries:       make(map[string]registeredNode),
+		packageByNode: make(map[string]nodepackage.Summary),
+	}
 }
 
 var _ agentnode.Registrar = (*Registry)(nil)

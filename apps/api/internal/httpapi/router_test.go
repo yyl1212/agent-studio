@@ -17,6 +17,8 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
+	"github.com/yyl1212/agent-studio/extensions/echo"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -25,6 +27,7 @@ type fixtureWorkflowService struct {
 	panicOnList        bool
 	templateExport     workflow.TemplateExport
 	templatePreview    workflowtemplate.Preview
+	templatePreviewErr error
 	templateExportErr  error
 	templateImportErr  error
 	lastExportRevision int64
@@ -69,8 +72,8 @@ func (service *fixtureWorkflowService) ExportTemplate(_ context.Context, _ strin
 	return service.templateExport, service.templateExportErr
 }
 
-func (service *fixtureWorkflowService) PreviewTemplate(context.Context, workflowtemplate.Template) workflowtemplate.Preview {
-	return service.templatePreview
+func (service *fixtureWorkflowService) PreviewTemplate(context.Context, json.RawMessage) (workflowtemplate.Preview, error) {
+	return service.templatePreview, service.templatePreviewErr
 }
 
 func (service *fixtureWorkflowService) ImportTemplate(_ context.Context, input workflow.ImportWorkflowTemplateInput) (domain.Workflow, error) {
@@ -205,6 +208,20 @@ func TestWorkflowTemplateRoutesRejectUnknownAndTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestWorkflowTemplatePreviewMapsTemplateDecodeErrorToBadRequest(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.Workflows.(*fixtureWorkflowService).templatePreviewErr = errors.New("decode workflow template: unknown field")
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflow-templates/preview", validTemplateEnvelopeJSON())
+	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+}
+
+func TestWorkflowTemplateImportMapsTemplateDecodeErrorToBadRequest(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.Workflows.(*fixtureWorkflowService).templateImportErr = workflow.ErrInvalidWorkflowTemplate
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflow-templates/import", validImportJSON())
+	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+}
+
 func TestWorkflowTemplatePreviewReturnsInvalidAsSuccessfulAnalysis(t *testing.T) {
 	dependencies := fixtureDeps()
 	dependencies.Workflows.(*fixtureWorkflowService).templatePreview = workflowtemplate.Preview{
@@ -252,16 +269,24 @@ func fixtureWorkflowTemplate() workflowtemplate.Template {
 
 func validTemplateEnvelopeJSON() string {
 	encoded, _ := json.Marshal(struct {
-		Template workflowtemplate.Template `json:"template"`
-	}{Template: fixtureWorkflowTemplate()})
+		Template json.RawMessage `json:"template"`
+	}{Template: mustMarshalTemplate(fixtureWorkflowTemplate())})
 	return string(encoded)
 }
 
 func validImportJSON() string {
 	encoded, _ := json.Marshal(workflow.ImportWorkflowTemplateInput{
-		Template: fixtureWorkflowTemplate(), Name: "演示副本", Slug: "demo-copy", Description: "",
+		Template: mustMarshalTemplate(fixtureWorkflowTemplate()), Name: "演示副本", Slug: "demo-copy", Description: "",
 	})
 	return string(encoded)
+}
+
+func mustMarshalTemplate(template workflowtemplate.Template) json.RawMessage {
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
 }
 
 func TestRecovererReturnsSafeRequestID(t *testing.T) {
@@ -287,11 +312,18 @@ func TestReadyReturnsServiceUnavailable(t *testing.T) {
 
 func TestNodeAPIRendersMissingPortSlicesAsArrays(t *testing.T) {
 	dependencies := fixtureDeps()
-	if err := builtin.RegisterCore(dependencies.Registry); err != nil {
+	if err := dependencies.Registry.RegisterPackage(nodepackage.RuntimeRecord{
+		Summary: nodepackage.Summary{Name: "agent-studio.dev/core", Source: nodepackage.SourceBuiltin},
+		Nodes: []nodepackage.NodeRef{
+			{Type: "start", Version: "1"}, {Type: "template", Version: "1"},
+			{Type: "condition", Version: "1"}, {Type: "end", Version: "1"},
+		},
+	}, builtin.RegisterCore); err != nil {
 		t.Fatal(err)
 	}
 	listRecorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/node-types", "")
-	if strings.Contains(listRecorder.Body.String(), `"inputs":null`) || strings.Contains(listRecorder.Body.String(), `"outputs":null`) {
+	if !strings.Contains(listRecorder.Body.String(), `"type":"start"`) || strings.Contains(listRecorder.Body.String(), `"inputs":null`) ||
+		strings.Contains(listRecorder.Body.String(), `"outputs":null`) || strings.Contains(listRecorder.Body.String(), `"capabilities":null`) {
 		t.Fatalf("definitions contain null ports: %s", listRecorder.Body.String())
 	}
 	resolveRecorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/node-types/start/1/resolve", `{"config":{"fields":[]}}`)
@@ -345,6 +377,35 @@ func TestNodeAPIIncludesGeneratedOfficialExtensions(t *testing.T) {
 		if resolved.Code != http.StatusOK || !strings.Contains(resolved.Body.String(), `"inputs":[`) || !strings.Contains(resolved.Body.String(), `"outputs":[`) {
 			t.Fatalf("path=%s status=%d body=%s", test.path, resolved.Code, resolved.Body.String())
 		}
+	}
+}
+
+func TestNodeAPIIncludesPackageSummary(t *testing.T) {
+	dependencies := fixtureDeps()
+	record := nodepackage.RuntimeRecord{
+		Summary: nodepackage.Summary{
+			Name: "example.com/nodes", DisplayName: "Example Nodes", Version: "v1.2.3",
+			License: "Apache-2.0", Repository: "https://example.com/nodes", Source: nodepackage.SourceModule,
+		},
+		Nodes: []nodepackage.NodeRef{{Type: "extension.echo", Version: "1.0.0"}},
+	}
+	if err := dependencies.Registry.RegisterPackage(record, echo.Register); err != nil {
+		t.Fatal(err)
+	}
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/node-types", "")
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "/Users/example/private") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response []struct {
+		agentnode.Definition
+		Package nodepackage.Summary `json:"package"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response) != 1 || response[0].Package != record.Summary || response[0].Type != "extension.echo" ||
+		response[0].Inputs == nil || response[0].Outputs == nil || response[0].Capabilities == nil {
+		t.Fatalf("response=%+v", response)
 	}
 }
 

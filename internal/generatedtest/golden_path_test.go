@@ -27,11 +27,19 @@ replace github.com/yyl1212/agent-studio => %s
 `, filepath.ToSlash(repository)))
 	writeFile(t, filepath.Join(fixture, "agent-studio.nodes.yaml"), "apiVersion: agent-studio.dev/v1alpha1\nnodes: []\n")
 
-	run(t, fixture, nil, cliBinary, "node", "init", "echo")
 	moduleBefore, err := os.ReadFile(filepath.Join(fixture, "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	run(t, fixture, nil, cliBinary,
+		"node", "package", "init",
+		"--display-name", "SDK Fixture",
+		"--license", "Apache-2.0",
+		"--repository", "https://example.com/sdkfixture",
+		"--runtime-min", "v0.2.0",
+		"--runtime-max-exclusive", "v0.4.0",
+	)
+	run(t, fixture, nil, cliBinary, "node", "init", "echo")
 	run(t, fixture, nil, cliBinary, "node", "test", "./extensions/echo")
 	moduleAfter, err := os.ReadFile(filepath.Join(fixture, "go.mod"))
 	if err != nil || string(moduleAfter) != string(moduleBefore) {
@@ -50,12 +58,24 @@ replace github.com/yyl1212/agent-studio => %s
 	if !strings.Contains(string(manifest), "example.com/sdkfixture/extensions/echo") {
 		t.Fatalf("manifest=%s", manifest)
 	}
+	packageManifest, err := os.ReadFile(filepath.Join(fixture, "agent-studio.node-package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(packageManifest), "example.com/sdkfixture/extensions/echo") ||
+		!strings.Contains(string(packageManifest), `"type": "extension.echo"`) ||
+		!strings.Contains(string(packageManifest), `"version": "1.0.0"`) {
+		t.Fatalf("package manifest=%s", packageManifest)
+	}
 	generated, err := os.ReadFile(filepath.Join(fixture, "apps/api/internal/generated/nodes_gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(generated), `"example.com/sdkfixture/extensions/echo"`) {
 		t.Fatalf("generated=%s", generated)
+	}
+	if strings.Contains(string(generated), filepath.ToSlash(fixture)) {
+		t.Fatalf("generated output leaks fixture path %q:\n%s", fixture, generated)
 	}
 	if after := gitStatus(t, repository); after != before {
 		t.Fatalf("repository status changed\nbefore:\n%s\nafter:\n%s", before, after)

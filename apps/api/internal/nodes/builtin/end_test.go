@@ -3,11 +3,25 @@ package builtin
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 )
+
+func TestRuntimeRecordListsExactCoreNodeSet(t *testing.T) {
+	record := RuntimeRecord(buildinfo.Info{Version: "v0.3.0"})
+	want := []string{"start@1", "template@1", "condition@1", "end@1", "llm@1", "http@1", "code@1"}
+	got := make([]string, 0, len(record.Nodes))
+	for _, node := range record.Nodes {
+		got = append(got, node.Type+"@"+node.Version)
+	}
+	if !reflect.DeepEqual(got, want) || record.Summary.Name != "agent-studio.dev/core" || record.Summary.Source != "builtin" {
+		t.Fatalf("record=%+v", record)
+	}
+}
 
 func TestEndAcceptsExactlyOneActiveResult(t *testing.T) {
 	node := NewEnd()

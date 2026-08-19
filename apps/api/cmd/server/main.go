@@ -21,6 +21,8 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/store/postgres"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/yyl1212/agent-studio/internal/buildinfo"
+	"github.com/yyl1212/agent-studio/internal/nodepackage"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 func main() {
@@ -32,7 +34,8 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	logBuildInfo(logger, buildinfo.Current())
+	info := buildinfo.Current()
+	logBuildInfo(logger, info)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -51,18 +54,20 @@ func run(logger *slog.Logger) error {
 	}
 
 	registry := nodes.NewRegistry()
-	if err := builtin.RegisterCore(registry); err != nil {
-		return fmt.Errorf("register core nodes: %w", err)
-	}
 	provider, defaultModel, err := createModelProvider(cfg)
 	if err != nil {
 		return err
 	}
-	if err := builtin.RegisterLLM(registry, provider, defaultModel); err != nil {
-		return fmt.Errorf("register llm node: %w", err)
-	}
-	if err := builtin.RegisterIntegrationNodes(registry, builtin.HTTPOptions{AllowPrivateNetwork: cfg.HTTPNodeAllowPrivate}); err != nil {
-		return fmt.Errorf("register integration nodes: %w", err)
+	if err := registerCorePackage(registry, builtin.RuntimeRecord(info),
+		builtin.RegisterCore,
+		func(registrar agentnode.Registrar) error {
+			return builtin.RegisterLLM(registrar, provider, defaultModel)
+		},
+		func(registrar agentnode.Registrar) error {
+			return builtin.RegisterIntegrationNodes(registrar, builtin.HTTPOptions{AllowPrivateNetwork: cfg.HTTPNodeAllowPrivate})
+		},
+	); err != nil {
+		return err
 	}
 	if err := registerExtensionNodes(registry); err != nil {
 		return fmt.Errorf("register extension nodes: %w", err)
@@ -109,6 +114,21 @@ func run(logger *slog.Logger) error {
 	defer cancelShutdown()
 	if err := server.Shutdown(shutdownContext); err != nil {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
+	}
+	return nil
+}
+
+func registerCorePackage(registry *nodes.Registry, record nodepackage.RuntimeRecord, registrations ...func(agentnode.Registrar) error) error {
+	err := registry.RegisterPackage(record, func(registrar agentnode.Registrar) error {
+		for _, register := range registrations {
+			if err := register(registrar); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("register core package: %w", err)
 	}
 	return nil
 }

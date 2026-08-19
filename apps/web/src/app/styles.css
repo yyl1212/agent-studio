@@ -251,6 +251,7 @@ dialog textarea, .schema-field textarea { min-height: 100px; resize: vertical; }
 
 .template-summary h4 { margin: 0 0 8px; }
 .template-summary p { margin: 6px 0 0; color: #667085; }
+.template-upgrade-note { color: #7a5b16; background: #fffaeb; border: 1px solid #fedf89; border-radius: 8px; padding: 10px 12px; }
 .template-summary ul { margin: 0; padding-left: 20px; }
 .template-node-list { display: grid; gap: 8px; list-style: none; padding: 0 !important; }
 .template-node-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
