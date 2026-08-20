@@ -49,6 +49,27 @@ agent-studio node info --json github.com/example/node-package
 
 CLI 会显示 Module、展示名、许可证、推荐版本和兼容声明；详情还显示固定仓库、Tag、Commit、manifest digest、审核记录、生命周期和节点类型。命令刻意不输出可直接执行的安装命令。
 
+## Web 节点包目录
+
+启动 API 和 Web 后，从顶部主导航进入“节点包”，或直接打开 `http://localhost:5173/node-packages`。这个聚焦式单栏页面只调用本机 API，API 只读取当前 cache 或 embedded 快照；浏览、搜索和展开版本详情都不会访问 GitHub。
+
+目录支持以下筛选，并把状态保存在 URL 中，刷新页面或浏览器前进、后退后仍可恢复：
+
+- 搜索名称、描述、关键字和节点类型；输入停止 250 ms 后执行查询。
+- 可同时选择多个分类，多个分类使用 OR 语义。
+- 默认仅显示具有当前 Runtime / Node API 兼容推荐版本的包；关闭“仅显示兼容包”可查看无兼容推荐的条目。
+- 列表每页 50 个包；改变搜索、分类或兼容条件会回到第一页。
+
+状态提示“当前使用内置索引”时，API 正在读取随程序发布的 embedded 快照；提示“当前使用本地缓存索引”时，API 正在读取配置目录中的有效 `index.json`。若本地缓存损坏或不可读，页面会显示加载警告，API 使用上一个有效快照或回退到 embedded 快照。`stale` 和 warning 只反映本地状态，不表示页面查询过远端更新。
+
+Web 目录没有刷新或安装按钮，也不会在后台联网。需要更新索引时，只能在与 API 共享缓存目录的环境中显式运行：
+
+```bash
+agent-studio node index refresh
+```
+
+页面展示的“已审核”、推荐版本和兼容结果只说明索引元数据及声明通过了收录检查，不代表第三方代码安全，也不会自动下载、安装、启用或执行节点包。展开详情后，应记录固定仓库、Tag、源码 Commit、manifest digest、索引审核 Commit、生命周期和节点类型，再按本文“安装前人工审核”完成源码与依赖审查。
+
 ## 缓存目录
 
 默认缓存文件为 Go 用户缓存目录下的 `agent-studio/node-index/index.json`：
@@ -63,7 +84,7 @@ export AGENT_STUDIO_NODE_INDEX_CACHE_DIR=/srv/agent-studio/node-index
 agent-studio node index refresh
 ```
 
-后续只读节点索引 API 接入后，若要与 CLI 共享刷新结果，两者必须指向同一个目录。Docker 部署可预先把同一个持久卷挂载到固定容器路径，并为 CLI 与 API 设置相同变量。例如：
+只读节点索引 API 与 CLI 要共享刷新结果时，两者必须指向同一个目录。Docker 部署可预先把同一个持久卷挂载到固定容器路径，并为 CLI 与 API 设置相同变量。例如：
 
 ```yaml
 services:
@@ -78,6 +99,8 @@ volumes:
 ```
 
 刷新时，应使用包含 `agent-studio` CLI 的同版本容器并挂载同一个 `node-index` 卷。API 不负责联网刷新或写入该目录；仅 `node index refresh` 创建目录并原子替换 `index.json`。
+
+缓存目录只配置给 API/CLI，不应传给浏览器。Web 只接收经过 API 规范化的索引 DTO，不会看到宿主机或容器内的缓存绝对路径。
 
 ## 损坏恢复
 
