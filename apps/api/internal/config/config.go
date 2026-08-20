@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/yyl1212/agent-studio/internal/nodeindex"
 )
 
 const defaultDatabaseURL = "postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable"
@@ -18,6 +20,7 @@ type Config struct {
 	OpenAIAPIKey         string
 	OpenAIDefaultModel   string
 	HTTPNodeAllowPrivate bool
+	NodeIndexCacheDir    string
 	MaxParallelNodes     int
 	WorkflowTimeout      time.Duration
 }
@@ -35,6 +38,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	nodeIndexCacheDir, err := nodeindex.ResolveCacheDir(os.Getenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR"))
+	if err != nil {
+		return Config{}, fmt.Errorf("AGENT_STUDIO_NODE_INDEX_CACHE_DIR: %w", err)
+	}
 
 	cfg := Config{
 		HTTPAddr:             stringEnv("HTTP_ADDR", ":8080"),
@@ -45,6 +52,7 @@ func Load() (Config, error) {
 		OpenAIAPIKey:         os.Getenv("OPENAI_API_KEY"),
 		OpenAIDefaultModel:   os.Getenv("OPENAI_DEFAULT_MODEL"),
 		HTTPNodeAllowPrivate: allowPrivate,
+		NodeIndexCacheDir:    nodeIndexCacheDir,
 		MaxParallelNodes:     maxParallelNodes,
 		WorkflowTimeout:      workflowTimeout,
 	}

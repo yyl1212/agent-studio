@@ -1,0 +1,72 @@
+{
+  "apiVersion": "agent-studio.dev/v1alpha1",
+  "kind": "NodePackageIndex",
+  "metadata": {
+    "release": "v0.2.0",
+    "generatedAt": "2026-08-20T08:00:00Z",
+    "sourceCommit": "fedcba9876543210fedcba9876543210fedcba98"
+  },
+  "packages": [
+    {
+      "name": "github.com/example/agent-nodes",
+      "categories": [
+        "integration",
+        "search"
+      ],
+      "keywords": [
+        "http",
+        "search"
+      ],
+      "versions": [
+        {
+          "version": "v1.0.0",
+          "source": {
+            "repository": "https://github.com/example/agent-nodes",
+            "moduleDir": ".",
+            "tag": "v1.0.0",
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "manifestDigest": "sha256:89abcdef89abcdef89abcdef89abcdef89abcdef89abcdef89abcdef89abcdef"
+          },
+          "review": {
+            "status": "approved",
+            "reviewedAt": "2026-08-20T07:30:00Z",
+            "indexCommit": "89abcdef0123456789abcdef0123456789abcdef"
+          },
+          "lifecycle": {
+            "status": "active",
+            "message": ""
+          },
+          "manifest": {
+            "apiVersion": "agent-studio.dev/v1alpha1",
+            "kind": "NodePackage",
+            "metadata": {
+              "name": "github.com/example/other-nodes",
+              "displayName": "Example Agent Nodes",
+              "description": "Example search integration nodes",
+              "license": "Apache-2.0",
+              "repository": "https://github.com/example/agent-nodes"
+            },
+            "compatibility": {
+              "nodeAPI": "agent-studio.dev/v1alpha1",
+              "runtime": {
+                "minVersion": "v0.3.0",
+                "maxVersionExclusive": "v0.4.0"
+              }
+            },
+            "registrations": [
+              {
+                "package": "github.com/example/agent-nodes/search",
+                "nodes": [
+                  {
+                    "type": "example.search",
+                    "version": "1"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
