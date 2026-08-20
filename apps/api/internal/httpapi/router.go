@@ -14,6 +14,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
+	"github.com/yyl1212/agent-studio/internal/nodeindex"
 )
 
 type WorkflowService interface {
@@ -44,14 +45,21 @@ type Readiness interface {
 	Ready(context.Context) error
 }
 
+type NodePackageCatalog interface {
+	Status() nodeindex.Status
+	Search(nodeindex.Query) (nodeindex.SearchResult, error)
+	Get(string) (nodeindex.PackageDetail, error)
+}
+
 type Dependencies struct {
-	Registry  *nodes.Registry
-	Workflows WorkflowService
-	Runner    Runner
-	Runs      RunReader
-	Readiness Readiness
-	WebOrigin string
-	Logger    *slog.Logger
+	Registry     *nodes.Registry
+	Workflows    WorkflowService
+	Runner       Runner
+	Runs         RunReader
+	Readiness    Readiness
+	NodePackages NodePackageCatalog
+	WebOrigin    string
+	Logger       *slog.Logger
 }
 
 type handler struct {
@@ -74,6 +82,9 @@ func NewRouter(dependencies Dependencies) http.Handler {
 	router.Route("/api", func(api chi.Router) {
 		api.Get("/node-types", handler.listNodeTypes)
 		api.Post("/node-types/{type}/{version}/resolve", handler.resolveNodeType)
+		api.Get("/node-index/status", handler.getNodeIndexStatus)
+		api.Get("/node-packages", handler.listNodePackages)
+		api.Get("/node-package", handler.getNodePackage)
 		api.Get("/workflows", handler.listWorkflows)
 		api.Post("/workflows", handler.createWorkflow)
 		api.Get("/workflows/{id}", handler.getWorkflow)
