@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestLoadUsesSafeDefaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
@@ -27,5 +30,22 @@ func TestLoadRejectsOpenAIWithoutBaseURL(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected OPENAI_BASE_URL validation error")
+	}
+}
+
+func TestLoadResolvesNodeIndexCacheDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "node-index")
+	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", dir)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NodeIndexCacheDir != dir {
+		t.Fatalf("NodeIndexCacheDir=%q", cfg.NodeIndexCacheDir)
+	}
+
+	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "relative/cache")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected relative node index cache dir to be rejected")
 	}
 }
