@@ -17,6 +17,18 @@ export type AgentRunRequest = components['schemas']['AgentRunRequest']
 export type WorkflowTemplate = components['schemas']['WorkflowTemplateV1Alpha1'] | components['schemas']['WorkflowTemplateV1Alpha2']
 export type WorkflowTemplatePreview = components['schemas']['WorkflowTemplatePreview']
 export type ImportWorkflowTemplateRequest = components['schemas']['ImportWorkflowTemplateRequest']
+export type NodeIndexStatus = components['schemas']['NodeIndexStatus']
+export type NodePackageSearchResult = components['schemas']['NodePackageSearchResult']
+export type IndexedNodePackageSummary = components['schemas']['IndexedNodePackageSummary']
+export type NodePackageDetail = components['schemas']['NodePackageDetail']
+
+export type NodePackageQuery = {
+  q: string
+  categories: string[]
+  compatible: boolean
+  limit: number
+  offset: number
+}
 
 export class APIError extends Error {
   constructor(
@@ -90,6 +102,20 @@ export const api = {
     request<ResolvedPorts>(`/api/node-types/${encodeURIComponent(type)}/${encodeURIComponent(version)}/resolve`, {
       method: 'POST', body: jsonBody({ config }), signal,
     }),
+  getNodeIndexStatus: (signal?: AbortSignal) => request<NodeIndexStatus>('/api/node-index/status', { signal }),
+  listNodePackages: (query: NodePackageQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams()
+    if (query.q) params.set('q', query.q)
+    for (const category of query.categories) params.append('category', category)
+    params.set('compatible', String(query.compatible))
+    params.set('limit', String(query.limit))
+    params.set('offset', String(query.offset))
+    return request<NodePackageSearchResult>(`/api/node-packages?${params}`, { signal })
+  },
+  getNodePackage: (name: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ name })
+    return request<NodePackageDetail>(`/api/node-package?${params}`, { signal })
+  },
   listWorkflows: (signal?: AbortSignal) => request<Workflow[]>('/api/workflows', { signal }),
   createWorkflow: (body: CreateWorkflowRequest) => request<Workflow>('/api/workflows', { method: 'POST', body: jsonBody(body) }),
   previewWorkflowTemplate: (template: WorkflowTemplate, signal?: AbortSignal) =>

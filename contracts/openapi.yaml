@@ -69,6 +69,93 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /api/node-index/status:
+    get:
+      operationId: getNodeIndexStatus
+      responses:
+        "200":
+          description: 当前本地节点索引状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeIndexStatus"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/node-packages:
+    get:
+      operationId: listNodePackages
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 128
+        - name: category
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 8
+            items:
+              type: string
+              minLength: 1
+              maxLength: 32
+              pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        - name: compatible
+          in: query
+          schema:
+            type: boolean
+            default: true
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10000
+            default: 0
+      responses:
+        "200":
+          description: 节点包搜索结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodePackageSearchResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/node-package:
+    get:
+      operationId: getNodePackage
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+      responses:
+        "200":
+          description: 节点包详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodePackageDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
   /api/workflows:
     get:
       operationId: listWorkflows
@@ -558,6 +645,377 @@ components:
           format: uri
         source:
           $ref: "#/components/schemas/NodePackageSource"
+    NodeIndexStatus:
+      type: object
+      additionalProperties: false
+      required: [source, release, generatedAt, packageCount, compatiblePackageCount, runtimeVersion, nodeAPI, stale, warningCode]
+      properties:
+        source:
+          type: string
+          enum: [embedded, cache]
+        release:
+          $ref: "#/components/schemas/NodeIndexStableSemver"
+        generatedAt:
+          type: string
+          format: date-time
+          pattern: "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+        packageCount:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        compatiblePackageCount:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        runtimeVersion:
+          type: string
+          minLength: 1
+          maxLength: 128
+        nodeAPI:
+          type: string
+          minLength: 1
+          maxLength: 128
+        stale:
+          type: boolean
+        warningCode:
+          oneOf:
+            - type: string
+              enum: [INDEX_EMBEDDED_SNAPSHOT, INDEX_CONTENT_INVALID]
+            - type: "null"
+    NodePackageSearchResult:
+      type: object
+      additionalProperties: false
+      required: [release, total, offset, limit, items]
+      properties:
+        release:
+          $ref: "#/components/schemas/NodeIndexStableSemver"
+        total:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        offset:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/IndexedNodePackageSummary"
+    IndexedNodePackageSummary:
+      type: object
+      additionalProperties: false
+      required: [name, displayName, description, license, repository, categories, keywords, recommendedVersion, reasons]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 512
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 2048
+        license:
+          type: string
+          minLength: 1
+          maxLength: 128
+        repository:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          pattern: "^https://[^/?#@]+(?:/[^?#]*)?$"
+        categories:
+          $ref: "#/components/schemas/NodePackageCategories"
+        keywords:
+          $ref: "#/components/schemas/NodePackageKeywords"
+        recommendedVersion:
+          oneOf:
+            - $ref: "#/components/schemas/NodePackageVersionSummary"
+            - type: "null"
+        reasons:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/NodePackageCompatibilityReason"
+    NodePackageDetail:
+      type: object
+      additionalProperties: false
+      required: [name, categories, keywords, versions, recommendedVersion, reasons, assessments]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 512
+        categories:
+          $ref: "#/components/schemas/NodePackageCategories"
+        keywords:
+          $ref: "#/components/schemas/NodePackageKeywords"
+        versions:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/IndexedNodePackageVersion"
+        recommendedVersion:
+          oneOf:
+            - $ref: "#/components/schemas/NodePackageVersionSummary"
+            - type: "null"
+        reasons:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/NodePackageCompatibilityReason"
+        assessments:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/NodePackageVersionAssessment"
+    NodePackageVersionSummary:
+      type: object
+      additionalProperties: false
+      required: [version, source, lifecycle, compatibility]
+      properties:
+        version:
+          $ref: "#/components/schemas/NodeIndexGoSemver"
+        source:
+          $ref: "#/components/schemas/NodePackageIndexSource"
+        lifecycle:
+          $ref: "#/components/schemas/NodePackageLifecycle"
+        compatibility:
+          $ref: "#/components/schemas/NodePackageCompatibility"
+    NodePackageVersionAssessment:
+      type: object
+      additionalProperties: false
+      required: [version, compatible, reasons]
+      properties:
+        version:
+          $ref: "#/components/schemas/NodeIndexGoSemver"
+        compatible:
+          type: boolean
+        reasons:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/NodePackageCompatibilityReason"
+    IndexedNodePackageVersion:
+      type: object
+      additionalProperties: false
+      required: [version, source, review, lifecycle, manifest]
+      properties:
+        version:
+          $ref: "#/components/schemas/NodeIndexGoSemver"
+        source:
+          $ref: "#/components/schemas/NodePackageIndexSource"
+        review:
+          $ref: "#/components/schemas/NodePackageReview"
+        lifecycle:
+          $ref: "#/components/schemas/NodePackageLifecycle"
+        manifest:
+          $ref: "#/components/schemas/IndexedNodePackageManifest"
+    NodePackageIndexSource:
+      type: object
+      additionalProperties: false
+      required: [repository, moduleDir, tag, commit, manifestDigest]
+      properties:
+        repository:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          pattern: "^https://github\\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]+$"
+        moduleDir:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: "^(?:\\.|(?:[^./\\\\](?:[^/\\\\])?|\\.[^./\\\\]|[^/\\\\]{3,})(?:/(?:[^./\\\\](?:[^/\\\\])?|\\.[^./\\\\]|[^/\\\\]{3,}))*)$"
+        tag:
+          type: string
+          minLength: 1
+          maxLength: 512
+        commit:
+          $ref: "#/components/schemas/NodeIndexGitOID"
+        manifestDigest:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+    NodePackageReview:
+      type: object
+      additionalProperties: false
+      required: [status, reviewedAt, indexCommit]
+      properties:
+        status:
+          type: string
+          const: approved
+        reviewedAt:
+          type: string
+          format: date-time
+          pattern: "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+        indexCommit:
+          $ref: "#/components/schemas/NodeIndexGitOID"
+    NodePackageLifecycle:
+      type: object
+      additionalProperties: false
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [active, deprecated, withdrawn]
+        message:
+          type: string
+          maxLength: 2048
+      oneOf:
+        - properties:
+            status:
+              const: active
+            message:
+              const: ""
+        - properties:
+            status:
+              enum: [deprecated, withdrawn]
+            message:
+              type: string
+              minLength: 1
+              maxLength: 2048
+              pattern: "^[^<>]+$"
+    IndexedNodePackageManifest:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, kind, metadata, compatibility, registrations]
+      properties:
+        apiVersion:
+          type: string
+          const: agent-studio.dev/v1alpha1
+        kind:
+          type: string
+          const: NodePackage
+        metadata:
+          $ref: "#/components/schemas/IndexedNodePackageMetadata"
+        compatibility:
+          $ref: "#/components/schemas/NodePackageCompatibility"
+        registrations:
+          type: array
+          maxItems: 128
+          items:
+            $ref: "#/components/schemas/NodePackageRegistration"
+    IndexedNodePackageMetadata:
+      type: object
+      additionalProperties: false
+      required: [name, displayName, description, license, repository]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 512
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 2048
+        license:
+          type: string
+          minLength: 1
+          maxLength: 128
+        repository:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          pattern: "^https://[^/?#@]+(?:/[^?#]*)?$"
+    NodePackageCompatibility:
+      type: object
+      additionalProperties: false
+      required: [nodeAPI, runtime]
+      properties:
+        nodeAPI:
+          type: string
+          minLength: 1
+          maxLength: 128
+        runtime:
+          $ref: "#/components/schemas/NodePackageRuntimeRange"
+    NodePackageRuntimeRange:
+      type: object
+      additionalProperties: false
+      required: [minVersion, maxVersionExclusive]
+      properties:
+        minVersion:
+          $ref: "#/components/schemas/NodeIndexSemver"
+        maxVersionExclusive:
+          $ref: "#/components/schemas/NodeIndexSemver"
+    NodePackageRegistration:
+      type: object
+      additionalProperties: false
+      required: [package, nodes]
+      properties:
+        package:
+          type: string
+          minLength: 1
+          maxLength: 512
+        nodes:
+          type: array
+          minItems: 1
+          maxItems: 512
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/NodePackageRegistrationNode"
+    NodePackageRegistrationNode:
+      type: object
+      additionalProperties: false
+      required: [type, version]
+      properties:
+        type:
+          type: string
+          minLength: 1
+          maxLength: 256
+        version:
+          type: string
+          minLength: 1
+          maxLength: 128
+    NodePackageCategories:
+      type: array
+      maxItems: 8
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        maxLength: 32
+        pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    NodePackageKeywords:
+      type: array
+      maxItems: 16
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        maxLength: 64
+    NodePackageCompatibilityReason:
+      type: string
+      enum: [runtime_invalid, node_api_mismatch, runtime_too_old, runtime_too_new, no_active_stable_version]
+    NodeIndexGitOID:
+      type: string
+      pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    NodeIndexSemver:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    NodeIndexGoSemver:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^v(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?)?)?$"
+    NodeIndexStableSemver:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
     ValidationIssue:
       type: object
       required: [code, message]

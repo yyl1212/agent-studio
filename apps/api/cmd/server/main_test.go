@@ -5,15 +5,41 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
 	"github.com/yyl1212/agent-studio/internal/buildinfo"
+	"github.com/yyl1212/agent-studio/internal/nodeindex"
 	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
+
+func TestNodeIndexCatalogStartsFromEmbeddedWhenCacheIsMissing(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "missing")
+	catalog, err := openNodePackageCatalog(cacheDir, buildinfo.Info{
+		Version: "v0.3.0", APIVersion: "agent-studio.dev/v1alpha1",
+	}, nodeindex.OpenStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := catalog.Status()
+	if status.Source != nodeindex.SourceEmbedded || status.RuntimeVersion != "v0.3.0" || status.NodeAPI != "agent-studio.dev/v1alpha1" {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestNodeIndexCatalogPropagatesStoreConstructionFailure(t *testing.T) {
+	wantErr := errors.New("invalid embedded node index")
+	_, err := openNodePackageCatalog("/unused", buildinfo.Info{}, func(string) (*nodeindex.Store, error) {
+		return nil, wantErr
+	})
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "open node index") {
+		t.Fatalf("error=%v", err)
+	}
+}
 
 func TestRegisterCorePackageIsAtomicWhenMiddleStepFails(t *testing.T) {
 	registry := nodes.NewRegistry()

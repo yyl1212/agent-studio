@@ -7,6 +7,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/internal/nodeindex"
 )
 
 var errHandlerPanic = errors.New("handler panic")
@@ -32,6 +33,10 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 	var validationError *workflow.ValidationError
 	var templateValidationError *workflow.TemplateValidationError
 	switch {
+	case nodeindex.CodeOf(err) == nodeindex.CodeNotFound:
+		status, response.Code, response.Message = http.StatusNotFound, string(nodeindex.CodeNotFound), "节点包不存在"
+	case nodeindex.CodeOf(err) == nodeindex.CodeContentInvalid:
+		status, response.Code, response.Message = http.StatusBadRequest, "REQUEST_INVALID", "请求内容无效"
 	case errors.Is(err, domain.ErrNotFound):
 		status, response.Code, response.Message = http.StatusNotFound, "NOT_FOUND", "资源不存在"
 	case errors.Is(err, domain.ErrRevisionConflict):

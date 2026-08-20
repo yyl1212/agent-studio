@@ -1,0 +1,179 @@
+{
+  "apiVersion": "agent-studio.dev/v1alpha1",
+  "kind": "NodePackageIndex",
+  "metadata": {
+    "release": "v0.3.0",
+    "generatedAt": "2026-08-20T08:00:00Z",
+    "sourceCommit": "fedcba9876543210fedcba9876543210fedcba98"
+  },
+  "packages": [
+    {
+      "name": "github.com/example/future-nodes",
+      "categories": [
+        "integration"
+      ],
+      "keywords": [
+        "future"
+      ],
+      "versions": [
+        {
+          "version": "v2.0.0",
+          "source": {
+            "repository": "https://github.com/example/future-nodes",
+            "moduleDir": ".",
+            "tag": "v2.0.0",
+            "commit": "2222222222222222222222222222222222222222",
+            "manifestDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "review": {
+            "status": "approved",
+            "reviewedAt": "2026-08-20T07:20:00Z",
+            "indexCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "lifecycle": {
+            "status": "deprecated",
+            "message": "等待兼容当前 Runtime 的替代版本"
+          },
+          "manifest": {
+            "apiVersion": "agent-studio.dev/v1alpha1",
+            "kind": "NodePackage",
+            "metadata": {
+              "name": "github.com/example/future-nodes",
+              "displayName": "Future Integration Nodes",
+              "description": "Deprecated nodes for a future runtime",
+              "license": "Apache-2.0",
+              "repository": "https://github.com/example/future-nodes"
+            },
+            "compatibility": {
+              "nodeAPI": "agent-studio.dev/v1alpha1",
+              "runtime": {
+                "minVersion": "v0.4.0",
+                "maxVersionExclusive": "v0.5.0"
+              }
+            },
+            "registrations": [
+              {
+                "package": "github.com/example/future-nodes/nodes",
+                "nodes": [
+                  {
+                    "type": "example.future",
+                    "version": "2"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "github.com/example/search-nodes",
+      "categories": [
+        "integration",
+        "search"
+      ],
+      "keywords": [
+        "http",
+        "search"
+      ],
+      "versions": [
+        {
+          "version": "v1.0.0",
+          "source": {
+            "repository": "https://github.com/example/search-nodes",
+            "moduleDir": ".",
+            "tag": "v1.0.0",
+            "commit": "0000000000000000000000000000000000000000",
+            "manifestDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "review": {
+            "status": "approved",
+            "reviewedAt": "2026-08-20T07:00:00Z",
+            "indexCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "lifecycle": {
+            "status": "active",
+            "message": ""
+          },
+          "manifest": {
+            "apiVersion": "agent-studio.dev/v1alpha1",
+            "kind": "NodePackage",
+            "metadata": {
+              "name": "github.com/example/search-nodes",
+              "displayName": "Example Search Nodes",
+              "description": "Search integration nodes for Agent Studio",
+              "license": "Apache-2.0",
+              "repository": "https://github.com/example/search-nodes"
+            },
+            "compatibility": {
+              "nodeAPI": "agent-studio.dev/v1alpha1",
+              "runtime": {
+                "minVersion": "v0.2.0",
+                "maxVersionExclusive": "v0.4.0"
+              }
+            },
+            "registrations": [
+              {
+                "package": "github.com/example/search-nodes/nodes",
+                "nodes": [
+                  {
+                    "type": "example.search",
+                    "version": "1"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "version": "v1.2.3",
+          "source": {
+            "repository": "https://github.com/example/search-nodes",
+            "moduleDir": ".",
+            "tag": "v1.2.3",
+            "commit": "123456789abcdef0123456789abcdef012345678",
+            "manifestDigest": "sha256:123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
+          },
+          "review": {
+            "status": "approved",
+            "reviewedAt": "2026-08-20T07:30:00Z",
+            "indexCommit": "cccccccccccccccccccccccccccccccccccccccc"
+          },
+          "lifecycle": {
+            "status": "active",
+            "message": ""
+          },
+          "manifest": {
+            "apiVersion": "agent-studio.dev/v1alpha1",
+            "kind": "NodePackage",
+            "metadata": {
+              "name": "github.com/example/search-nodes",
+              "displayName": "Example Search Nodes",
+              "description": "Search integration nodes for Agent Studio",
+              "license": "Apache-2.0",
+              "repository": "https://github.com/example/search-nodes"
+            },
+            "compatibility": {
+              "nodeAPI": "agent-studio.dev/v1alpha1",
+              "runtime": {
+                "minVersion": "v0.2.0",
+                "maxVersionExclusive": "v0.4.0"
+              }
+            },
+            "registrations": [
+              {
+                "package": "github.com/example/search-nodes/nodes",
+                "nodes": [
+                  {
+                    "type": "example.search",
+                    "version": "1"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

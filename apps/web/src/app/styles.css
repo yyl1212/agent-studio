@@ -127,6 +127,11 @@ a {
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 
+:where(a, button, input):focus-visible {
+	outline: 3px solid rgb(49 87 213 / 35%);
+	outline-offset: 3px;
+}
+
 .primary-button {
   padding: 10px 16px;
   border: 0;

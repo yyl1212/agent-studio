@@ -21,6 +21,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/store/postgres"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/yyl1212/agent-studio/internal/buildinfo"
+	"github.com/yyl1212/agent-studio/internal/nodeindex"
 	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
@@ -40,6 +41,10 @@ func run(logger *slog.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	indexCatalog, err := openNodePackageCatalog(cfg.NodeIndexCacheDir, info, nodeindex.OpenStore)
+	if err != nil {
+		return err
 	}
 
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
@@ -78,13 +83,14 @@ func run(logger *slog.Logger) error {
 	workflowService := workflow.NewService(store, compiler, registry)
 	runService := workflow.NewRunService(store, compiler, runtime, workflow.WithLogger(logger))
 	router := httpapi.NewRouter(httpapi.Dependencies{
-		Registry:  registry,
-		Workflows: workflowService,
-		Runner:    runService,
-		Runs:      store,
-		Readiness: store,
-		WebOrigin: cfg.WebOrigin,
-		Logger:    logger,
+		Registry:     registry,
+		Workflows:    workflowService,
+		Runner:       runService,
+		Runs:         store,
+		Readiness:    store,
+		NodePackages: indexCatalog,
+		WebOrigin:    cfg.WebOrigin,
+		Logger:       logger,
 	})
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -116,6 +122,16 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	return nil
+}
+
+type nodeIndexStoreOpener func(string) (*nodeindex.Store, error)
+
+func openNodePackageCatalog(cacheDir string, info buildinfo.Info, openStore nodeIndexStoreOpener) (httpapi.NodePackageCatalog, error) {
+	store, err := openStore(cacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("open node index: %w", err)
+	}
+	return nodeindex.NewCatalog(store, nodeindex.Runtime{Version: info.Version, NodeAPI: info.APIVersion}), nil
 }
 
 func registerCorePackage(registry *nodes.Registry, record nodepackage.RuntimeRecord, registrations ...func(agentnode.Registrar) error) error {
