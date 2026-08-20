@@ -68,6 +68,34 @@ func TestStoreDoesNotReparseAnUnchangedFailedFingerprint(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsOversizedCacheBeforeParsing(t *testing.T) {
+	dir := t.TempDir()
+	file, err := os.Create(filepath.Join(dir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxIndexBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int32
+	parser := func(source string, data []byte) (Index, error) {
+		calls.Add(1)
+		return Parse(source, data)
+	}
+	store, err := openStore(dir, embeddedIndex, parser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSnapshot(t, store.Current(), SourceEmbedded, "v0.1.0", CodeContentInvalid)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("oversized cache reached parser: calls=%d", got)
+	}
+}
+
 func TestStoreReloadsAtomicReplacementWithSameSizeAndMtime(t *testing.T) {
 	dir := t.TempDir()
 	first := storeIndexFixture(t, "v0.2.0")

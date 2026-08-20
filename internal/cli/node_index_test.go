@@ -107,7 +107,7 @@ func TestNodeIndexRefreshOutputsUpdatedAndReopensCatalog(t *testing.T) {
 		runtime:            func() nodeindex.Runtime { return nodeindex.Runtime{Version: "v0.3.0", NodeAPI: nodeindex.APIVersion} },
 		openCatalog: func(string, nodeindex.Runtime) (indexStatusCatalog, error) {
 			openCalls++
-			return stubIndexCatalog{status: nodeindex.Status{Release: "v0.2.0"}}, nil
+			return stubIndexCatalog{status: nodeindex.Status{Source: nodeindex.SourceCache, Release: "v0.2.0"}}, nil
 		},
 		refresh: func(ctx context.Context, gotDir string) (nodeindex.RefreshResult, error) {
 			if ctx == nil || gotDir != cacheDir {
@@ -118,6 +118,22 @@ func TestNodeIndexRefreshOutputsUpdatedAndReopensCatalog(t *testing.T) {
 	})
 	if code != 0 || stdout.String() != "updated v0.1.0 -> v0.2.0\n" || openCalls != 1 {
 		t.Fatalf("code=%d stdout=%q openCalls=%d", code, stdout.String(), openCalls)
+	}
+}
+
+func TestNodeIndexRefreshRejectsInactiveFinalSnapshot(t *testing.T) {
+	warning := nodeindex.CodeContentInvalid
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	dependencies := validNodeIndexDependencies(t, func(context.Context, string) (nodeindex.RefreshResult, error) {
+		return nodeindex.RefreshResult{Status: nodeindex.RefreshUpdated, PreviousRelease: "v0.1.0", Release: "v0.1.0"}, nil
+	})
+	dependencies.openCatalog = func(string, nodeindex.Runtime) (indexStatusCatalog, error) {
+		return stubIndexCatalog{status: nodeindex.Status{Source: nodeindex.SourceEmbedded, Release: "v0.1.0", WarningCode: &warning}}, nil
+	}
+	code := runNodeIndex(context.Background(), []string{"refresh", "--json"}, &stdout, &stderr, dependencies)
+	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), string(nodeindex.CodeContentInvalid)) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -190,7 +206,7 @@ func validNodeIndexDependencies(t *testing.T, refresh func(context.Context, stri
 		resolveCacheDir:    nodeindex.ResolveCacheDir,
 		runtime:            func() nodeindex.Runtime { return nodeindex.Runtime{Version: "v0.3.0", NodeAPI: nodeindex.APIVersion} },
 		openCatalog: func(string, nodeindex.Runtime) (indexStatusCatalog, error) {
-			return stubIndexCatalog{status: nodeindex.Status{Release: "v0.2.0"}}, nil
+			return stubIndexCatalog{status: nodeindex.Status{Source: nodeindex.SourceCache, Release: "v0.2.0"}}, nil
 		},
 		refresh: refresh,
 	}

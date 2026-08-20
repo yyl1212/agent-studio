@@ -138,6 +138,12 @@ func (store *Store) Current() Snapshot {
 		store.observedPresent = true
 		return cloneSnapshot(store.current)
 	}
+	if fingerprint.size > MaxIndexBytes {
+		store.current.WarningCode = CodeContentInvalid
+		store.observed = fingerprint
+		store.observedPresent = true
+		return cloneSnapshot(store.current)
+	}
 
 	raw, err := os.ReadFile(store.cacheFile)
 	if err != nil {

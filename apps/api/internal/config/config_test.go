@@ -8,6 +8,7 @@ import (
 func TestLoadUsesSafeDefaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("MODEL_PROVIDER", "")
+	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -27,6 +28,7 @@ func TestLoadUsesSafeDefaults(t *testing.T) {
 func TestLoadRejectsOpenAIWithoutBaseURL(t *testing.T) {
 	t.Setenv("MODEL_PROVIDER", "openai-compatible")
 	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected OPENAI_BASE_URL validation error")

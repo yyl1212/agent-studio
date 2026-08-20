@@ -93,7 +93,8 @@ func runNodeIndex(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		if err != nil {
 			return writeNodeIndexError(stderr, jsonOutput, err)
 		}
-		if catalog.Status().Release != result.Release {
+		status := catalog.Status()
+		if status.Source != nodeindex.SourceCache || status.WarningCode != nil || status.Release != result.Release {
 			return writeNodeIndexError(stderr, jsonOutput, errors.New("refreshed node index is not active"))
 		}
 		return writeNodeIndexRefresh(stdout, stderr, jsonOutput, result)
