@@ -3,12 +3,12 @@ import { useSearchParams } from 'react-router-dom'
 
 import {
 	api,
-	type IndexedNodePackageSummary,
 	type NodeIndexStatus,
 	type NodePackageQuery,
 	type NodePackageSearchResult,
 } from '../../lib/api/client'
 import './nodePackages.css'
+import { NodePackageCard } from './NodePackageCard'
 
 const pageSize = 50
 const categories = [
@@ -17,7 +17,6 @@ const categories = [
 	{ slug: 'file', label: '文件' },
 	{ slug: 'utility', label: '工具' },
 ]
-const categoryLabels = new Map(categories.map(({ slug, label }) => [slug, label]))
 
 export function NodePackageDirectoryPage() {
 	const [searchParams, setSearchParams] = useSearchParams()
@@ -169,7 +168,9 @@ function NodePackageResults({
 					<p>{status.packageCount === 0 ? '可使用 CLI 更新本地索引后再查看。' : '请调整搜索词或筛选条件。'}</p>
 				</div>
 			) : null}
-			{result?.items.map((item) => <NodePackageSummaryCard item={item} key={item.name} />)}
+			<div className="node-package-list">
+				{result?.items.map((item) => <NodePackageCard item={item} key={item.name} />)}
+			</div>
 			{result ? (
 				<nav className="node-package-pagination" aria-label="节点包分页">
 					<button type="button" onClick={onPrevious} disabled={result.offset === 0}>上一页</button>
@@ -178,19 +179,6 @@ function NodePackageResults({
 				</nav>
 			) : null}
 		</section>
-	)
-}
-
-function NodePackageSummaryCard({ item }: { item: IndexedNodePackageSummary }) {
-	return (
-		<article className="node-package-card">
-			<strong>{item.displayName}</strong>
-			<code>{item.name}</code>
-			<p>{item.description}</p>
-			<ul className="node-package-categories" aria-label="分类">
-				{item.categories.map((category) => <li key={category}>{categoryLabels.get(category) ?? category}</li>)}
-			</ul>
-		</article>
 	)
 }
 
