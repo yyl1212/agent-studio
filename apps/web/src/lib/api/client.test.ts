@@ -26,6 +26,40 @@ describe('API client', () => {
     await expect(api.runAgent('demo', { workflowVersionId: 'v1', input: {} })).resolves.toBe(response)
   })
 
+	it('编码节点包筛选和包含斜杠的模块名', async () => {
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(jsonResponse({ release: 'v0.3.0', total: 0, offset: 40, limit: 20, items: [] }))
+			.mockResolvedValueOnce(jsonResponse({
+				name: 'github.com/example/nodes', categories: [], keywords: [], versions: [],
+				recommendedVersion: null, reasons: [], assessments: [],
+			}))
+		vi.stubGlobal('fetch', fetchMock)
+
+		await api.listNodePackages({ q: '向量 search', categories: ['integration', 'file'], compatible: false, limit: 20, offset: 40 })
+		await api.getNodePackage('github.com/example/nodes')
+
+		expect(String(fetchMock.mock.calls[0]?.[0])).toBe('/api/node-packages?q=%E5%90%91%E9%87%8F+search&category=integration&category=file&compatible=false&limit=20&offset=40')
+		expect(String(fetchMock.mock.calls[1]?.[0])).toBe('/api/node-package?name=github.com%2Fexample%2Fnodes')
+	})
+
+	it('获取节点索引状态并透传 AbortSignal', async () => {
+		const controller = new AbortController()
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(jsonResponse({
+				source: 'embedded', release: 'v0.3.0', generatedAt: '2026-08-20T00:00:00Z',
+				packageCount: 0, compatiblePackageCount: 0, runtimeVersion: 'v0.3.0',
+				nodeAPI: 'agent-studio.dev/v1alpha1', stale: true, warningCode: 'INDEX_EMBEDDED_SNAPSHOT',
+			}))
+			.mockResolvedValueOnce(jsonResponse({ release: 'v0.3.0', total: 0, offset: 0, limit: 50, items: [] }))
+		vi.stubGlobal('fetch', fetchMock)
+
+		await api.getNodeIndexStatus(controller.signal)
+		await api.listNodePackages({ q: '', categories: [], compatible: true, limit: 50, offset: 0 }, controller.signal)
+
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/node-index/status', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/node-packages?compatible=true&limit=50&offset=0', expect.objectContaining({ signal: controller.signal }))
+	})
+
 	 it('预览并导入工作流模板', async () => {
 		const template = templateFixture()
 		const fetchMock = vi.fn()
@@ -89,6 +123,11 @@ describe('API client', () => {
 		expect(fetchMock.mock.calls[0]?.[1]?.body).not.toContain('Infinity')
 		expect(fetchMock.mock.calls[0]?.[1]?.body).not.toContain('9007199254740992')
 	})
+})
+
+const jsonResponse = (value: unknown) => new Response(JSON.stringify(value), {
+	status: 200,
+	headers: { 'Content-Type': 'application/json' },
 })
 
 const templateFixture = (): WorkflowTemplate => ({

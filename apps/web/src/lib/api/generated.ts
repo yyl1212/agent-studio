@@ -68,6 +68,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/node-index/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getNodeIndexStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/node-packages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listNodePackages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/node-package": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getNodePackage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows": {
         parameters: {
             query?: never;
@@ -347,6 +395,135 @@ export interface components {
             repository: string;
             source: components["schemas"]["NodePackageSource"];
         };
+        NodeIndexStatus: {
+            /** @enum {string} */
+            source: "embedded" | "cache";
+            release: components["schemas"]["NodeIndexStableSemver"];
+            /** Format: date-time */
+            generatedAt: string;
+            packageCount: number;
+            compatiblePackageCount: number;
+            runtimeVersion: string;
+            nodeAPI: string;
+            stale: boolean;
+            warningCode: ("INDEX_EMBEDDED_SNAPSHOT" | "INDEX_CONTENT_INVALID") | null;
+        };
+        NodePackageSearchResult: {
+            release: components["schemas"]["NodeIndexStableSemver"];
+            total: number;
+            offset: number;
+            limit: number;
+            items: components["schemas"]["IndexedNodePackageSummary"][];
+        };
+        IndexedNodePackageSummary: {
+            name: string;
+            displayName: string;
+            description: string;
+            license: string;
+            /** Format: uri */
+            repository: string;
+            categories: components["schemas"]["NodePackageCategories"];
+            keywords: components["schemas"]["NodePackageKeywords"];
+            recommendedVersion: components["schemas"]["NodePackageVersionSummary"] | null;
+            reasons: components["schemas"]["NodePackageCompatibilityReason"][];
+        };
+        NodePackageDetail: {
+            name: string;
+            categories: components["schemas"]["NodePackageCategories"];
+            keywords: components["schemas"]["NodePackageKeywords"];
+            versions: components["schemas"]["IndexedNodePackageVersion"][];
+            recommendedVersion: components["schemas"]["NodePackageVersionSummary"] | null;
+            reasons: components["schemas"]["NodePackageCompatibilityReason"][];
+            assessments: components["schemas"]["NodePackageVersionAssessment"][];
+        };
+        NodePackageVersionSummary: {
+            version: components["schemas"]["NodeIndexGoSemver"];
+            source: components["schemas"]["NodePackageIndexSource"];
+            lifecycle: components["schemas"]["NodePackageLifecycle"];
+            compatibility: components["schemas"]["NodePackageCompatibility"];
+        };
+        NodePackageVersionAssessment: {
+            version: components["schemas"]["NodeIndexGoSemver"];
+            compatible: boolean;
+            reasons: components["schemas"]["NodePackageCompatibilityReason"][];
+        };
+        IndexedNodePackageVersion: {
+            version: components["schemas"]["NodeIndexGoSemver"];
+            source: components["schemas"]["NodePackageIndexSource"];
+            review: components["schemas"]["NodePackageReview"];
+            lifecycle: components["schemas"]["NodePackageLifecycle"];
+            manifest: components["schemas"]["IndexedNodePackageManifest"];
+        };
+        NodePackageIndexSource: {
+            /** Format: uri */
+            repository: string;
+            moduleDir: string;
+            tag: string;
+            commit: components["schemas"]["NodeIndexGitOID"];
+            manifestDigest: string;
+        };
+        NodePackageReview: {
+            /** @constant */
+            status: "approved";
+            /** Format: date-time */
+            reviewedAt: string;
+            indexCommit: components["schemas"]["NodeIndexGitOID"];
+        };
+        NodePackageLifecycle: {
+            /** @enum {string} */
+            status: "active" | "deprecated" | "withdrawn";
+            message: string;
+        } & ({
+            /** @constant */
+            status?: "active";
+            /** @constant */
+            message?: "";
+        } | {
+            /** @enum {unknown} */
+            status?: "deprecated" | "withdrawn";
+            message?: string;
+        });
+        IndexedNodePackageManifest: {
+            /** @constant */
+            apiVersion: "agent-studio.dev/v1alpha1";
+            /** @constant */
+            kind: "NodePackage";
+            metadata: components["schemas"]["IndexedNodePackageMetadata"];
+            compatibility: components["schemas"]["NodePackageCompatibility"];
+            registrations: components["schemas"]["NodePackageRegistration"][];
+        };
+        IndexedNodePackageMetadata: {
+            name: string;
+            displayName: string;
+            description: string;
+            license: string;
+            /** Format: uri */
+            repository: string;
+        };
+        NodePackageCompatibility: {
+            nodeAPI: string;
+            runtime: components["schemas"]["NodePackageRuntimeRange"];
+        };
+        NodePackageRuntimeRange: {
+            minVersion: components["schemas"]["NodeIndexSemver"];
+            maxVersionExclusive: components["schemas"]["NodeIndexSemver"];
+        };
+        NodePackageRegistration: {
+            package: string;
+            nodes: components["schemas"]["NodePackageRegistrationNode"][];
+        };
+        NodePackageRegistrationNode: {
+            type: string;
+            version: string;
+        };
+        NodePackageCategories: string[];
+        NodePackageKeywords: string[];
+        /** @enum {string} */
+        NodePackageCompatibilityReason: "runtime_invalid" | "node_api_mismatch" | "runtime_too_old" | "runtime_too_new" | "no_active_stable_version";
+        NodeIndexGitOID: string;
+        NodeIndexSemver: string;
+        NodeIndexGoSemver: string;
+        NodeIndexStableSemver: string;
         ValidationIssue: {
             code: string;
             message: string;
@@ -670,6 +847,80 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             404: components["responses"]["Error"];
+        };
+    };
+    getNodeIndexStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 当前本地节点索引状态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeIndexStatus"];
+                };
+            };
+            500: components["responses"]["Error"];
+        };
+    };
+    listNodePackages: {
+        parameters: {
+            query?: {
+                q?: string;
+                category?: string[];
+                compatible?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 节点包搜索结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodePackageSearchResult"];
+                };
+            };
+            400: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    getNodePackage: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 节点包详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodePackageDetail"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     listWorkflows: {
