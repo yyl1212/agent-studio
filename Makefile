@@ -1,4 +1,4 @@
-.PHONY: db-up db-down dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick test-e2e test-sdk-e2e release-tools release-check release-snapshot verify-workflows verify-release
+.PHONY: db-up db-down dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e release-tools release-check release-snapshot verify-workflows verify-release
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
 RELEASE_TOOLS_DIR ?= $(CURDIR)/.release-tools/bin
@@ -51,6 +51,10 @@ verify-web-quick:
 	corepack pnpm@10.34.5 build
 
 verify-quick: verify-go-quick verify-web-quick
+
+verify-node-index:
+	CGO_ENABLED=0 go test ./internal/nodeindex ./internal/cli -count=1
+	shasum -a 256 -c contracts/node-index-source.checksums
 
 test-e2e: db-up
 	corepack pnpm@10.34.5 --filter @agent-studio/web exec playwright test

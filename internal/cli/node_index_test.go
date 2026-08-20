@@ -81,6 +81,22 @@ func TestNodeIndexStatusHumanIncludesWarningAndCachePath(t *testing.T) {
 	}
 }
 
+func TestNodeIndexStatusHumanEscapesCachePathControls(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "node\nindex")
+	var stdout bytes.Buffer
+	code := runNodeIndex(context.Background(), []string{"status"}, &stdout, io.Discard, nodeIndexDependencies{
+		configuredCacheDir: func() string { return cacheDir },
+		resolveCacheDir:    nodeindex.ResolveCacheDir,
+		runtime:            func() nodeindex.Runtime { return nodeindex.Runtime{Version: "v0.3.0", NodeAPI: nodeindex.APIVersion} },
+		openCatalog: func(string, nodeindex.Runtime) (indexStatusCatalog, error) {
+			return stubIndexCatalog{status: nodeindex.Status{Source: nodeindex.SourceCache, Release: "v0.1.0", GeneratedAt: time.Unix(0, 0).UTC()}}, nil
+		},
+	})
+	if code != 0 || strings.Contains(stdout.String(), "node\nindex") || !strings.Contains(stdout.String(), `node\nindex`) {
+		t.Fatalf("code=%d stdout=%q", code, stdout.String())
+	}
+}
+
 func TestNodeIndexRefreshOutputsUpdatedAndReopensCatalog(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "node-index")
 	openCalls := 0

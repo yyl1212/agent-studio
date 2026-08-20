@@ -34,6 +34,14 @@ type nodeIndexErrorOutput struct {
 	Message string         `json:"message"`
 }
 
+type nodeIndexCLIError struct {
+	code nodeindex.Code
+}
+
+func (err nodeIndexCLIError) Error() string {
+	return string(err.code)
+}
+
 func nodeIndexCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return runNodeIndex(ctx, args, stdout, stderr, nodeIndexDependencies{
 		configuredCacheDir: func() string { return os.Getenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR") },
@@ -116,15 +124,15 @@ func writeNodeIndexStatus(stdout, stderr io.Writer, jsonOutput bool, cacheDir st
 		return 0
 	}
 	if _, err := fmt.Fprintf(stdout, "source: %s\nrelease: %s\ngenerated: %s\npackages: %d (compatible: %d)\n",
-		status.Source, status.Release, status.GeneratedAt.UTC().Format(time.RFC3339), status.PackageCount, status.CompatiblePackageCount); err != nil {
+		safeHumanText(string(status.Source)), safeHumanText(status.Release), status.GeneratedAt.UTC().Format(time.RFC3339), status.PackageCount, status.CompatiblePackageCount); err != nil {
 		return 1
 	}
 	if status.WarningCode != nil {
-		if _, err := fmt.Fprintf(stdout, "warning: %s\n", *status.WarningCode); err != nil {
+		if _, err := fmt.Fprintf(stdout, "warning: %s\n", safeHumanText(string(*status.WarningCode))); err != nil {
 			return 1
 		}
 	}
-	if _, err := fmt.Fprintf(stdout, "cache: %s\n", filepath.Join(cacheDir, "index.json")); err != nil {
+	if _, err := fmt.Fprintf(stdout, "cache: %s\n", safeHumanText(filepath.Join(cacheDir, "index.json"))); err != nil {
 		return 1
 	}
 	return 0
@@ -155,6 +163,10 @@ func writeNodeIndexRefresh(stdout, stderr io.Writer, jsonOutput bool, result nod
 
 func writeNodeIndexError(stderr io.Writer, jsonOutput bool, err error) int {
 	code := nodeindex.CodeOf(err)
+	var cliError nodeIndexCLIError
+	if code == "" && errors.As(err, &cliError) {
+		code = cliError.code
+	}
 	if code == "" {
 		code = nodeindex.CodeContentInvalid
 	}
@@ -165,6 +177,14 @@ func writeNodeIndexError(stderr io.Writer, jsonOutput bool, err error) int {
 		_, _ = fmt.Fprintf(stderr, "%s: %s\n", output.Code, output.Message)
 	}
 	return 1
+}
+
+func safeHumanText(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) < 2 {
+		return ""
+	}
+	return string(encoded[1 : len(encoded)-1])
 }
 
 func nodeIndexErrorMessage(code nodeindex.Code) string {
@@ -187,6 +207,8 @@ func nodeIndexErrorMessage(code nodeindex.Code) string {
 		return "节点索引 Release 无效"
 	case nodeindex.CodeSchemaUnsupported:
 		return "节点索引格式版本不受支持"
+	case nodeindex.CodeNotFound:
+		return "未找到节点包"
 	default:
 		return "节点索引内容无效"
 	}

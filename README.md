@@ -215,6 +215,7 @@ corepack pnpm@10.34.5 build
 - `contracts/openapi.yaml`：前后端唯一 HTTP 契约来源。
 - [工作流模板导入导出](docs/workflow-templates.md)：本地 JSON 模板的使用方法与安全边界。
 - [节点包开发与兼容检查](docs/node-packages.md)：节点包清单、离线检查、手工安装和模板依赖提示。
+- [官方节点包索引](docs/node-index.md)：离线搜索、显式刷新、缓存恢复和人工源码审核流程。
 - `docs/node-development.md`：无需修改前端的节点扩展示例。
 - `docs/sdk/quickstart.md`：仓库节点创建、测试、生成和画布验证的黄金路径。
 

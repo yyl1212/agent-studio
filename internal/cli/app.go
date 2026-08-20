@@ -12,7 +12,7 @@ import (
 	"github.com/yyl1212/agent-studio/internal/scaffold"
 )
 
-const helpText = "doctor\ngenerate\nnode index refresh\nnode index status\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"
+const helpText = "doctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"
 
 type appDependencies struct {
 	workingDir      func() (string, error)
@@ -23,6 +23,7 @@ type appDependencies struct {
 	nodeIndex       func(context.Context, []string, io.Writer, io.Writer) int
 	nodeInspect     func(context.Context, string, string, bool, io.Writer, io.Writer) int
 	nodePackageInit func(context.Context, string, packageInitInput) error
+	nodeSearch      func(context.Context, []string, io.Writer, io.Writer) int
 	nodeTest        func(context.Context, string, string, io.Writer, io.Writer) int
 }
 
@@ -38,6 +39,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		nodeIndex:       nodeIndexCommand,
 		nodeInspect:     inspectNodePackage,
 		nodePackageInit: initializeNodePackage,
+		nodeSearch:      nodeSearchCommand,
 		nodeTest:        testNodePackage,
 	})
 }
@@ -115,12 +117,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 		return 0
 	case "node":
 		if len(args) < 2 {
-			_, _ = io.WriteString(stderr, "node requires index, init, inspect, package, or test\n")
+			_, _ = io.WriteString(stderr, "node requires index, info, init, inspect, package, search, or test\n")
 			return 2
 		}
 		switch args[1] {
 		case "index":
 			return dependencies.nodeIndex(ctx, args[2:], stdout, stderr)
+		case "info", "search":
+			return dependencies.nodeSearch(ctx, args[1:], stdout, stderr)
 		case "init":
 			if len(args) != 3 {
 				_, _ = io.WriteString(stderr, "node init requires exactly one name\n")

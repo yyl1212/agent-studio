@@ -19,10 +19,10 @@ func TestRunTopLevelCommands(t *testing.T) {
 		wantOut  string
 		wantErr  string
 	}{
-		{name: "empty shows help", wantCode: 0, wantOut: "doctor\ngenerate\nnode index refresh\nnode index status\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"},
-		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "doctor\ngenerate\nnode index refresh\nnode index status\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"},
+		{name: "empty shows help", wantCode: 0, wantOut: "doctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"},
+		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "doctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"},
 		{name: "unknown", args: []string{"missing"}, wantCode: 2, wantErr: "unknown command \"missing\"\n"},
-		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires index, init, inspect, package, or test\n"},
+		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires index, info, init, inspect, package, search, or test\n"},
 		{name: "unknown node subcommand", args: []string{"node", "missing"}, wantCode: 2, wantErr: "unknown node command \"missing\"\n"},
 	}
 
@@ -48,6 +48,29 @@ func TestRunRoutesNodeIndex(t *testing.T) {
 	})
 	if code != 7 || !slices.Equal(called, []string{"status", "--json"}) {
 		t.Fatalf("code=%d called=%v", code, called)
+	}
+}
+
+func TestRunRoutesNodeSearch(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want []string
+	}{
+		{args: []string{"node", "search", "--json", "echo"}, want: []string{"search", "--json", "echo"}},
+		{args: []string{"node", "info", "--json", "github.com/example/nodes"}, want: []string{"info", "--json", "github.com/example/nodes"}},
+	} {
+		t.Run(strings.Join(test.args, "_"), func(t *testing.T) {
+			called := []string{}
+			code := run(context.Background(), test.args, io.Discard, io.Discard, appDependencies{
+				nodeSearch: func(_ context.Context, args []string, _, _ io.Writer) int {
+					called = append([]string(nil), args...)
+					return 7
+				},
+			})
+			if code != 7 || !slices.Equal(called, test.want) {
+				t.Fatalf("code=%d called=%v", code, called)
+			}
+		})
 	}
 }
 
