@@ -1,0 +1,10 @@
+{
+  "apiVersion": "agent-studio.dev/v1alpha1",
+  "kind": "NodePackageIndex",
+  "metadata": {
+    "release": "v0.1.0",
+    "generatedAt": "2026-08-20T16:44:09Z",
+    "sourceCommit": "6b36ec754b4ccb5d51a6be74d7380e9a1d3e479e"
+  },
+  "packages": []
+}

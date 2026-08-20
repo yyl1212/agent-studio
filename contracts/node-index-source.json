@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/yyl1212/agent-studio-node-index",
+  "release": "v0.1.0",
+  "releaseUrl": "https://github.com/yyl1212/agent-studio-node-index/releases/tag/v0.1.0",
+  "assets": {
+    "schema": {
+      "name": "node-index-v1alpha1.schema.json",
+      "sha256": "5ac1fb0b1298cc559f9428d1cf9b4b78736da1f1ee574eb79ee0560ee7bdf70d"
+    },
+    "index": {
+      "name": "index.json",
+      "sha256": "b829b085a2a4a8606a8a6d4c284ddef6dcedd0e380cabe9435e1ac4432c8443f"
+    }
+  }
+}
