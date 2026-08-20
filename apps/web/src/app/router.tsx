@@ -4,6 +4,7 @@ import { WorkflowListPage } from '../features/workflows/WorkflowListPage'
 import { StudioPage } from '../features/studio/StudioPage'
 import { AgentPage } from '../features/agent/AgentPage'
 import { RunHistoryPage } from '../features/runs/RunHistoryPage'
+import { NodePackageDirectoryPage } from '../features/node-packages/NodePackageDirectoryPage'
 
 function AppLayout() {
   return (
@@ -13,13 +14,17 @@ function AppLayout() {
           <span className="brand-mark" aria-hidden="true">AS</span>
           <h1>Agent Studio</h1>
         </Link>
-        <nav aria-label="主导航"><Link to="/workflows">工作流</Link></nav>
+		<nav aria-label="主导航">
+			<Link to="/workflows">工作流</Link>
+			<Link to="/node-packages">节点包</Link>
+		</nav>
       </header>
       <Routes>
         <Route path="/" element={<Navigate to="/workflows" replace />} />
         <Route path="/workflows" element={<WorkflowListPage />} />
         <Route path="/workflows/:id" element={<StudioPage />} />
         <Route path="/workflows/:id/runs" element={<RunHistoryPage />} />
+		<Route path="/node-packages" element={<NodePackageDirectoryPage />} />
         <Route path="/agents/:slug" element={<AgentPage />} />
         <Route path="*" element={<Placeholder title="页面不存在" />} />
       </Routes>

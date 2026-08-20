@@ -9,5 +9,6 @@ describe('App', () => {
 
     expect(screen.getByRole('heading', { name: 'Agent Studio' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '工作流' })).toBeInTheDocument()
+		expect(screen.getByRole('link', { name: '节点包' })).toBeInTheDocument()
   })
 })
