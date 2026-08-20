@@ -113,6 +113,11 @@ func TestNodeIndexRejectsInvalidQueriesBeforeCatalog(t *testing.T) {
 		"?offset=10001",
 		"?offset=invalid",
 		"?q=" + url.QueryEscape(tooLong),
+		"?category=INTEGRATION",
+		"?category=%20integration%20",
+		"?category=invalid_category",
+		"?category=" + strings.Repeat("a", nodeindex.MaxCategoryLength+1),
+		"?category=a&category=b&category=c&category=d&category=e&category=f&category=g&category=h&category=i",
 	}
 	for _, query := range tests {
 		t.Run(query, func(t *testing.T) {

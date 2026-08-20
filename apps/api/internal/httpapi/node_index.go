@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"unicode/utf8"
 
@@ -11,6 +12,7 @@ import (
 )
 
 var errInvalidNodePackageQuery = errors.New("invalid node package query")
+var nodePackageCategoryPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 func (handler *handler) getNodeIndexStatus(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, handler.dependencies.NodePackages.Status())
@@ -48,6 +50,14 @@ func parseNodePackageQuery(values url.Values) (nodeindex.Query, error) {
 	query := nodeindex.Query{Categories: append([]string{}, values["category"]...), CompatibleOnly: true, Limit: 50}
 	if !hasAtMostOne(values, "q") || !hasAtMostOne(values, "compatible") || !hasAtMostOne(values, "limit") || !hasAtMostOne(values, "offset") {
 		return nodeindex.Query{}, errInvalidNodePackageQuery
+	}
+	if len(query.Categories) > nodeindex.MaxCategories {
+		return nodeindex.Query{}, errInvalidNodePackageQuery
+	}
+	for _, category := range query.Categories {
+		if !utf8.ValidString(category) || utf8.RuneCountInString(category) > nodeindex.MaxCategoryLength || !nodePackageCategoryPattern.MatchString(category) {
+			return nodeindex.Query{}, errInvalidNodePackageQuery
+		}
 	}
 	if text := values.Get("q"); !utf8.ValidString(text) || utf8.RuneCountInString(text) > nodeindex.MaxQueryLength {
 		return nodeindex.Query{}, errInvalidNodePackageQuery

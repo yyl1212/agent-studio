@@ -9,14 +9,9 @@ import {
 } from '../../lib/api/client'
 import './nodePackages.css'
 import { NodePackageCard } from './NodePackageCard'
+import { nodePackageCategories } from './categories'
 
 const pageSize = 50
-const categories = [
-	{ slug: 'integration', label: '集成' },
-	{ slug: 'data', label: '数据' },
-	{ slug: 'file', label: '文件' },
-	{ slug: 'utility', label: '工具' },
-]
 
 export function NodePackageDirectoryPage() {
 	const [searchParams, setSearchParams] = useSearchParams()
@@ -96,7 +91,7 @@ export function NodePackageDirectoryPage() {
 			<header className="node-package-heading">
 				<p className="eyebrow">NODE PACKAGES</p>
 				<h2>节点包</h2>
-				<p>查看当前 Agent Studio 本地索引中经过审核的节点扩展。</p>
+				<p>查看已收录且元数据经过审核的节点包。</p>
 			</header>
 
 			{statusFailed ? <p className="node-package-error" role="alert">节点包目录加载失败，请稍后重试。</p> : null}
@@ -118,7 +113,7 @@ export function NodePackageDirectoryPage() {
 						/>
 						<fieldset>
 							<legend>分类</legend>
-							{categories.map(({ slug, label }) => (
+							{nodePackageCategories.map(({ slug, label }) => (
 								<label key={slug}>
 									<input
 										type="checkbox"
@@ -138,6 +133,7 @@ export function NodePackageDirectoryPage() {
 					</form>
 					<NodePackageResults
 						status={status}
+						query={query}
 						result={result}
 						failed={listFailed}
 						onPrevious={() => updateOffset(Math.max(0, query.offset - pageSize))}
@@ -150,9 +146,10 @@ export function NodePackageDirectoryPage() {
 }
 
 function NodePackageResults({
-	status, result, failed, onPrevious, onNext,
+	status, query, result, failed, onPrevious, onNext,
 }: {
 	status: NodeIndexStatus
+	query: NodePackageQuery
 	result: NodePackageSearchResult | null
 	failed: boolean
 	onPrevious: () => void
@@ -164,8 +161,8 @@ function NodePackageResults({
 			{!failed && result === null ? <div className="state-card">正在加载节点包…</div> : null}
 			{result?.total === 0 ? (
 				<div className="state-card">
-					<strong>{status.packageCount === 0 ? '索引尚无包' : '没有符合条件的节点包'}</strong>
-					<p>{status.packageCount === 0 ? '可使用 CLI 更新本地索引后再查看。' : '请调整搜索词或筛选条件。'}</p>
+					<strong>{emptyState(status, query).title}</strong>
+					<p>{emptyState(status, query).description}</p>
 				</div>
 			) : null}
 			<div className="node-package-list">
@@ -180,6 +177,16 @@ function NodePackageResults({
 			) : null}
 		</section>
 	)
+}
+
+function emptyState(status: NodeIndexStatus, query: NodePackageQuery) {
+	if (status.packageCount === 0) {
+		return { title: '索引尚无包', description: '可使用 CLI 更新本地索引后再查看。' }
+	}
+	if (query.compatible && query.q === '' && query.categories.length === 0 && status.compatiblePackageCount === 0) {
+		return { title: '当前版本无兼容包', description: '可关闭“仅显示兼容包”查看已收录的其他节点包。' }
+	}
+	return { title: '没有符合条件的节点包', description: '请调整搜索词或筛选条件。' }
 }
 
 function NodeIndexBanner({ status }: { status: NodeIndexStatus }) {

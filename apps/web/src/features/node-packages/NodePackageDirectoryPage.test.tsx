@@ -40,6 +40,7 @@ describe('NodePackageDirectoryPage', () => {
 		renderPage()
 
 		expect(await screen.findByText('当前使用内置索引')).toBeInTheDocument()
+		expect(screen.getByText('查看已收录且元数据经过审核的节点包。')).toBeInTheDocument()
 		expect(screen.getByText('agent-studio node index refresh')).toBeInTheDocument()
 		expect(screen.getByText('索引尚无包')).toBeInTheDocument()
 		expect(screen.queryByRole('button', { name: /刷新|安装/ })).not.toBeInTheDocument()
@@ -111,6 +112,24 @@ describe('NodePackageDirectoryPage', () => {
 		}, expect.any(AbortSignal)))
 	})
 
+	it('区分索引无包、当前版本无兼容包和筛选无结果', async () => {
+		vi.spyOn(api, 'getNodeIndexStatus').mockResolvedValue({
+			...embeddedStatus, packageCount: 2, compatiblePackageCount: 0,
+		})
+		vi.spyOn(api, 'listNodePackages').mockResolvedValue(emptyResult)
+		const firstView = renderPage()
+		expect(await screen.findByText('当前版本无兼容包')).toBeInTheDocument()
+		firstView.unmount()
+
+		vi.restoreAllMocks()
+		vi.spyOn(api, 'getNodeIndexStatus').mockResolvedValue({
+			...embeddedStatus, packageCount: 2, compatiblePackageCount: 1,
+		})
+		vi.spyOn(api, 'listNodePackages').mockResolvedValue(emptyResult)
+		renderPage('/node-packages?q=missing')
+		expect(await screen.findByText('没有符合条件的节点包')).toBeInTheDocument()
+	})
+
 	it('搜索输入防抖 250 ms 并以 replace 更新 URL', async () => {
 		vi.useFakeTimers()
 		mockStatus()
@@ -149,6 +168,20 @@ describe('NodePackageDirectoryPage', () => {
 
 		fireEvent.click(screen.getByRole('checkbox', { name: '仅显示兼容包' }))
 		await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ compatible: false, offset: 0 }), expect.any(AbortSignal)))
+	})
+
+	it('显示八个已知分类的中文标签并向 API 传递 slug', async () => {
+		mockStatus()
+		const list = vi.spyOn(api, 'listNodePackages').mockResolvedValue(emptyResult)
+		renderPage()
+		await screen.findByText('索引尚无包')
+
+		for (const label of ['模型', '搜索', '检索', '向量', '文件', '集成', '数据', '工具']) {
+			expect(screen.getByRole('checkbox', { name: label })).toBeInTheDocument()
+		}
+		fireEvent.click(screen.getByRole('checkbox', { name: '模型' }))
+		fireEvent.click(screen.getByRole('checkbox', { name: '搜索' }))
+		await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ categories: ['model', 'search'] }), expect.any(AbortSignal)))
 	})
 
 	it('分页遵守前后边界', async () => {

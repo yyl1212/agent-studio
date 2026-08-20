@@ -14,7 +14,7 @@ describe('NodePackageCard', () => {
 	it('显示安全的摘要、推荐版本、兼容范围、许可证和外链', () => {
 		const item = summaryFixture()
 		item.description = '<img src=x onerror=alert(1)>'
-		item.categories = ['integration', 'custom-ai']
+		item.categories = ['model', 'search', 'retrieval', 'vector', 'custom-ai']
 		const view = render(<NodePackageCard item={item} />)
 
 		expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument()
@@ -22,7 +22,10 @@ describe('NodePackageCard', () => {
 		expect(screen.getByText('推荐 v1.2.3')).toBeInTheDocument()
 		expect(screen.getByText('Apache-2.0')).toBeInTheDocument()
 		expect(screen.getByText('运行时 v0.3.0 至 v0.4.0（不含）')).toBeInTheDocument()
-		expect(screen.getByText('集成')).toBeInTheDocument()
+		expect(screen.getByText('模型')).toBeInTheDocument()
+		expect(screen.getByText('搜索')).toBeInTheDocument()
+		expect(screen.getByText('检索')).toBeInTheDocument()
+		expect(screen.getByText('向量')).toBeInTheDocument()
 		expect(screen.getByText('custom-ai')).toBeInTheDocument()
 		const link = screen.getByRole('link', { name: /github.com/ })
 		expect(link).toHaveAttribute('href', 'https://github.com/example/nodes')
@@ -59,6 +62,7 @@ describe('NodePackageCard', () => {
 		expect(within(details).getAllByText('0123456789abcdef0123456789abcdef01234567').length).toBeGreaterThan(0)
 		expect(within(details).getAllByText('sha256:89abcdef89abcdef89abcdef89abcdef89abcdef89abcdef89abcdef89abcdef').length).toBeGreaterThan(0)
 		expect(within(details).getAllByText('example.search@1').length).toBeGreaterThan(0)
+		expect(within(details).getAllByText(/元数据审核：已通过/).length).toBeGreaterThan(0)
 
 		fireEvent.click(screen.getByRole('button', { name: '收起 Example Nodes 版本详情' }))
 		fireEvent.click(screen.getByRole('button', { name: '查看 Example Nodes 版本详情' }))

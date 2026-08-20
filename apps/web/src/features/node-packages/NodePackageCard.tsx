@@ -5,13 +5,7 @@ import {
 	type IndexedNodePackageSummary,
 	type NodePackageDetail,
 } from '../../lib/api/client'
-
-const categoryLabels: Record<string, string> = {
-	integration: '集成',
-	data: '数据',
-	file: '文件',
-	utility: '工具',
-}
+import { nodePackageCategoryLabel } from './categories'
 
 const reasonLabels: Record<string, string> = {
 	runtime_invalid: '当前运行时版本无效',
@@ -86,7 +80,7 @@ export function NodePackageCard({ item }: { item: IndexedNodePackageSummary }) {
 				</ul>
 			)}
 			<ul className="node-package-categories" aria-label="分类">
-				{item.categories.map((category) => <li key={category}>{categoryLabels[category] ?? category}</li>)}
+				{item.categories.map((category) => <li key={category}>{nodePackageCategoryLabel(category)}</li>)}
 			</ul>
 			<button className="node-package-detail-toggle" type="button" onClick={toggleExpanded} aria-expanded={expanded}>
 				{expanded ? `收起 ${item.displayName} 版本详情` : `查看 ${item.displayName} 版本详情`}
@@ -127,7 +121,7 @@ function NodePackageVersions({ displayName, detail }: { displayName: string; det
 							<div><dt>模块目录</dt><dd><code>{version.source.moduleDir}</code></dd></div>
 							<div><dt>源码 Commit</dt><dd><code>{version.source.commit}</code></dd></div>
 							<div><dt>Manifest 摘要</dt><dd><code>{version.source.manifestDigest}</code></dd></div>
-							<div><dt>审核</dt><dd>已审核 · {formatDate(version.review.reviewedAt)}</dd></div>
+							<div><dt>审核范围</dt><dd>元数据审核：已通过 · {formatDate(version.review.reviewedAt)}</dd></div>
 							<div><dt>索引 Commit</dt><dd><code>{version.review.indexCommit}</code></dd></div>
 						</dl>
 						<div className="node-package-node-types">
