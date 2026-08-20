@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,10 +19,10 @@ func TestRunTopLevelCommands(t *testing.T) {
 		wantOut  string
 		wantErr  string
 	}{
-		{name: "empty shows help", wantCode: 0, wantOut: "doctor\ngenerate\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"},
-		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "doctor\ngenerate\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"},
+		{name: "empty shows help", wantCode: 0, wantOut: "doctor\ngenerate\nnode index refresh\nnode index status\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"},
+		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "doctor\ngenerate\nnode index refresh\nnode index status\nnode init\nnode inspect\nnode package init\nnode test\nversion\n"},
 		{name: "unknown", args: []string{"missing"}, wantCode: 2, wantErr: "unknown command \"missing\"\n"},
-		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires init, inspect, package, or test\n"},
+		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires index, init, inspect, package, or test\n"},
 		{name: "unknown node subcommand", args: []string{"node", "missing"}, wantCode: 2, wantErr: "unknown node command \"missing\"\n"},
 	}
 
@@ -34,6 +35,19 @@ func TestRunTopLevelCommands(t *testing.T) {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunRoutesNodeIndex(t *testing.T) {
+	called := []string{}
+	code := run(context.Background(), []string{"node", "index", "status", "--json"}, io.Discard, io.Discard, appDependencies{
+		nodeIndex: func(_ context.Context, args []string, _, _ io.Writer) int {
+			called = append([]string(nil), args...)
+			return 7
+		},
+	})
+	if code != 7 || !slices.Equal(called, []string{"status", "--json"}) {
+		t.Fatalf("code=%d called=%v", code, called)
 	}
 }
 
