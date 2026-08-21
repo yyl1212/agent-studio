@@ -120,3 +120,9 @@ func TestSupportsOnlyCurrentAPIVersion(t *testing.T) {
 		t.Fatal("unknown API version must be rejected")
 	}
 }
+
+func TestVersionForV030(t *testing.T) {
+	if got, want := agentnode.Version, "0.3.0"; got != want {
+		t.Fatalf("Version = %q, want %q", got, want)
+	}
+}

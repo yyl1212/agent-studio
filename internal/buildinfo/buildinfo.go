@@ -8,7 +8,7 @@ import (
 	"golang.org/x/mod/module"
 )
 
-const developmentVersion = "0.2.0-dev"
+const developmentVersion = "0.3.0-dev"
 
 var versionOverride string
 

@@ -75,7 +75,7 @@ release-snapshot:
 	command -v "$(GORELEASER)" >/dev/null
 	command -v "$(SYFT)" >/dev/null
 	PATH="$(dir $(SYFT)):$$PATH" "$(GORELEASER)" release --clean --snapshot --skip=publish
-	sh scripts/check-release-artifacts.sh collection dist "v0.2.1-snapshot"
+	sh scripts/check-release-artifacts.sh collection dist "v0.3.1-snapshot"
 
 verify-workflows:
 	CGO_ENABLED=0 go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)

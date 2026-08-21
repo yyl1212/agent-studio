@@ -211,7 +211,7 @@ func VerifyTarget(config Config) error {
 	}
 	actual := strings.TrimSpace(output)
 	expected := fmt.Sprintf(
-		"agent-studio %s (sdk 0.2.0; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
+		"agent-studio %s (sdk 0.3.0; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
 		config.Version,
 		config.Commit,
 	)

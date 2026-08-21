@@ -4,6 +4,10 @@ Agent Studio 自带一个只读、Git 驱动的官方节点包索引，用于发
 
 > 收录表示索引元数据已经审核，不代表节点包代码安全。安装和执行前，仍须人工审核源码、固定 Tag、Commit、依赖和节点能力。
 
+## 发布边界
+
+Agent Studio 的 `v0.3.0` Release 与官方节点索引 Release 相互独立。Agent Studio 发布不会自动收录任何节点包；只有节点包经独立的、stable 且 immutable 的索引 Release 审核后才可进入索引。索引中的“已审核”仅说明元数据与固定来源通过收录检查，绝不是代码安全认证，也不改变“不自动下载、安装、启用或执行”的边界。
+
 ## 离线快照与状态
 
 当前程序内嵌官方索引仓库不可变 Release `v0.1.0` 的 `index.json`，因此首次运行和 GitHub 不可用时仍可离线查询。内嵌快照来自 [agent-studio-node-index v0.1.0](https://github.com/yyl1212/agent-studio-node-index/releases/tag/v0.1.0)；来源、文件名和固定 SHA-256 记录在 `contracts/node-index-source.json` 与 `contracts/node-index-source.checksums`。
