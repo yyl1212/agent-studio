@@ -172,6 +172,18 @@ OPENAI_DEFAULT_MODEL=your-model
 
 密钥只通过环境变量传入，不进入工作流 JSON、API 响应或日志。
 
+### LLM v2 结构化输出
+
+节点库同时保留两个版本：`LLM`（`llm@1`）继续生成文本，`LLM · 结构化输出`（`llm@2`）可选择文本或严格结构化模式。最小画布如下：
+
+```text
+开始 → 提示词模板 → LLM · 结构化输出 → 结束
+```
+
+在 v2 节点把“输出模式”设为 `structured`，再用低代码字段列表声明 1–32 个输出字段。字段类型支持字符串、数字、整数、布尔值和字符串数组；取消“必填”的字段会按 nullable 字段处理。节点会提供完整 `json` 端口、每个已声明字段的动态端口，以及 `usage` 端口。修改或删除字段后，应重新连接画布上已经失效的动态端口。
+
+默认 Mock Provider 可直接演示：字符串字段返回 `Mock 回复：<提示词>`，数字和整数返回 `0`，布尔值返回 `false`，字符串数组返回空数组。接入 OpenAI-compatible 服务时，服务必须原生支持 Chat Completions 的 strict JSON Schema `response_format`；Agent Studio 不会自动降级为提示词约束，也不会隐藏重试。模型拒绝结构化输出、上游失败或本地二次校验失败都会返回稳定的公开错误，原始上游响应与密钥不会进入工作流输出、API 错误或日志。
+
 ## HTTP 节点密钥与网络策略
 
 HTTP 节点的敏感 Header 必须选择环境变量来源并填写变量名，例如 `UPSTREAM_API_KEY`；禁止把 Authorization/Cookie 直接写入配置。默认拒绝 loopback、私网、link-local 和解析后落入私网的地址，以降低 SSRF 风险。本地可信开发环境确需访问私网时才设置：
