@@ -254,3 +254,5 @@ jobs:
               test "$(gh release view "$GITHUB_REF_NAME" --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease] | join(",")')" = "false,false"
               ;;
           esac
+      - name: Verify immutable release
+        run: bash scripts/check-release-immutability.sh verify "$GITHUB_REF_NAME"

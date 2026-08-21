@@ -64,6 +64,17 @@ make test-e2e
 make test-sdk-e2e
 ```
 
+## 发布门禁
+
+创建版本标签前，仓库管理员必须在 GitHub 仓库设置中启用 Immutable Releases，并使用已登录且具备仓库 Administration 读取权限的 GitHub CLI 运行：
+
+```bash
+make verify-release
+make release-preflight TAG=v0.3.0-rc.2
+```
+
+本地前置检查会在标签创建前查询仓库级 immutable 设置；设置未启用时不得创建或推送标签。Actions 内置 `GITHUB_TOKEN` 不具备 Administration 读取权限，因此工作流不保存额外的高权限长期凭据。受测资产上传、下载复核并公开后，工作流会等待 GitHub Release API 返回 `immutable=true`。任一检查失败都不得移动或重用标签，修复后应发布递增的 RC 或补丁版本。
+
 ## 安全问题
 
 不要在公开 Issue、Pull Request、日志或截图中提交密钥和未披露漏洞。
