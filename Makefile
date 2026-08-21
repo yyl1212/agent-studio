@@ -1,4 +1,4 @@
-.PHONY: db-up db-down dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e release-tools release-check release-snapshot verify-workflows verify-release
+.PHONY: db-up db-down dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e release-tools release-check release-snapshot release-preflight verify-workflows verify-release
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
 RELEASE_TOOLS_DIR ?= $(CURDIR)/.release-tools/bin
@@ -77,7 +77,15 @@ release-snapshot:
 	PATH="$(dir $(SYFT)):$$PATH" "$(GORELEASER)" release --clean --snapshot --skip=publish
 	sh scripts/check-release-artifacts.sh collection dist "v0.3.1-snapshot"
 
+release-preflight:
+	@test -n "$(TAG)" || { printf '%s\n' 'usage: make release-preflight TAG=vX.Y.Z[-rc.N]' >&2; exit 2; }
+	sh scripts/check-version.sh "$(TAG)"
+	bash scripts/release-preflight.sh "$(TAG)"
+
 verify-workflows:
+	sh scripts/check-release-immutability_test.sh
+	sh scripts/release-preflight_test.sh
+	sh scripts/check-release-workflow_test.sh
 	CGO_ENABLED=0 go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 verify-release: release-tools
