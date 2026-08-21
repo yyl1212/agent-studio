@@ -5,18 +5,19 @@ expected_version='v0.3.1-snapshot'
 
 check_release_versions() {
 	repo_root=$1
-	goreleaser_version=$(sed -n 's/^[[:space:]]*version_template: "\([^"]*\)"$/\1/p' "$repo_root/.goreleaser.yaml")
+	goreleaser_snapshot=$(sed -n 's/^[[:space:]]*version_template: "\([^"]*\)"$/\1/p' "$repo_root/.goreleaser.yaml")
+	goreleaser_version="v$goreleaser_snapshot"
 	workflow_version=$(sed -n '/^[[:space:]]*- name: Select dry-run artifact version$/,/^[[:space:]]*- name: Export artifact version$/ { s/^[[:space:]]*run: echo "value=\([^"]*\)" >> "\$GITHUB_OUTPUT"$/\1/p; }' "$repo_root/.github/workflows/release.yml")
 	makefile_version=$(sed -n 's/.*check-release-artifacts\.sh collection dist "\([^"]*\)"$/\1/p' "$repo_root/Makefile")
 
 	for source_version in \
-		".goreleaser.yaml:$goreleaser_version" \
+		".goreleaser.yaml (rendered):$goreleaser_version" \
 		".github/workflows/release.yml:$workflow_version" \
 		"Makefile:$makefile_version"; do
 		source_file=${source_version%%:*}
 		actual_version=${source_version#*:}
 		if [ "$actual_version" != "$expected_version" ]; then
-			printf 'snapshot version mismatch in %s: got %s, want %s\n' \
+			printf 'rendered snapshot version mismatch in %s: got %s, want %s\n' \
 				"$source_file" "${actual_version:-missing}" "$expected_version" >&2
 			return 1
 		fi
@@ -56,6 +57,6 @@ printf '%s\n' \
 	'  run: echo "value=v0.2.1-snapshot" >> "$GITHUB_OUTPUT"' \
 	'- name: Export artifact version' > "$test_root/.github/workflows/release.yml"
 printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh collection dist "v0.3.1-snapshot"' > "$test_root/Makefile"
-expect_failure 'snapshot version mismatch in .github/workflows/release.yml' check_release_versions "$test_root"
+expect_failure 'rendered snapshot version mismatch in .goreleaser.yaml (rendered): got vv0.3.1-snapshot' check_release_versions "$test_root"
 
 printf '%s\n' 'check-release-version tests passed'

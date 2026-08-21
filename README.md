@@ -132,7 +132,7 @@ CGO_ENABLED=0 go run ./cmd/agent-studio generate
 CGO_ENABLED=0 go run ./cmd/agent-studio version
 ```
 
-源码开发构建显示 `0.2.0-dev`；从版本标签安装时显示对应 tag。
+源码开发构建显示 `0.3.0-dev`；从版本标签安装时显示对应 tag。
 
 完整步骤见 [30 分钟创建第一个扩展节点](docs/sdk/quickstart.md)，错误处理见 [节点开发排错](docs/sdk/debugging.md)。扩展与 API 同进程运行，只应加载可信源码。
 
