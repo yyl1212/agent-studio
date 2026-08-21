@@ -169,7 +169,14 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 		}
 		var executionErr *engine.NodeExecutionError
 		if errors.As(runErr, &executionErr) {
-			publicError = domain.NewPublicNodeError(executionErr.Err, executionErr.NodeID)
+			nodeType, nodeVersion := "", ""
+			if prepared != nil && prepared.Plan != nil {
+				if compiled, ok := prepared.Plan.Nodes[executionErr.NodeID]; ok {
+					nodeType = compiled.Node.Type
+					nodeVersion = compiled.Node.TypeVersion
+				}
+			}
+			publicError = domain.NewPublicNodeError(executionErr.Err, executionErr.NodeID, nodeType, nodeVersion)
 		} else {
 			publicError = domain.NewPublicRunError(runErr)
 		}

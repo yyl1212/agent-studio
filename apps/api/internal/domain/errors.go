@@ -20,13 +20,36 @@ type PublicError struct {
 	NodeID  string              `json:"nodeId,omitempty"`
 }
 
-func NewPublicNodeError(err error, nodeID string) *PublicError {
+func NewPublicNodeError(err error, nodeID, nodeType, nodeVersion string) *PublicError {
 	kind := agentnode.KindOf(err)
+	if nodeType == "llm" && nodeVersion == "2" {
+		var nodeErr *agentnode.NodeError
+		if errors.As(err, &nodeErr) && nodeErr.Kind == agentnode.ErrorKindInternal {
+			if code, message, ok := publicLLMV2Error(nodeErr.Code); ok {
+				return &PublicError{Code: code, Kind: kind, Message: message, NodeID: nodeID}
+			}
+		}
+	}
 	return &PublicError{
 		Code:    "NODE_EXECUTION_FAILED",
 		Kind:    kind,
 		Message: publicNodeErrorMessage(kind),
 		NodeID:  nodeID,
+	}
+}
+
+func publicLLMV2Error(code string) (string, string, bool) {
+	switch code {
+	case "model_structured_output_rejected":
+		return "MODEL_STRUCTURED_OUTPUT_REJECTED", "模型不支持或拒绝结构化输出", true
+	case "model_provider_auth_failed":
+		return "MODEL_PROVIDER_AUTH_FAILED", "模型服务认证配置无效", true
+	case "model_refused":
+		return "MODEL_REFUSED", "模型拒绝生成此内容", true
+	case "model_output_invalid":
+		return "MODEL_OUTPUT_INVALID", "模型返回结果不符合输出结构", true
+	default:
+		return "", "", false
 	}
 }
 

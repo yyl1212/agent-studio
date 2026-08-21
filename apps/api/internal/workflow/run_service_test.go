@@ -219,6 +219,45 @@ func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 	}
 }
 
+func TestRunServiceBindsFinalPublicErrorToPreparedPlanIdentity(t *testing.T) {
+	tests := []struct {
+		name        string
+		nodeType    string
+		version     string
+		includeNode bool
+		wantCode    string
+		wantMessage string
+	}{
+		{name: "llm v2", nodeType: "llm", version: "2", includeNode: true, wantCode: "MODEL_OUTPUT_INVALID", wantMessage: "模型返回结果不符合输出结构"},
+		{name: "spoofed by another node", nodeType: "example.model", version: "1", includeNode: true, wantCode: "NODE_EXECUTION_FAILED", wantMessage: "节点执行失败"},
+		{name: "node missing from plan", wantCode: "NODE_EXECUTION_FAILED", wantMessage: "节点执行失败"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeStore(t)
+			runID := "run-" + strings.ReplaceAll(test.name, " ", "-")
+			if err := store.CreateRun(context.Background(), domain.Run{ID: runID, Status: domain.RunRunning}); err != nil {
+				t.Fatal(err)
+			}
+			nodeErr := agentnode.NewError(agentnode.ErrorKindInternal, "model_output_invalid", errors.New("private model output"), nil)
+			runErr := &engine.NodeExecutionError{NodeID: "node", NodeType: "untrusted-error-type", Err: nodeErr}
+			plan := &engine.Plan{Nodes: map[string]engine.CompiledNode{}}
+			if test.includeNode {
+				plan.Nodes["node"] = engine.CompiledNode{Node: domain.Node{ID: "node", Type: test.nodeType, TypeVersion: test.version}}
+			}
+			service := NewRunService(store, newRealCompiler(t), failingRunEngine{err: runErr})
+			_, err := service.Execute(context.Background(), &PreparedRun{RunID: runID, Plan: plan}, &recordingObserver{})
+			if !errors.Is(err, nodeErr) {
+				t.Fatalf("execute error=%v", err)
+			}
+			persisted := store.LastRun().Error
+			if persisted == nil || persisted.Code != test.wantCode || persisted.Message != test.wantMessage {
+				t.Fatalf("persisted public error=%+v", persisted)
+			}
+		})
+	}
+}
+
 func newRunServiceFixture(t *testing.T) (*RunService, *fakeStore) {
 	t.Helper()
 	store := newFakeStore(t)

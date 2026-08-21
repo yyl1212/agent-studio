@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/internal/buildinfo"
 )
 
 func TestRuntimeRecordListsExactCoreNodeSet(t *testing.T) {
 	record := RuntimeRecord(buildinfo.Info{Version: "v0.3.0"})
-	want := []string{"start@1", "template@1", "condition@1", "end@1", "llm@1", "http@1", "code@1"}
+	want := []string{"start@1", "template@1", "condition@1", "end@1", "llm@1", "llm@2", "http@1", "code@1"}
 	got := make([]string, 0, len(record.Nodes))
 	for _, node := range record.Nodes {
 		got = append(got, node.Type+"@"+node.Version)
@@ -61,5 +62,16 @@ func TestRegisterCoreRegistersFourDefinitions(t *testing.T) {
 	definitions := registry.Definitions()
 	if len(definitions) != 4 {
 		t.Fatalf("definition count=%d", len(definitions))
+	}
+}
+
+func TestRegisterLLMRegistersBothExactVersions(t *testing.T) {
+	registry := nodes.NewRegistry()
+	if err := RegisterLLM(registry, modelprovider.NewMock(), "mock"); err != nil {
+		t.Fatal(err)
+	}
+	definitions := registry.Definitions()
+	if len(definitions) != 2 || definitions[0].Type != "llm" || definitions[0].Version != "1" || definitions[1].Type != "llm" || definitions[1].Version != "2" {
+		t.Fatalf("definitions=%+v", definitions)
 	}
 }

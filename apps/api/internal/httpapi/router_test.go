@@ -13,11 +13,13 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/generated"
+	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 	"github.com/yyl1212/agent-studio/extensions/echo"
+	"github.com/yyl1212/agent-studio/internal/buildinfo"
 	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
@@ -329,6 +331,56 @@ func TestNodeAPIRendersMissingPortSlicesAsArrays(t *testing.T) {
 	resolveRecorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/node-types/start/1/resolve", `{"config":{"fields":[]}}`)
 	if resolveRecorder.Code != http.StatusOK || !strings.Contains(resolveRecorder.Body.String(), `"inputs":[]`) {
 		t.Fatalf("status=%d body=%s", resolveRecorder.Code, resolveRecorder.Body.String())
+	}
+}
+
+func TestNodeAPIDiscoversBothLLMVersionsAndResolvesV2Fields(t *testing.T) {
+	dependencies := fixtureDeps()
+	record := builtin.RuntimeRecord(buildinfo.Info{Version: "v0.3.0"})
+	if err := dependencies.Registry.RegisterPackage(record, func(registrar agentnode.Registrar) error {
+		if err := builtin.RegisterCore(registrar); err != nil {
+			return err
+		}
+		if err := builtin.RegisterLLM(registrar, modelprovider.NewMock(), "mock"); err != nil {
+			return err
+		}
+		return builtin.RegisterIntegrationNodes(registrar, builtin.HTTPOptions{})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listRecorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/node-types", "")
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	var definitions []nodeTypeResponse
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &definitions); err != nil {
+		t.Fatal(err)
+	}
+	versions := make([]string, 0, 2)
+	for _, definition := range definitions {
+		if definition.Type == "llm" {
+			versions = append(versions, definition.Version)
+		}
+	}
+	if !reflect.DeepEqual(versions, []string{"1", "2"}) {
+		t.Fatalf("llm versions=%v definitions=%+v", versions, definitions)
+	}
+
+	resolveRecorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/node-types/llm/2/resolve", `{"config":{"outputMode":"structured","fields":[{"key":"answer","label":"回答","type":"string","required":true}]}}`)
+	if resolveRecorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resolveRecorder.Code, resolveRecorder.Body.String())
+	}
+	var ports agentnode.ResolvedPorts
+	if err := json.Unmarshal(resolveRecorder.Body.Bytes(), &ports); err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]string, 0, len(ports.Outputs))
+	for _, port := range ports.Outputs {
+		keys = append(keys, port.Key)
+	}
+	if !reflect.DeepEqual(keys, []string{"json", "answer", "usage"}) {
+		t.Fatalf("outputs=%+v", ports.Outputs)
 	}
 }
 

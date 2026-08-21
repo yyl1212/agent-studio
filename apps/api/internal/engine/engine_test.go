@@ -320,6 +320,41 @@ func TestEngineWrapsNodeFailureAndPublishesStableError(t *testing.T) {
 	t.Fatal("node.failed event not found")
 }
 
+func TestEngineBindsPublicModelErrorsToCompiledNodeIdentity(t *testing.T) {
+	tests := []struct {
+		name        string
+		nodeType    string
+		version     string
+		wantCode    string
+		wantMessage string
+	}{
+		{name: "llm v2", nodeType: "llm", version: "2", wantCode: "MODEL_OUTPUT_INVALID", wantMessage: "模型返回结果不符合输出结构"},
+		{name: "spoofed by another node", nodeType: "example.model", version: "1", wantCode: "NODE_EXECUTION_FAILED", wantMessage: "节点执行失败"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan, branch := compileJoinedRuntimeFixture(t, nil, true)
+			branch.failure = agentnode.NewError(agentnode.ErrorKindInternal, "model_output_invalid", errors.New("private model output"), nil)
+			compiled := plan.Nodes["left"]
+			compiled.Node.Type = test.nodeType
+			compiled.Node.TypeVersion = test.version
+			plan.Nodes["left"] = compiled
+			observer := &memoryObserver{}
+			_, _ = New(Options{}).Run(context.Background(), "run-model-error", plan, map[string]any{"value": "x"}, observer)
+
+			for _, event := range observer.Events() {
+				if event.Type == "node.failed" && event.NodeID == "left" {
+					if event.Error == nil || event.Error.Code != test.wantCode || event.Error.Message != test.wantMessage {
+						t.Fatalf("public error=%+v", event.Error)
+					}
+					return
+				}
+			}
+			t.Fatal("node.failed event not found")
+		})
+	}
+}
+
 func TestEngineStopsOnObserverErrorAndTimeout(t *testing.T) {
 	plan, _ := compileConditionalRuntimeFixture(t, nil)
 	observerError := errors.New("observer failed")
