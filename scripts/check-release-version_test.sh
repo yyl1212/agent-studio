@@ -50,13 +50,24 @@ check_release_versions "$repo_root"
 
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-release-version-test.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT HUP INT TERM
-mkdir -p "$test_root/.github/workflows"
-printf '%s\n' 'snapshot:' '  version_template: "v0.3.1-snapshot"' > "$test_root/.goreleaser.yaml"
+workflow_old_root="$test_root/workflow-old"
+mkdir -p "$workflow_old_root/.github/workflows"
+printf '%s\n' 'snapshot:' '  version_template: "0.3.1-snapshot"' > "$workflow_old_root/.goreleaser.yaml"
 printf '%s\n' \
 	'- name: Select dry-run artifact version' \
 	'  run: echo "value=v0.2.1-snapshot" >> "$GITHUB_OUTPUT"' \
-	'- name: Export artifact version' > "$test_root/.github/workflows/release.yml"
-printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh collection dist "v0.3.1-snapshot"' > "$test_root/Makefile"
-expect_failure 'rendered snapshot version mismatch in .goreleaser.yaml (rendered): got vv0.3.1-snapshot' check_release_versions "$test_root"
+	'- name: Export artifact version' > "$workflow_old_root/.github/workflows/release.yml"
+printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh collection dist "v0.3.1-snapshot"' > "$workflow_old_root/Makefile"
+expect_failure 'rendered snapshot version mismatch in .github/workflows/release.yml: got v0.2.1-snapshot' check_release_versions "$workflow_old_root"
+
+double_v_root="$test_root/double-v"
+mkdir -p "$double_v_root/.github/workflows"
+printf '%s\n' 'snapshot:' '  version_template: "v0.3.1-snapshot"' > "$double_v_root/.goreleaser.yaml"
+printf '%s\n' \
+	'- name: Select dry-run artifact version' \
+	'  run: echo "value=v0.3.1-snapshot" >> "$GITHUB_OUTPUT"' \
+	'- name: Export artifact version' > "$double_v_root/.github/workflows/release.yml"
+printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh collection dist "v0.3.1-snapshot"' > "$double_v_root/Makefile"
+expect_failure 'rendered snapshot version mismatch in .goreleaser.yaml (rendered): got vv0.3.1-snapshot' check_release_versions "$double_v_root"
 
 printf '%s\n' 'check-release-version tests passed'
