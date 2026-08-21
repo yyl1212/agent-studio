@@ -10,7 +10,18 @@ require "yaml"
 workflow_path = ARGV.fetch(0)
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
 publish_steps = workflow.fetch("jobs").fetch("publish").fetch("steps")
+publish_job = workflow.fetch("jobs").fetch("publish")
 steps_by_name = publish_steps.to_h { |step| [step.fetch("name", ""), step] }
+
+unless publish_job.fetch("permissions", {}) == {"contents" => "write"}
+  abort "release workflow contract violation: publish permissions must be exactly contents: write"
+end
+unless publish_job.fetch("env", {}).fetch("GH_TOKEN", "") == "${{ github.token }}"
+  abort "release workflow contract violation: publish must use the built-in github.token"
+end
+if workflow.to_s.include?("secrets.")
+  abort "release workflow contract violation: release workflow must not use a long-lived repository secret"
+end
 
 required_order = [
   "Reverify artifact collection",

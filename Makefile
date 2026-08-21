@@ -80,10 +80,11 @@ release-snapshot:
 release-preflight:
 	@test -n "$(TAG)" || { printf '%s\n' 'usage: make release-preflight TAG=vX.Y.Z[-rc.N]' >&2; exit 2; }
 	sh scripts/check-version.sh "$(TAG)"
-	bash scripts/check-release-immutability.sh preflight
+	bash scripts/release-preflight.sh "$(TAG)"
 
 verify-workflows:
 	sh scripts/check-release-immutability_test.sh
+	sh scripts/release-preflight_test.sh
 	sh scripts/check-release-workflow_test.sh
 	CGO_ENABLED=0 go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 

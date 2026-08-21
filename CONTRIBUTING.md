@@ -73,7 +73,7 @@ make verify-release
 make release-preflight TAG=v0.3.0-rc.2
 ```
 
-本地前置检查会在标签创建前查询仓库级 immutable 设置；设置未启用时不得创建或推送标签。Actions 内置 `GITHUB_TOKEN` 不具备 Administration 读取权限，因此工作流不保存额外的高权限长期凭据。受测资产上传、下载复核并公开后，工作流会等待 GitHub Release API 返回 `immutable=true`。任一检查失败都不得移动或重用标签，修复后应发布递增的 RC 或补丁版本。
+本地前置检查会从 `origin` 推导并输出仓库全名，确认同名 Tag 在本地和远端均不存在，再查询仓库级 immutable 设置；设置未启用或 Tag 已占用时不得创建或推送标签。Actions 内置 `GITHUB_TOKEN` 不具备 Administration 读取权限，因此工作流不保存额外的高权限长期凭据。受测资产上传、下载复核并公开后，工作流会在 60 秒硬上限内等待 GitHub Release API 返回 `immutable=true`。任一检查失败都不得移动或重用标签，修复后应发布递增的 RC 或补丁版本。
 
 ## 安全问题
 

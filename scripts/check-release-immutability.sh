@@ -14,8 +14,11 @@ repository=${GITHUB_REPOSITORY:-}
 case "${1:-}" in
 	preflight)
 		[[ "$#" -eq 1 ]] || fail 'usage: check-release-immutability.sh preflight'
+		set +e
 		enabled=$(gh api "repos/$repository/immutable-releases" -H "$api_version" --jq '.enabled')
-		[[ "$enabled" == true ]] || fail 'immutable releases are not enabled'
+		api_status=$?
+		set -e
+		[[ "$api_status" -eq 0 && "$enabled" == true ]] || fail 'immutable releases are not enabled'
 		;;
 	verify)
 		[[ "$#" -eq 2 ]] || fail 'usage: check-release-immutability.sh verify <tag>'
@@ -24,12 +27,31 @@ case "${1:-}" in
 		poll_seconds=${RELEASE_IMMUTABILITY_POLL_SECONDS:-2}
 		[[ "$timeout_seconds" =~ ^[0-9]+$ ]] || fail 'RELEASE_IMMUTABILITY_TIMEOUT_SECONDS must be a non-negative integer'
 		[[ "$poll_seconds" =~ ^[0-9]+$ ]] || fail 'RELEASE_IMMUTABILITY_POLL_SECONDS must be a non-negative integer'
+		command -v timeout >/dev/null || fail 'timeout command is required for bounded verification'
 		deadline=$((SECONDS + timeout_seconds))
+		attempted=0
 		while true; do
-			immutable=$(gh api "repos/$repository/releases/tags/$tag" -H "$api_version" --jq '.immutable')
-			[[ "$immutable" == true ]] && exit 0
-			(( SECONDS < deadline )) || fail "release did not become immutable: $tag"
-			sleep "$poll_seconds"
+			remaining=$((deadline - SECONDS))
+			(( attempted == 0 || remaining > 0 )) || fail "release did not become immutable: $tag"
+			request_seconds=$remaining
+			(( request_seconds > 0 )) || request_seconds=1
+
+			set +e
+			immutable=$(timeout --signal=KILL "${request_seconds}s" \
+				gh api "repos/$repository/releases/tags/$tag" -H "$api_version" --jq '.immutable')
+			api_status=$?
+			set -e
+			[[ "$api_status" -eq 0 && "$immutable" == true ]] && exit 0
+			if [[ "$api_status" -eq 124 || "$api_status" -eq 137 ]]; then
+				fail "release did not become immutable within the timeout: $tag"
+			fi
+
+			attempted=1
+			remaining=$((deadline - SECONDS))
+			(( remaining > 0 )) || fail "release did not become immutable: $tag"
+			sleep_seconds=$poll_seconds
+			(( sleep_seconds <= remaining )) || sleep_seconds=$remaining
+			(( sleep_seconds == 0 )) || sleep "$sleep_seconds"
 		done
 		;;
 	*)
