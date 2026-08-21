@@ -49,7 +49,7 @@ sboms:
       - spdx-json=$document
 
 snapshot:
-  version_template: "0.2.1-snapshot"
+  version_template: "v0.3.1-snapshot"
 
 source:
   enabled: false
