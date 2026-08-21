@@ -26,6 +26,7 @@ type fixtureOptions struct {
 	invalidSPDX     string
 	unsafePath      string
 	wrongOutput     string
+	staleSDK        string
 	missingFile     string
 	nonExec         string
 	extraTarget     bool
@@ -183,6 +184,18 @@ func TestVerifyTargetRejectsUnsafeArchivePath(t *testing.T) {
 
 func TestVerifyTargetRejectsWrongVersionOutput(t *testing.T) {
 	dist := makeFixture(t, fixtureOptions{wrongOutput: "linux_amd64"})
+	err := VerifyTarget(Config{
+		DistDir: dist,
+		Version: fixtureVersion,
+		GOOS:    "linux",
+		GOARCH:  "amd64",
+		Commit:  fixtureCommit,
+	})
+	assertErrorContains(t, err, "version output mismatch")
+}
+
+func TestVerifyTargetRejectsArchiveReportingStaleSDK(t *testing.T) {
+	dist := makeFixture(t, fixtureOptions{staleSDK: "linux_amd64"})
 	err := VerifyTarget(Config{
 		DistDir: dist,
 		Version: fixtureVersion,
@@ -355,10 +368,17 @@ func writeArchive(t *testing.T, archivePath, key string, options fixtureOptions)
 	tarWriter := tar.NewWriter(gzipWriter)
 
 	versionOutput := fmt.Sprintf(
-		"agent-studio %s (sdk 0.2.0; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
+		"agent-studio %s (sdk 0.3.0; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
 		fixtureVersion,
 		fixtureCommit,
 	)
+	if options.staleSDK == key {
+		versionOutput = fmt.Sprintf(
+			"agent-studio %s (sdk 0.2.0; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
+			fixtureVersion,
+			fixtureCommit,
+		)
+	}
 	if options.wrongOutput == key {
 		versionOutput = "agent-studio v9.9.9"
 	}
