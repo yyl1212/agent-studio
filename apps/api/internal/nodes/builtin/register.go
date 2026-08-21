@@ -18,7 +18,8 @@ func RuntimeRecord(info buildinfo.Info) nodepackage.RuntimeRecord {
 		Nodes: []nodepackage.NodeRef{
 			{Type: "start", Version: "1"}, {Type: "template", Version: "1"},
 			{Type: "condition", Version: "1"}, {Type: "end", Version: "1"},
-			{Type: "llm", Version: "1"}, {Type: "http", Version: "1"}, {Type: "code", Version: "1"},
+			{Type: "llm", Version: "1"}, {Type: "llm", Version: "2"},
+			{Type: "http", Version: "1"}, {Type: "code", Version: "1"},
 		},
 	}
 }
@@ -38,7 +39,12 @@ func RegisterCore(registrar agentnode.Registrar) error {
 }
 
 func RegisterLLM(registrar agentnode.Registrar, provider modelprovider.Provider, defaultModel string) error {
-	return registrar.Register(NewLLM(provider, defaultModel))
+	for _, node := range []agentnode.Node{NewLLM(provider, defaultModel), NewLLMV2(provider, defaultModel)} {
+		if err := registrar.Register(node); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func RegisterIntegrationNodes(registrar agentnode.Registrar, httpOptions HTTPOptions) error {

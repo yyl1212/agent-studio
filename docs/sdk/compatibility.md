@@ -27,6 +27,12 @@ SDK 版本与应用构建版本独立：
 
 节点的 `Type + Version` 标识一份工作流可固定引用的行为契约。同一版本可以修复不改变输入、输出和语义的缺陷；删除端口、改变配置含义或改变结果类型时必须发布新的节点版本，并保留旧版本供已有工作流执行。
 
+### Runtime Core 内置节点
+
+`llm@2` 是 Agent Studio Runtime Core 的内置节点版本，不是公开 Go SDK 或 Node API 的新版本。它不会改变 `agentnode.Version = 0.3.0`、`agent-studio.dev/v1alpha1`、第三方节点的 `Resolve`/`Execute` 生命周期或现有 `llm@1` 行为。
+
+工作流和模板始终按 `Type + Version` 精确匹配节点。包含 `llm@2` 的模板导入到未注册该版本的旧 Runtime 时必须报告节点类型或版本缺失并阻止导入；宿主不得静默替换为 `llm@1`、丢弃结构化字段或改写动态端口。
+
 ## Manifest 与 Go SDK
 
 扩展 manifest 和 Go SDK 分别版本化。manifest 声明宿主发现、身份和打包信息，Go SDK 定义进程内节点协议。CLI 必须拒绝未知 manifest API Version，不能因为 Go 包可以编译就默认 manifest 兼容。

@@ -19,15 +19,29 @@ type OpenAICompatible struct {
 }
 
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+	Refusal string `json:"refusal,omitempty"`
+}
+
+type openAIJSONSchema struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Schema      json.RawMessage `json:"schema"`
+	Strict      bool            `json:"strict"`
+}
+
+type openAIResponseFormat struct {
+	Type       string           `json:"type"`
+	JSONSchema openAIJSONSchema `json:"json_schema"`
 }
 
 type openAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	Temperature float64         `json:"temperature"`
-	MaxTokens   int             `json:"max_tokens"`
+	Model          string                `json:"model"`
+	Messages       []openAIMessage       `json:"messages"`
+	Temperature    float64               `json:"temperature"`
+	MaxTokens      int                   `json:"max_tokens"`
+	ResponseFormat *openAIResponseFormat `json:"response_format,omitempty"`
 }
 
 type openAIResponse struct {
@@ -58,11 +72,24 @@ func (provider *OpenAICompatible) Complete(ctx context.Context, request Request)
 		messages = append(messages, openAIMessage{Role: "system", Content: request.SystemPrompt})
 	}
 	messages = append(messages, openAIMessage{Role: "user", Content: request.Prompt})
+	var responseFormat *openAIResponseFormat
+	if format := request.ResponseFormat; format != nil {
+		responseFormat = &openAIResponseFormat{
+			Type: "json_schema",
+			JSONSchema: openAIJSONSchema{
+				Name:        format.Name,
+				Description: format.Description,
+				Schema:      append(json.RawMessage(nil), format.Schema...),
+				Strict:      format.Strict,
+			},
+		}
+	}
 	payload, err := json.Marshal(openAIRequest{
-		Model:       request.Model,
-		Messages:    messages,
-		Temperature: request.Temperature,
-		MaxTokens:   request.MaxTokens,
+		Model:          request.Model,
+		Messages:       messages,
+		Temperature:    request.Temperature,
+		MaxTokens:      request.MaxTokens,
+		ResponseFormat: responseFormat,
 	})
 	if err != nil {
 		return Response{}, fmt.Errorf("encode model request: %w", err)
@@ -99,6 +126,9 @@ func (provider *OpenAICompatible) Complete(ctx context.Context, request Request)
 	}
 	if len(decoded.Choices) == 0 {
 		return Response{}, fmt.Errorf("%w: choices is empty", ErrInvalidResponse)
+	}
+	if decoded.Choices[0].Message.Refusal != "" {
+		return Response{}, ErrModelRefused
 	}
 	return Response{
 		Text: decoded.Choices[0].Message.Content,

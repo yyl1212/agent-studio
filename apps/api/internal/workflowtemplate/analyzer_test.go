@@ -191,6 +191,7 @@ func TestAnalyzeOfficialNodeRoundTrip(t *testing.T) {
 		{name: "template", nodeType: "template", version: "1", startType: "text", inputPort: "topic", outputPort: "text", config: json.RawMessage(`{"template":"{{topic}}"}`)},
 		{name: "condition", nodeType: "condition", version: "1", startType: "text", inputPort: "value", outputPort: "true", config: json.RawMessage(`{"operator":"isEmpty"}`)},
 		{name: "llm", nodeType: "llm", version: "1", startType: "text", inputPort: "prompt", outputPort: "text", config: json.RawMessage(`{"model":"mock","maxTokens":32}`)},
+		{name: "llm-v2", nodeType: "llm", version: "2", startType: "text", inputPort: "prompt", outputPort: "answer", config: json.RawMessage(`{"outputMode":"structured","fields":[{"key":"answer","label":"回答","type":"string","required":true}]}`)},
 		{name: "http", nodeType: "http", version: "1", startType: "json", inputPort: "body", outputPort: "body", config: json.RawMessage(`{"method":"POST","url":"https://example.com","headers":[],"timeoutMs":1000}`)},
 		{name: "code", nodeType: "code", version: "1", startType: "json", inputPort: "input", outputPort: "result", config: json.RawMessage("{\"source\":\"def main(input):\\n  return input\"}")},
 		{name: "echo", nodeType: "extension.echo", version: "1.0.0", startType: "text", inputPort: "text", outputPort: "text", config: json.RawMessage(`{"prefix":"回答："}`)},

@@ -4,7 +4,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition } from '../../lib/api/client'
-import { StudioPage } from './StudioPage'
+import { markInvalidEdges, StudioPage } from './StudioPage'
+import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../lib/api/client')>()
@@ -28,6 +29,38 @@ const rawDefinitions = [
   { type: 'start', version: '1', title: '开始', description: '', category: '流程', configSchema: { type: 'object' }, inputs: [], outputs: [] },
   { type: 'end', version: '1', title: '结束', description: '', category: '流程', configSchema: { type: 'object' }, inputs: [], outputs: [] },
   { type: 'template', version: '1', title: '提示词模板', description: '', category: '文本', configSchema: { type: 'object', properties: { template: { type: 'string', title: '模板', 'x-ui-widget': 'textarea' } }, required: ['template'] }, inputs: [], outputs: [{ key: 'text', title: '文本', type: 'string' as const, required: false, cardinality: 'one' as const }] },
+  {
+    type: 'llm', version: '2', title: 'LLM · 结构化输出', description: '调用已配置的模型服务生成文本或严格结构化结果', category: 'AI',
+    configSchema: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        model: { type: 'string', title: '模型' },
+        systemPrompt: { type: 'string', title: '系统提示词', 'x-ui-widget': 'textarea' },
+        temperature: { type: 'number', minimum: 0, maximum: 2, default: 0.7, title: '温度' },
+        maxTokens: { type: 'integer', minimum: 1, maximum: 32768, default: 1024, title: '最大 Token' },
+        outputMode: { type: 'string', enum: ['text', 'structured'], default: 'text', title: '输出模式' },
+        fields: {
+          type: 'array', title: '输出字段', default: [], maxItems: 32,
+          items: {
+            type: 'object', additionalProperties: false, required: ['key', 'label', 'type'],
+            properties: {
+              key: { type: 'string', title: '字段 Key', minLength: 1, maxLength: 64, pattern: '^[A-Za-z][A-Za-z0-9_]{0,63}$' },
+              label: { type: 'string', title: '字段名称', minLength: 1, maxLength: 80 },
+              description: { type: 'string', title: '字段说明', maxLength: 500, 'x-ui-widget': 'textarea' },
+              type: { type: 'string', title: '字段类型', enum: ['string', 'number', 'integer', 'boolean', 'string_array'] },
+              required: { type: 'boolean', title: '必填', default: true },
+            },
+          },
+        },
+      },
+    },
+    inputs: [{ key: 'prompt', title: '提示词', type: 'string' as const, required: true, cardinality: 'one' as const }],
+    outputs: [
+      { key: 'text', title: '文本', type: 'string' as const, required: false, cardinality: 'one' as const },
+      { key: 'usage', title: '用量', type: 'json' as const, required: false, cardinality: 'one' as const },
+    ],
+    capabilities: ['network' as const, 'secrets' as const],
+  },
   {
     type: 'extension.retriever', version: '1.0.0', title: 'Retriever', description: '使用本地 Jaccard 相似度检索配置文档', category: '扩展',
     configSchema: {
@@ -146,6 +179,95 @@ describe('StudioPage', () => {
     expect(webhook?.config).toEqual({ path: 'hooks/run', timeoutMs: 2500 })
   })
 
+  it('通过通用配置表单保存 LLM v2 结构化字段并解析动态端口', async () => {
+    vi.mocked(api.resolveNodeType).mockImplementation(async (type, version, config) => {
+      if (type === 'llm' && version === '2' && config.outputMode === 'structured') {
+        return {
+          inputs: [{ key: 'prompt', title: '提示词', type: 'string', required: true, cardinality: 'one' }],
+          outputs: [
+            { key: 'json', title: '结构化结果', type: 'json', required: false, cardinality: 'one' },
+            ...((config.fields as Array<{ key: string; label: string; required: boolean }> | undefined) ?? []).map((field) => ({
+              key: field.key, title: field.label, type: field.required ? 'string' as const : 'any' as const, required: false, cardinality: 'one' as const,
+            })),
+            { key: 'usage', title: '用量', type: 'json', required: false, cardinality: 'one' },
+          ],
+        }
+      }
+      return { inputs: [], outputs: [] }
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^LLM · 结构化输出/ }))
+    await userEvent.selectOptions(screen.getByLabelText('输出模式'), 'structured')
+    await userEvent.click(screen.getByRole('button', { name: '添加一项' }))
+    await userEvent.click(screen.getByRole('button', { name: '添加一项' }))
+
+    const keys = screen.getAllByLabelText('字段 Key')
+    const labels = screen.getAllByLabelText('字段名称')
+    const types = screen.getAllByLabelText('字段类型')
+    const required = screen.getAllByRole('checkbox', { name: '必填' })
+    await userEvent.type(keys[0], 'answer')
+    await userEvent.type(labels[0], '回答')
+    await userEvent.selectOptions(types[0], 'string')
+    await userEvent.type(keys[1], 'score')
+    await userEvent.type(labels[1], '分数')
+    await userEvent.selectOptions(types[1], 'number')
+    await userEvent.click(required[1])
+
+    let request: Parameters<typeof api.saveWorkflow>[1] | undefined
+    await vi.waitFor(() => {
+      request = vi.mocked(api.saveWorkflow).mock.calls.at(-1)?.[1]
+      const llm = request?.graph.nodes.find((node) => node.type === 'llm')
+      expect(llm?.typeVersion).toBe('2')
+      expect(llm?.config).toEqual({
+        model: '',
+        systemPrompt: '',
+        temperature: 0.7,
+        maxTokens: 1024,
+        outputMode: 'structured',
+        fields: [
+          { key: 'answer', label: '回答', description: '', type: 'string', required: true },
+          { key: 'score', label: '分数', description: '', type: 'number', required: false },
+        ],
+      })
+    }, { timeout: 3000 })
+    expect(api.resolveNodeType).toHaveBeenCalledWith('llm', '2', expect.objectContaining({ outputMode: 'structured' }), expect.any(AbortSignal))
+    expect(await screen.findByTitle('结构化结果')).toBeInTheDocument()
+    expect(screen.getByTitle('回答')).toBeInTheDocument()
+    expect(screen.getByTitle('分数')).toBeInTheDocument()
+  })
+
+  it('结构化字段删除后标记旧连线无效，服务端校验失败时阻止发布', async () => {
+    const llm = studioNode('llm-2', 'llm', {
+      inputs: [],
+      outputs: [{ key: 'answer', title: '回答', type: 'string', required: false, cardinality: 'one' }],
+    })
+    const end = studioNode('end', 'end', {
+      inputs: [{ key: 'result', title: '结果', type: 'any', required: false, cardinality: 'one' }],
+      outputs: [],
+    })
+    const edge: StudioEdge = { id: 'answer-edge', source: llm.id, sourceHandle: 'answer', target: end.id, targetHandle: 'result' }
+    expect(markInvalidEdges([llm, end], [edge])[0].data?.invalid).toBe(false)
+    const withoutAnswer = { ...llm, data: { ...llm.data, ports: { inputs: [], outputs: [] } } }
+    const invalidEdge = markInvalidEdges([withoutAnswer, end], [edge])[0]
+    expect(invalidEdge.data?.invalid).toBe(true)
+    expect(invalidEdge.style).toEqual({ stroke: '#d92d20', strokeDasharray: '5 4' })
+
+    vi.spyOn(api, 'validateWorkflow').mockResolvedValue({
+      valid: false,
+      issues: [{ code: 'EDGE_SOURCE_PORT_NOT_FOUND', message: '输出端口 answer 不存在', path: '/edges/0', nodeId: 'llm-2' }],
+    })
+    vi.spyOn(api, 'publishWorkflow').mockRejectedValue(new Error('不得调用'))
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '发布' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认发布' }))
+    expect(await screen.findByText('输出端口 answer 不存在')).toBeInTheDocument()
+    expect(api.publishWorkflow).not.toHaveBeenCalled()
+  })
+
   it('重新加载后恢复官方节点配置', async () => {
     const persistedWorkflow = {
       ...workflow,
@@ -211,4 +333,11 @@ describe('StudioPage', () => {
 function installURLMethod(name: 'createObjectURL' | 'revokeObjectURL', implementation: ReturnType<typeof vi.fn>) {
   Object.defineProperty(URL, name, { configurable: true, writable: true, value: implementation })
   return implementation
+}
+
+function studioNode(id: string, nodeType: string, ports: StudioNode['data']['ports']): StudioNode {
+  return {
+    id, type: 'studio', position: { x: 0, y: 0 },
+    data: { nodeType, typeVersion: '2', config: {}, ports, issues: [] },
+  }
 }

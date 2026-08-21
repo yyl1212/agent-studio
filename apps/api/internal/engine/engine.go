@@ -132,7 +132,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 					executionErr = nodeErr
 				}
 				deactivateOutgoing(plan, worker.nodeID, edgeStates)
-				publicError := domain.NewPublicNodeError(worker.err, worker.nodeID)
+				publicError := domain.NewPublicNodeError(worker.err, worker.nodeID, compiled.Node.Type, compiled.Node.TypeVersion)
 				if err := emit(Event{Type: "node.failed", NodeID: worker.nodeID, Status: domain.NodeFailed, Input: worker.input, Error: publicError}); err != nil {
 					cancel()
 					return finishResult(result), err
