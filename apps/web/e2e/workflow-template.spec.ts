@@ -106,3 +106,62 @@ test('缺失节点包只显示提示且不会自动安装', async ({ page }) => 
   expect(previewRequests).toBe(1)
   expect(unexpectedInstallRequests).toBe(0)
 })
+
+test('LLM v2 结构化配置导出并按精确版本导入', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  await createWorkflow(page, `structured-template-${suffix}`, `结构化模板 ${suffix}`)
+  await configureStartTextField(page, 'topic', '主题')
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: /^LLM · 结构化输出/ }).click()
+  await page.getByLabel('输出模式').selectOption('structured')
+  await page.getByRole('button', { name: '添加一项' }).click()
+  await page.getByRole('button', { name: '添加一项' }).click()
+  await page.getByLabel('字段 Key').nth(0).fill('answer')
+  await page.getByLabel('字段名称').nth(0).fill('回答')
+  await page.getByLabel('字段类型').nth(0).selectOption('string')
+  await page.getByLabel('字段 Key').nth(1).fill('score')
+  await page.getByLabel('字段名称').nth(1).fill('分数')
+  await page.getByLabel('字段类型').nth(1).selectOption('integer')
+  await page.getByRole('button', { name: '关闭节点配置' }).click()
+  await connectPorts(page, [
+    ['start', 'topic', 'llm', 'prompt'],
+    ['llm', 'json', 'end', 'result'],
+  ])
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出模板' }).click()
+  const download = await downloadPromise
+  const path = await download.path()
+  if (!path) throw new Error('模板下载没有本地路径')
+  const exported = JSON.parse(await fs.promises.readFile(path, 'utf8'))
+  expect(exported.apiVersion).toBe('agent-studio.dev/v1alpha2')
+  expect(exported.spec.nodePackages).toEqual([])
+  const llm = exported.spec.graph.nodes.find((node: { type: string }) => node.type === 'llm')
+  expect(llm).toMatchObject({
+    type: 'llm', typeVersion: '2',
+    config: {
+      outputMode: 'structured',
+      fields: [
+        { key: 'answer', label: '回答', description: '', type: 'string', required: true },
+        { key: 'score', label: '分数', description: '', type: 'integer', required: true },
+      ],
+    },
+  })
+
+  await page.goto('/workflows')
+  await page.getByRole('button', { name: '导入模板' }).click()
+  await page.getByLabel('选择模板文件').setInputFiles(path)
+  await expect(page.getByText('3 个节点 · 2 条连线')).toBeVisible()
+  await page.getByLabel('名称').fill(`结构化模板副本 ${suffix}`)
+  await page.getByLabel('Agent 地址标识').fill(`structured-template-copy-${suffix}`)
+  await page.getByRole('button', { name: '导入并打开' }).click()
+  await expect(page.getByText(`结构化模板副本 ${suffix}`)).toBeVisible()
+  await page.getByTestId('node-llm').click()
+  await expect(page.getByLabel('输出模式')).toHaveValue('structured')
+  await expect(page.getByLabel('字段 Key').nth(0)).toHaveValue('answer')
+  await expect(page.getByLabel('字段名称').nth(0)).toHaveValue('回答')
+  await expect(page.getByLabel('字段类型').nth(0)).toHaveValue('string')
+  await expect(page.getByLabel('字段 Key').nth(1)).toHaveValue('score')
+  await expect(page.getByLabel('字段名称').nth(1)).toHaveValue('分数')
+  await expect(page.getByLabel('字段类型').nth(1)).toHaveValue('integer')
+})
