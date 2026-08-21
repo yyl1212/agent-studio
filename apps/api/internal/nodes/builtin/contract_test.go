@@ -196,6 +196,36 @@ func TestIntegrationNodeContracts(t *testing.T) {
 		})
 	})
 
+	t.Run("llm v2 text", func(t *testing.T) {
+		agenttest.Run(t, agenttest.Contract{
+			Node:           NewLLMV2(contractProvider{}, "contract-model"),
+			ValidConfigs:   []json.RawMessage{json.RawMessage(`{"outputMode":"text"}`)},
+			InvalidConfigs: []json.RawMessage{json.RawMessage(`{"outputMode":"structured","fields":[]}`)},
+			Executions: []agenttest.ExecutionCase{
+				{
+					Name: "generates text",
+					Request: agentnode.Request{
+						Config: json.RawMessage(`{"outputMode":"text"}`),
+						Inputs: map[string][]any{"prompt": {"hello"}},
+					},
+					WantOutputs: map[string]any{"text": "answer", "usage": map[string]int{"totalTokens": 2}},
+				},
+				{
+					Name: "classifies upstream timeout",
+					Request: agentnode.Request{
+						Config: json.RawMessage(`{"outputMode":"text"}`),
+						Inputs: map[string][]any{"prompt": {"timeout"}},
+					},
+					WantErrorKind: &temporaryKind,
+				},
+			},
+			Cancellation: &agenttest.CancellationCase{Request: agentnode.Request{
+				Config: json.RawMessage(`{"outputMode":"text"}`),
+				Inputs: map[string][]any{"prompt": {"wait"}},
+			}},
+		})
+	})
+
 	t.Run("http", func(t *testing.T) {
 		successConfig := json.RawMessage(fmt.Sprintf(`{"method":"GET","url":%q,"headers":[]}`, server.URL+"/success"))
 		timeoutConfig := json.RawMessage(fmt.Sprintf(`{"method":"GET","url":%q,"headers":[],"timeoutMs":5}`, server.URL+"/slow"))
@@ -296,6 +326,7 @@ func TestIntegrationNodeCapabilities(t *testing.T) {
 		want []agentnode.Capability
 	}{
 		{name: "llm", node: NewLLM(contractProvider{}, "model"), want: []agentnode.Capability{agentnode.CapabilityNetwork, agentnode.CapabilitySecrets}},
+		{name: "llm v2", node: NewLLMV2(contractProvider{}, "model"), want: []agentnode.Capability{agentnode.CapabilityNetwork, agentnode.CapabilitySecrets}},
 		{name: "http", node: NewHTTP(HTTPOptions{}), want: []agentnode.Capability{agentnode.CapabilityNetwork, agentnode.CapabilitySecrets}},
 		{name: "code", node: NewCode(CodeOptions{}), want: []agentnode.Capability{}},
 	}
@@ -319,6 +350,12 @@ func TestIntegrationNodeErrorCodes(t *testing.T) {
 		Inputs: map[string][]any{"prompt": {"timeout"}},
 	})
 	assertNodeError(t, timeoutErr, agentnode.ErrorKindTemporary, "upstream_timeout")
+
+	llmV2 := NewLLMV2(contractProvider{}, "model")
+	_, v2ConfigErr := llmV2.Resolve(json.RawMessage(`{"outputMode":"structured","fields":[]}`))
+	assertNodeError(t, v2ConfigErr, agentnode.ErrorKindConfig, "invalid_config")
+	_, v2InputErr := llmV2.Execute(context.Background(), agentnode.Request{Config: json.RawMessage(`{}`)})
+	assertNodeError(t, v2InputErr, agentnode.ErrorKindInput, "missing_input")
 
 	code := NewCode(CodeOptions{MaxSteps: 1 << 62, Timeout: time.Millisecond})
 	_, codeTimeoutErr := code.Execute(context.Background(), agentnode.Request{Config: json.RawMessage(
@@ -409,7 +446,7 @@ func TestHTTPClassifiesDNSFailureAsInternal(t *testing.T) {
 func TestBuiltinSchemasDoNotExposePlaintextSecretFields(t *testing.T) {
 	nodes := []agentnode.Node{
 		NewStart(), NewTemplate(), NewCondition(), NewEnd(),
-		NewLLM(contractProvider{}, "model"), NewHTTP(HTTPOptions{}), NewCode(CodeOptions{}),
+		NewLLM(contractProvider{}, "model"), NewLLMV2(contractProvider{}, "model"), NewHTTP(HTTPOptions{}), NewCode(CodeOptions{}),
 	}
 	for _, node := range nodes {
 		var schema map[string]any
