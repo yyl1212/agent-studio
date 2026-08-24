@@ -15,10 +15,10 @@
 
 SDK 版本与应用构建版本独立：
 
-- `agentnode.Version = 0.3.0` 表示公开 Go SDK 契约。
+- `agentnode.Version = 0.3.1` 表示公开 Go SDK 契约。
 - `agentnode.APIVersion = agent-studio.dev/v1alpha1` 表示节点协议。
-- 本地源码构建显示 `0.3.0-dev`。
-- 从 tag 安装的 CLI 显示对应模块版本，例如 `v0.3.0`。
+- 本地源码构建显示 `0.3.1-dev`。
+- 从 tag 安装的 CLI 显示对应模块版本，例如 `v0.3.1`。
 
 应用构建版本变化不自动改变 SDK 或节点协议；只有公开契约变化时才按
 本文件的兼容规则提升 SDK/API 版本。
@@ -29,7 +29,7 @@ SDK 版本与应用构建版本独立：
 
 ### Runtime Core 内置节点
 
-`llm@2` 是 Agent Studio Runtime Core 的内置节点版本，不是公开 Go SDK 或 Node API 的新版本。它不会改变 `agentnode.Version = 0.3.0`、`agent-studio.dev/v1alpha1`、第三方节点的 `Resolve`/`Execute` 生命周期或现有 `llm@1` 行为。
+`llm@2` 是 Agent Studio Runtime Core 的内置节点版本，不是公开 Go SDK 或 Node API 的新版本。它不会改变 `agent-studio.dev/v1alpha1`、第三方节点的 `Resolve`/`Execute` 生命周期或现有 `llm@1` 行为；当前补丁 SDK 版本为 `agentnode.Version = 0.3.1`。
 
 工作流和模板始终按 `Type + Version` 精确匹配节点。包含 `llm@2` 的模板导入到未注册该版本的旧 Runtime 时必须报告节点类型或版本缺失并阻止导入；宿主不得静默替换为 `llm@1`、丢弃结构化字段或改写动态端口。
 

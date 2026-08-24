@@ -8,12 +8,12 @@ import (
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
-func TestPublicVersionsForV030(t *testing.T) {
-	if agentnode.Version != "0.3.0" {
+func TestPublicVersionsForV031(t *testing.T) {
+	if agentnode.Version != "0.3.1" {
 		t.Fatalf("sdk=%s", agentnode.Version)
 	}
 	info := resolve("", nil, false)
-	if info.Version != "0.3.0-dev" || info.SDKVersion != "0.3.0" || info.APIVersion != "agent-studio.dev/v1alpha1" {
+	if info.Version != "0.3.1-dev" || info.SDKVersion != "0.3.1" || info.APIVersion != "agent-studio.dev/v1alpha1" {
 		t.Fatalf("%+v", info)
 	}
 }
@@ -38,7 +38,7 @@ func TestResolveBuildInfo(t *testing.T) {
 			},
 			ok: true,
 			want: Info{
-				Version: "v0.2.0-rc.9", SDKVersion: "0.3.0",
+				Version: "v0.2.0-rc.9", SDKVersion: "0.3.1",
 				APIVersion: "agent-studio.dev/v1alpha1",
 				Revision:   "abc123", Dirty: true,
 			},
@@ -54,7 +54,7 @@ func TestResolveBuildInfo(t *testing.T) {
 			},
 			ok: true,
 			want: Info{
-				Version: "v0.2.0-rc.1", SDKVersion: "0.3.0",
+				Version: "v0.2.0-rc.1", SDKVersion: "0.3.1",
 				APIVersion: "agent-studio.dev/v1alpha1",
 				Revision:   "deadbeef", Dirty: false,
 			},
@@ -70,7 +70,7 @@ func TestResolveBuildInfo(t *testing.T) {
 			},
 			ok: true,
 			want: Info{
-				Version: "0.3.0-dev", SDKVersion: "0.3.0",
+				Version: "0.3.1-dev", SDKVersion: "0.3.1",
 				APIVersion: "agent-studio.dev/v1alpha1",
 				Revision:   "5055b0130416", Dirty: false,
 			},
@@ -85,7 +85,7 @@ func TestResolveBuildInfo(t *testing.T) {
 			},
 			ok: true,
 			want: Info{
-				Version: "0.3.0-dev", SDKVersion: "0.3.0",
+				Version: "0.3.1-dev", SDKVersion: "0.3.1",
 				APIVersion: "agent-studio.dev/v1alpha1",
 				Revision:   "unknown", Dirty: false,
 			},
@@ -93,7 +93,7 @@ func TestResolveBuildInfo(t *testing.T) {
 		{
 			name: "missing build info",
 			want: Info{
-				Version: "0.3.0-dev", SDKVersion: "0.3.0",
+				Version: "0.3.1-dev", SDKVersion: "0.3.1",
 				APIVersion: "agent-studio.dev/v1alpha1",
 				Revision:   "unknown", Dirty: false,
 			},

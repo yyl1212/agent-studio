@@ -368,7 +368,7 @@ func writeArchive(t *testing.T, archivePath, key string, options fixtureOptions)
 	tarWriter := tar.NewWriter(gzipWriter)
 
 	versionOutput := fmt.Sprintf(
-		"agent-studio %s (sdk 0.3.0; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
+		"agent-studio %s (sdk 0.3.1; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
 		fixtureVersion,
 		fixtureCommit,
 	)
