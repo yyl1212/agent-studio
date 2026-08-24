@@ -9,21 +9,59 @@ require "yaml"
 
 workflow_path = ARGV.fetch(0)
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
-build_steps = workflow.fetch("jobs").fetch("build").fetch("steps")
-build_steps_by_name = build_steps.to_h { |step| [step.fetch("name", ""), step] }
+
+def verify_tag_isolation(workflow)
+  if workflow.fetch("env", {}).key?("GORELEASER_CURRENT_TAG")
+    raise "workflow env must not bind a release tag"
+  end
+
+  build_job = workflow.fetch("jobs").fetch("build")
+  if build_job.fetch("env", {}).key?("GORELEASER_CURRENT_TAG")
+    raise "build job env must not bind a release tag"
+  end
+
+  build_steps = build_job.fetch("steps")
+  build_steps_by_name = build_steps.to_h { |step| [step.fetch("name", ""), step] }
+
+  tagged_build = build_steps_by_name.fetch("Build tagged artifacts")
+  unless tagged_build.fetch("env", {}) == {"GORELEASER_CURRENT_TAG" => "${{ github.ref_name }}"}
+    raise "tagged build must bind GoReleaser to github.ref_name"
+  end
+
+  dry_run_build = build_steps_by_name.fetch("Build dry-run artifacts")
+  if dry_run_build.fetch("env", {}).key?("GORELEASER_CURRENT_TAG")
+    raise "dry-run build must not bind a release tag"
+  end
+end
+
+def expect_tag_isolation_failure(workflow, scope, expected)
+  verify_tag_isolation(workflow)
+rescue RuntimeError => error
+  unless error.message == expected
+    abort "release workflow contract test fixture failed for the wrong reason: #{error.message}"
+  end
+  return
+else
+  abort "release workflow contract test fixture was accepted: inherited #{scope} GORELEASER_CURRENT_TAG"
+end
+
+begin
+  verify_tag_isolation(workflow)
+rescue RuntimeError => error
+  abort "release workflow contract violation: #{error.message}"
+end
+
+workflow_env_fixture = Marshal.load(Marshal.dump(workflow))
+workflow_env_fixture["env"] = {"GORELEASER_CURRENT_TAG" => "v9.9.9"}
+expect_tag_isolation_failure(workflow_env_fixture, "workflow", "workflow env must not bind a release tag")
+
+job_env_fixture = Marshal.load(Marshal.dump(workflow))
+job_env_fixture.fetch("jobs").fetch("build")["env"]["GORELEASER_CURRENT_TAG"] = "v9.9.9"
+expect_tag_isolation_failure(job_env_fixture, "job", "build job env must not bind a release tag")
+
 publish_steps = workflow.fetch("jobs").fetch("publish").fetch("steps")
 publish_job = workflow.fetch("jobs").fetch("publish")
 steps_by_name = publish_steps.to_h { |step| [step.fetch("name", ""), step] }
-
-tagged_build = build_steps_by_name.fetch("Build tagged artifacts")
-unless tagged_build.fetch("env", {}) == {"GORELEASER_CURRENT_TAG" => "${{ github.ref_name }}"}
-  abort "release workflow contract violation: tagged build must bind GoReleaser to github.ref_name"
-end
-
-dry_run_build = build_steps_by_name.fetch("Build dry-run artifacts")
-if dry_run_build.fetch("env", {}).key?("GORELEASER_CURRENT_TAG")
-  abort "release workflow contract violation: dry-run build must not bind a release tag"
-end
 
 unless publish_job.fetch("permissions", {}) == {"contents" => "write"}
   abort "release workflow contract violation: publish permissions must be exactly contents: write"
