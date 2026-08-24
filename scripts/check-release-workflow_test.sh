@@ -9,9 +9,21 @@ require "yaml"
 
 workflow_path = ARGV.fetch(0)
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
+build_steps = workflow.fetch("jobs").fetch("build").fetch("steps")
+build_steps_by_name = build_steps.to_h { |step| [step.fetch("name", ""), step] }
 publish_steps = workflow.fetch("jobs").fetch("publish").fetch("steps")
 publish_job = workflow.fetch("jobs").fetch("publish")
 steps_by_name = publish_steps.to_h { |step| [step.fetch("name", ""), step] }
+
+tagged_build = build_steps_by_name.fetch("Build tagged artifacts")
+unless tagged_build.fetch("env", {}) == {"GORELEASER_CURRENT_TAG" => "${{ github.ref_name }}"}
+  abort "release workflow contract violation: tagged build must bind GoReleaser to github.ref_name"
+end
+
+dry_run_build = build_steps_by_name.fetch("Build dry-run artifacts")
+if dry_run_build.fetch("env", {}).key?("GORELEASER_CURRENT_TAG")
+  abort "release workflow contract violation: dry-run build must not bind a release tag"
+end
 
 unless publish_job.fetch("permissions", {}) == {"contents" => "write"}
   abort "release workflow contract violation: publish permissions must be exactly contents: write"

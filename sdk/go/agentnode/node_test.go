@@ -121,8 +121,8 @@ func TestSupportsOnlyCurrentAPIVersion(t *testing.T) {
 	}
 }
 
-func TestVersionForV030(t *testing.T) {
-	if got, want := agentnode.Version, "0.3.0"; got != want {
+func TestVersionForV031(t *testing.T) {
+	if got, want := agentnode.Version, "0.3.1"; got != want {
 		t.Fatalf("Version = %q, want %q", got, want)
 	}
 }
