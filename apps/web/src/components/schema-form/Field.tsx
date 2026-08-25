@@ -17,26 +17,27 @@ export function Field({ path, name, schema, value, required, errors, onChange, o
   const id = `field-${path.replace(/[^a-zA-Z0-9_-]/g, '-')}`
   const error = errors[`/${path}`]
   const errorID = error ? `${id}-error` : undefined
+  const descriptionID = schema.description ? `${id}-description` : undefined
   const common = {
     id,
     required,
     'aria-invalid': Boolean(error),
-    'aria-describedby': errorID,
+    'aria-describedby': [descriptionID, errorID].filter(Boolean).join(' ') || undefined,
   }
 
   let control
   if (schema.type === 'boolean') {
     control = <input {...common} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.currentTarget.checked)} onBlur={() => onBlur?.(path)} />
   } else if (schema.type === 'array') {
-    return <ArrayField id={path} label={label} schema={schema} value={Array.isArray(value) ? value : []} onChange={onChange} onBlur={onBlur} errors={errors} />
+    return <ArrayField id={path} label={label} description={schema.description} schema={schema} value={Array.isArray(value) ? value : []} onChange={onChange} onBlur={onBlur} errors={errors} />
   } else if (schema.type === 'object' && schema['x-ui-widget'] !== 'json') {
     const objectValue = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
     const properties = schema.properties ?? {}
     const order = [...(schema['x-ui-order'] ?? []), ...Object.keys(properties).filter((key) => !schema['x-ui-order']?.includes(key))]
     return (
-      <fieldset className="schema-object">
+      <fieldset className="schema-object" aria-describedby={descriptionID}>
         <legend>{label}</legend>
-        {schema.description && <small>{schema.description}</small>}
+        {schema.description && <small id={descriptionID}>{schema.description}</small>}
         {order.map((childName) => properties[childName] && (
           <Field
             key={childName}
@@ -99,7 +100,7 @@ export function Field({ path, name, schema, value, required, errors, onChange, o
   return (
     <div className="schema-field">
       <label htmlFor={id}>{label}</label>
-      {schema.description && <small>{schema.description}</small>}
+      {schema.description && <small id={descriptionID}>{schema.description}</small>}
       {control}
       {error && <span className="field-error" id={errorID}>{error}</span>}
     </div>

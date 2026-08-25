@@ -82,6 +82,14 @@ describe('SchemaForm', () => {
     expect(screen.queryByText('提示词长度不能少于 1 个字符')).not.toBeInTheDocument()
   })
 
+  it('字段同时关联帮助说明与校验错误', async () => {
+    render(<SchemaForm schema={{ type: 'object', required: ['model'], properties: {
+      model: { type: 'string', title: '模型', description: '填写模型标识', minLength: 1 },
+    } }} value={{ model: '' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用" />)
+    await userEvent.click(screen.getByRole('button', { name: '应用' }))
+    expect(screen.getByLabelText('模型')).toHaveAttribute('aria-describedby', 'field-model-description field-model-error')
+  })
+
   it('支持服务端生成的 JSON Schema 2020-12', () => {
     render(<SchemaForm schema={{ ...schema, $schema: 'https://json-schema.org/draft/2020-12/schema' }} value={{}} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="运行" />)
     expect(screen.getByLabelText('主题')).toBeInTheDocument()

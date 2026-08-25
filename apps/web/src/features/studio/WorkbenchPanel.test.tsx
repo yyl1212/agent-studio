@@ -25,4 +25,11 @@ describe('WorkbenchPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
     expect(onClose).toHaveBeenCalledOnce()
   })
+
+  it('Escape 请求关闭工作台', async () => {
+    const onClose = vi.fn()
+    render(<WorkbenchPanel titleId="panel-title" onRequestClose={onClose}><h2 id="panel-title">节点配置</h2></WorkbenchPanel>)
+    await userEvent.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
 })

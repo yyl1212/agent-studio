@@ -51,7 +51,10 @@ export function StudioPage() {
   const exportController = useRef<AbortController | undefined>(undefined)
   const workbench = useStudioWorkbench()
 
-  useEffect(() => () => exportController.current?.abort(), [])
+  useEffect(() => () => {
+    exportController.current?.abort()
+    runController.current?.abort()
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -162,7 +165,10 @@ export function StudioPage() {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) setRunError(publicMessage(error))
     } finally {
-      setRunning(false)
+      if (runController.current === controller) {
+        runController.current = undefined
+        setRunning(false)
+      }
     }
   }
 
@@ -227,6 +233,7 @@ export function StudioPage() {
   }
 
   const executeIntent = (intent: WorkbenchIntent) => {
+    if (workbench.mode.kind === 'test' && intent.kind !== 'test') runController.current?.abort()
     if (intent.kind === 'open-library') {
       workbench.request({ kind: 'close' }, false)
       setLibraryOpen(true)

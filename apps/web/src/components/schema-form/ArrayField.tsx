@@ -4,6 +4,7 @@ import { Field } from './Field'
 interface ArrayFieldProps {
   id: string
   label: string
+  description?: string
   schema: JSONSchema
   value: unknown[]
   onChange: (value: unknown[]) => void
@@ -11,16 +12,18 @@ interface ArrayFieldProps {
   errors: Record<string, string>
 }
 
-export function ArrayField({ id, label, schema, value, onChange, onBlur, errors }: ArrayFieldProps) {
+export function ArrayField({ id, label, description, schema, value, onChange, onBlur, errors }: ArrayFieldProps) {
   const itemSchema = schema.items ?? { type: 'string' }
   const atMinimum = schema.minItems !== undefined && value.length <= schema.minItems
   const atMaximum = schema.maxItems !== undefined && value.length >= schema.maxItems
   const error = errors[`/${id}`]
   const fieldID = `field-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
   const errorID = error ? `${fieldID}-error` : undefined
+  const descriptionID = description ? `${fieldID}-description` : undefined
   return (
-    <fieldset className="schema-array" aria-invalid={Boolean(error)} aria-describedby={errorID}>
+    <fieldset className="schema-array" aria-invalid={Boolean(error)} aria-describedby={[descriptionID, errorID].filter(Boolean).join(' ') || undefined}>
       <legend>{label}</legend>
+      {description && <small id={descriptionID}>{description}</small>}
       {value.map((item, index) => (
         <div className="schema-array-row" key={`${id}-${index}`}>
           <Field

@@ -164,6 +164,21 @@ describe('StudioPage', () => {
     await vi.waitFor(() => expect(api.runDraft).toHaveBeenCalledWith('w1', { draftRevision: 2, input: {} }, expect.any(AbortSignal)), { timeout: 2500 })
   })
 
+  it('离开测试工作台会取消仍在进行的浏览器请求', async () => {
+    let signal: AbortSignal | undefined
+    vi.spyOn(api, 'runDraft').mockImplementation((_workflowID, _request, requestSignal) => {
+      signal = requestSignal
+      return new Promise((_resolve, reject) => requestSignal?.addEventListener('abort', () => reject(new DOMException('操作已取消', 'AbortError')), { once: true }))
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    await userEvent.click(screen.getByRole('button', { name: '运行' }))
+    await vi.waitFor(() => expect(signal).toBeDefined())
+    await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
+    expect(signal?.aborted).toBe(true)
+  })
+
   it('发布前等待保存队列完成并使用新 revision', async () => {
     let resolveSave!: (value: typeof workflow) => void
     vi.mocked(api.saveWorkflow).mockReturnValueOnce(new Promise((resolve) => { resolveSave = resolve }))
