@@ -71,35 +71,40 @@ func (service *DebugService) Events(ctx context.Context, runID string, afterSequ
 }
 
 func (service *DebugService) loadRunGraph(ctx context.Context, run domain.Run) (domain.Graph, *engine.Plan, error) {
+	_, graph, plan, err := service.loadRunGraphData(ctx, run)
+	return graph, plan, err
+}
+
+func (service *DebugService) loadRunGraphData(ctx context.Context, run domain.Run) (json.RawMessage, domain.Graph, *engine.Plan, error) {
 	var raw json.RawMessage
 	switch run.Mode {
 	case domain.RunModeTest, domain.RunModeDebug:
 		raw = run.GraphSnapshot
 	case domain.RunModePublished:
 		if run.WorkflowVersionID == nil {
-			return domain.Graph{}, nil, ErrRunSnapshotUnsupported
+			return nil, domain.Graph{}, nil, ErrRunSnapshotUnsupported
 		}
 		workflow, err := service.store.GetWorkflow(ctx, run.WorkflowID)
 		if err != nil {
-			return domain.Graph{}, nil, fmt.Errorf("%w: load workflow: %v", ErrRunSnapshotUnsupported, err)
+			return nil, domain.Graph{}, nil, fmt.Errorf("%w: load workflow: %v", ErrRunSnapshotUnsupported, err)
 		}
 		_, version, err := service.store.GetAgentVersion(ctx, workflow.Slug, *run.WorkflowVersionID)
 		if err != nil {
-			return domain.Graph{}, nil, fmt.Errorf("%w: load workflow version: %v", ErrRunSnapshotUnsupported, err)
+			return nil, domain.Graph{}, nil, fmt.Errorf("%w: load workflow version: %v", ErrRunSnapshotUnsupported, err)
 		}
 		raw = version.Graph
 	default:
-		return domain.Graph{}, nil, ErrRunSnapshotUnsupported
+		return nil, domain.Graph{}, nil, ErrRunSnapshotUnsupported
 	}
 	var graph domain.Graph
 	if len(raw) == 0 || json.Unmarshal(raw, &graph) != nil {
-		return domain.Graph{}, nil, ErrRunSnapshotUnsupported
+		return nil, domain.Graph{}, nil, ErrRunSnapshotUnsupported
 	}
 	plan, issues := service.compiler.Compile(graph)
 	if len(issues) > 0 || plan == nil {
-		return domain.Graph{}, nil, ErrRunSnapshotUnsupported
+		return nil, domain.Graph{}, nil, ErrRunSnapshotUnsupported
 	}
-	return graph, plan, nil
+	return append(json.RawMessage(nil), raw...), graph, plan, nil
 }
 
 func (service *DebugService) loadCompleteHistory(ctx context.Context, run domain.Run) ([]domain.RunEvent, error) {
