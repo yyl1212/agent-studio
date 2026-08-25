@@ -129,6 +129,25 @@ describe('StudioPage', () => {
     await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
   })
 
+  it('归档工作流以只读模式查看且导出不触发保存', async () => {
+    vi.mocked(api.getWorkflow).mockResolvedValue({ ...workflow, archivedAt: '2026-08-25T04:00:00Z' })
+    vi.spyOn(api, 'exportWorkflowTemplate').mockResolvedValue(new Blob(['template']))
+    installURLMethod('createObjectURL', vi.fn().mockReturnValue('blob:archived-template'))
+    installURLMethod('revokeObjectURL', vi.fn())
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    expect(await screen.findByRole('status')).toHaveTextContent('已归档，只读模式')
+    expect(screen.getByRole('button', { name: '添加节点' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+    expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs?workflowId=w1')
+    fireEvent.click(screen.getByTestId('node-start'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '导出模板' }))
+    await vi.waitFor(() => expect(api.exportWorkflowTemplate).toHaveBeenCalledWith('w1', 1, expect.any(AbortSignal)))
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+  })
+
   it('配置输入只更新草稿，端口就绪并显式应用后才保存一次', async () => {
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     await screen.findByText('演示助手')
