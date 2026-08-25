@@ -22,4 +22,14 @@ describe('useStudioWorkbench', () => {
     act(() => result.current.resolveDirty('discard'))
     expect(result.current.mode).toEqual({ kind: 'test' })
   })
+
+  it('保留发布等外部意图供 Studio 在处理草稿后执行', () => {
+    const { result } = renderHook(() => useStudioWorkbench())
+    act(() => result.current.request({ kind: 'config', nodeId: 'a' }, false))
+    act(() => result.current.request({ kind: 'publish' }, true))
+    let intent
+    act(() => { intent = result.current.resolveDirty('discard') })
+    expect(intent).toEqual({ kind: 'publish' })
+    expect(result.current.mode).toEqual({ kind: 'config', nodeId: 'a' })
+  })
 })
