@@ -35,6 +35,37 @@ export async function connectPorts(page: Page, connections: Array<[string, strin
   }
 }
 
+export async function connectIndexedPorts(
+  page: Page,
+  connections: Array<[string, number, string, string, number, string]>,
+) {
+  for (const [sourceType, sourceIndex, sourcePort, targetType, targetIndex, targetPort] of connections) {
+    const edgeCount = await page.locator('.react-flow__edge').count()
+    const sourceNode = page.getByTestId(`node-${sourceType}`).nth(sourceIndex).locator('..')
+    const targetNode = page.getByTestId(`node-${targetType}`).nth(targetIndex).locator('..')
+    await dragHandle(
+      page,
+      sourceNode.locator(`.react-flow__handle.source[data-port$=":${sourcePort}"]`),
+      targetNode.locator(`.react-flow__handle.target[data-port$=":${targetPort}"]`),
+    )
+    await expect(page.locator('.react-flow__edge')).toHaveCount(edgeCount + 1)
+  }
+}
+
+export async function moveIndexedNode(page: Page, nodeType: string, nodeIndex: number, xRatio: number, yRatio: number) {
+  const canvas = page.getByRole('application')
+  const node = page.getByTestId(`node-${nodeType}`).nth(nodeIndex).locator('..')
+  await expect(node).toBeInViewport()
+  const canvasBox = await canvas.boundingBox()
+  const nodeBox = await node.boundingBox()
+  if (!canvasBox || !nodeBox) throw new Error('无法计算节点的画布拖拽位置')
+
+  await page.mouse.move(nodeBox.x + nodeBox.width / 2, nodeBox.y + nodeBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(canvasBox.x + canvasBox.width * xRatio, canvasBox.y + canvasBox.height * yRatio, { steps: 8 })
+  await page.mouse.up()
+}
+
 export async function dragHandle(page: Page, source: Locator, target: Locator) {
   await expect(source).toBeVisible()
   await expect(target).toBeVisible()
