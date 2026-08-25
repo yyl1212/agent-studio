@@ -1,0 +1,24 @@
+:root {
+  --as-canvas: #faf7f1;
+  --as-surface: #fffdf8;
+  --as-surface-muted: #f4ece2;
+  --as-border: #dfd2c0;
+  --as-text: #332a22;
+  --as-text-muted: #7b6f64;
+  --as-primary: #c2542d;
+  --as-primary-hover: #a94727;
+  --as-success: #2f7045;
+  --as-warning: #946200;
+  --as-danger: #b42318;
+  --as-info: #3157d5;
+  --as-focus: #8f3c21;
+  --as-radius-sm: 8px;
+  --as-radius-md: 12px;
+  --as-shadow-panel: 0 20px 60px rgb(73 52 32 / 18%);
+  --as-workbench-width: 400px;
+  --as-motion-fast: 180ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --as-motion-fast: 0ms; }
+}
