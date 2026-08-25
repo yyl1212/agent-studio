@@ -187,6 +187,48 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+  /api/workflow-summaries:
+    get:
+      operationId: listWorkflowSummaries
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 100
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [active, archived, all]
+            default: active
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 512
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: 工作流管理摘要页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowSummaryPage"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
   /api/workflows/{id}:
     parameters:
       - $ref: "#/components/parameters/WorkflowID"
@@ -200,6 +242,29 @@ paths:
               schema:
                 $ref: "#/components/schemas/Workflow"
         "404":
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWorkflowRequest"
+      responses:
+        "200":
+          description: 已更新工作流元数据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
           $ref: "#/components/responses/Error"
     put:
       operationId: saveWorkflowDraft
@@ -219,6 +284,72 @@ paths:
         "400":
           $ref: "#/components/responses/Error"
         "409":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/copies:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: copyWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CopyWorkflowRequest"
+      responses:
+        "201":
+          description: 已创建工作流副本
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/archive:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: archiveWorkflow
+      responses:
+        "200":
+          description: 已归档工作流
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/restore:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: restoreWorkflow
+      responses:
+        "200":
+          description: 已恢复工作流
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
           $ref: "#/components/responses/Error"
   /api/workflows/{id}/template:
     parameters:
@@ -438,6 +569,77 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
         "422":
+          $ref: "#/components/responses/Error"
+  /api/runs:
+    get:
+      operationId: listRunSummaries
+      parameters:
+        - name: workflowId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: runId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 4
+            items:
+              type: string
+              enum: [running, completed, failed, cancelled]
+        - name: mode
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 3
+            items:
+              type: string
+              enum: [test, published, debug]
+        - name: startedAfter
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: startedBefore
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 512
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: 全局运行摘要页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummaryPage"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
           $ref: "#/components/responses/Error"
   /api/runs/{id}:
     get:
@@ -1332,6 +1534,7 @@ components:
             enum: [network, secrets, filesystem-read, filesystem-write]
     Workflow:
       type: object
+      additionalProperties: false
       required: [id, name, slug, description, draftGraph, draftRevision, createdAt, updatedAt]
       properties:
         id:
@@ -1353,12 +1556,58 @@ components:
           format: uuid
         publishedVersion:
           type: [integer, "null"]
+        archivedAt:
+          type: [string, "null"]
+          format: date-time
         createdAt:
           type: string
           format: date-time
         updatedAt:
           type: string
           format: date-time
+    WorkflowSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name, slug, description, draftRevision, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        draftRevision:
+          type: integer
+          format: int64
+        publishedVersionId:
+          type: [string, "null"]
+          format: uuid
+        publishedVersion:
+          type: [integer, "null"]
+        archivedAt:
+          type: [string, "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkflowSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowSummary"
+        nextCursor:
+          type: [string, "null"]
+          maxLength: 512
     WorkflowVersion:
       type: object
       required: [id, workflowId, version, graph, inputSchema, createdAt]
@@ -1438,6 +1687,58 @@ components:
         endedAt:
           type: [string, "null"]
           format: date-time
+    RunSummary:
+      type: object
+      additionalProperties: false
+      required: [id, workflowId, workflowName, workflowSlug, mode, status, startedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workflowId:
+          type: string
+          format: uuid
+        workflowName:
+          type: string
+        workflowSlug:
+          type: string
+        workflowVersionId:
+          type: [string, "null"]
+          format: uuid
+        workflowVersion:
+          type: [integer, "null"]
+        draftRevision:
+          type: [integer, "null"]
+          format: int64
+        sourceRunId:
+          type: [string, "null"]
+          format: uuid
+        sourceNodeId:
+          type: [string, "null"]
+        mode:
+          type: string
+          enum: [test, published, debug]
+        status:
+          type: string
+          enum: [running, completed, failed, cancelled]
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: [string, "null"]
+          format: date-time
+    RunSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunSummary"
+        nextCursor:
+          type: [string, "null"]
+          maxLength: 512
     NodeRun:
       type: object
       required: [id, runId, nodeId, nodeType, status]
@@ -1662,6 +1963,30 @@ components:
           type: string
         description:
           type: string
+    UpdateWorkflowRequest:
+      type: object
+      additionalProperties: false
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 2048
+    CopyWorkflowRequest:
+      type: object
+      additionalProperties: false
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
     SaveDraftRequest:
       type: object
       additionalProperties: false

@@ -132,6 +132,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflow-summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listWorkflowSummaries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{id}": {
         parameters: {
             query?: never;
@@ -144,6 +160,60 @@ export interface paths {
         get: operations["getWorkflow"];
         put: operations["saveWorkflowDraft"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateWorkflow"];
+        trace?: never;
+    };
+    "/api/workflows/{id}/copies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["copyWorkflow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["archiveWorkflow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["restoreWorkflow"];
         delete?: never;
         options?: never;
         head?: never;
@@ -302,6 +372,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["runAgent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listRunSummaries"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -680,9 +766,33 @@ export interface components {
             publishedVersionId?: string | null;
             publishedVersion?: number | null;
             /** Format: date-time */
+            archivedAt?: string | null;
+            /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        WorkflowSummary: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            slug: string;
+            description: string;
+            /** Format: int64 */
+            draftRevision: number;
+            /** Format: uuid */
+            publishedVersionId?: string | null;
+            publishedVersion?: number | null;
+            /** Format: date-time */
+            archivedAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        WorkflowSummaryPage: {
+            items: components["schemas"]["WorkflowSummary"][];
+            nextCursor: string | null;
         };
         WorkflowVersion: {
             /** Format: uuid */
@@ -731,6 +841,34 @@ export interface components {
             startedAt: string;
             /** Format: date-time */
             endedAt?: string | null;
+        };
+        RunSummary: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            workflowId: string;
+            workflowName: string;
+            workflowSlug: string;
+            /** Format: uuid */
+            workflowVersionId?: string | null;
+            workflowVersion?: number | null;
+            /** Format: int64 */
+            draftRevision?: number | null;
+            /** Format: uuid */
+            sourceRunId?: string | null;
+            sourceNodeId?: string | null;
+            /** @enum {string} */
+            mode: "test" | "published" | "debug";
+            /** @enum {string} */
+            status: "running" | "completed" | "failed" | "cancelled";
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: date-time */
+            endedAt?: string | null;
+        };
+        RunSummaryPage: {
+            items: components["schemas"]["RunSummary"][];
+            nextCursor: string | null;
         };
         NodeRun: {
             /** Format: uuid */
@@ -843,6 +981,14 @@ export interface components {
             name: string;
             slug: string;
             description?: string;
+        };
+        UpdateWorkflowRequest: {
+            name: string;
+            description: string;
+        };
+        CopyWorkflowRequest: {
+            name: string;
+            slug: string;
         };
         SaveDraftRequest: {
             /** Format: int64 */
@@ -1101,6 +1247,35 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
+    listWorkflowSummaries: {
+        parameters: {
+            query?: {
+                q?: string;
+                state?: "active" | "archived" | "all";
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 工作流管理摘要页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowSummaryPage"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
     getWorkflow: {
         parameters: {
             query?: never;
@@ -1150,6 +1325,118 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             409: components["responses"]["Error"];
+        };
+    };
+    updateWorkflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWorkflowRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新工作流元数据 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workflow"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    copyWorkflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopyWorkflowRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建工作流副本 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workflow"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    archiveWorkflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已归档工作流 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workflow"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    restoreWorkflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已恢复工作流 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workflow"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     exportWorkflowTemplate: {
@@ -1399,6 +1686,39 @@ export interface operations {
             400: components["responses"]["Error"];
             404: components["responses"]["Error"];
             422: components["responses"]["Error"];
+        };
+    };
+    listRunSummaries: {
+        parameters: {
+            query?: {
+                workflowId?: string;
+                runId?: string;
+                status?: ("running" | "completed" | "failed" | "cancelled")[];
+                mode?: ("test" | "published" | "debug")[];
+                startedAfter?: string;
+                startedBefore?: string;
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 全局运行摘要页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunSummaryPage"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     getRun: {

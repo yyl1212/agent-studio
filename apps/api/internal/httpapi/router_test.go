@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
@@ -125,6 +126,51 @@ func (fixtureRunReader) ListRuns(context.Context, string, int) ([]domain.Run, er
 	return []domain.Run{}, nil
 }
 
+type fixtureWorkflowManager struct {
+	request  workflow.WorkflowSummaryRequest
+	workflow domain.Workflow
+	err      error
+	mutation string
+	id       string
+	update   workflow.UpdateWorkflowInput
+	copy     workflow.CopyWorkflowInput
+}
+
+func (manager *fixtureWorkflowManager) List(_ context.Context, request workflow.WorkflowSummaryRequest) (workflow.WorkflowSummaryPage, error) {
+	manager.request = request
+	return workflow.WorkflowSummaryPage{Items: []domain.WorkflowSummary{}}, manager.err
+}
+
+func (manager *fixtureWorkflowManager) Update(_ context.Context, id string, input workflow.UpdateWorkflowInput) (domain.Workflow, error) {
+	manager.mutation, manager.id, manager.update = "update", id, input
+	return manager.workflow, manager.err
+}
+
+func (manager *fixtureWorkflowManager) Copy(_ context.Context, id string, input workflow.CopyWorkflowInput) (domain.Workflow, error) {
+	manager.mutation, manager.id, manager.copy = "copy", id, input
+	return manager.workflow, manager.err
+}
+
+func (manager *fixtureWorkflowManager) Archive(_ context.Context, id string) (domain.Workflow, error) {
+	manager.mutation, manager.id = "archive", id
+	return manager.workflow, manager.err
+}
+
+func (manager *fixtureWorkflowManager) Restore(_ context.Context, id string) (domain.Workflow, error) {
+	manager.mutation, manager.id = "restore", id
+	return manager.workflow, manager.err
+}
+
+type fixtureRunManager struct {
+	request workflow.RunSummaryRequest
+	err     error
+}
+
+func (manager *fixtureRunManager) List(_ context.Context, request workflow.RunSummaryRequest) (workflow.RunSummaryPage, error) {
+	manager.request = request
+	return workflow.RunSummaryPage{Items: []domain.RunSummary{}}, manager.err
+}
+
 type fixtureDebugger struct {
 	overviewErr error
 	eventsErr   error
@@ -201,6 +247,116 @@ func TestArchivedWorkflowUsesStableErrorAcrossValidationAndRunEntrypoints(t *tes
 			}
 		})
 	}
+}
+
+func TestWorkflowManagementListParsesStrictQuery(t *testing.T) {
+	dependencies := fixtureDeps()
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/workflow-summaries?q=agent&state=all&limit=20", "")
+	manager := dependencies.WorkflowManagement.(*fixtureWorkflowManager)
+	if recorder.Code != http.StatusOK || manager.request.Text != "agent" || manager.request.State != workflow.WorkflowStateAll || manager.request.Limit != 20 || !strings.Contains(recorder.Body.String(), `"items":[]`) {
+		t.Fatalf("status=%d request=%+v body=%s", recorder.Code, manager.request, recorder.Body.String())
+	}
+}
+
+func TestWorkflowManagementListRejectsInvalidQuery(t *testing.T) {
+	tests := []string{
+		"?q=a&q=b", "?state=active&state=all", "?cursor=a&cursor=b", "?limit=1&limit=2",
+		"?q=" + strings.Repeat("a", 101), "?cursor=" + strings.Repeat("a", 513), "?state=deleted", "?unknown=true",
+	}
+	for _, query := range tests {
+		recorder := performRequest(NewRouter(fixtureDeps()), http.MethodGet, "/api/workflow-summaries"+query, "")
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+	}
+}
+
+func TestWorkflowManagementMutationsValidatePresenceAndPath(t *testing.T) {
+	validID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	tests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPatch, path: "/api/workflows/not-a-uuid", body: `{"name":"名称","description":"说明"}`},
+		{method: http.MethodPatch, path: "/api/workflows/" + validID, body: `{"name":"名称"}`},
+		{method: http.MethodPatch, path: "/api/workflows/" + validID, body: `{"description":"说明"}`},
+		{method: http.MethodPatch, path: "/api/workflows/" + validID, body: `{"name":"","description":"说明"}`},
+		{method: http.MethodPatch, path: "/api/workflows/" + validID, body: `{"name":"名称","description":"说明","unknown":true}`},
+		{method: http.MethodPost, path: "/api/workflows/not-a-uuid/copies", body: `{"name":"副本","slug":"copy"}`},
+		{method: http.MethodPost, path: "/api/workflows/" + validID + "/copies", body: `{"name":"副本"}`},
+		{method: http.MethodPost, path: "/api/workflows/" + validID + "/copies", body: `{"slug":"copy"}`},
+		{method: http.MethodPost, path: "/api/workflows/not-a-uuid/archive"},
+		{method: http.MethodPost, path: "/api/workflows/not-a-uuid/restore"},
+	}
+	for _, test := range tests {
+		recorder := performRequest(NewRouter(fixtureDeps()), test.method, test.path, test.body)
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+	}
+}
+
+func TestWorkflowManagementMutationsReturnStableStatuses(t *testing.T) {
+	validID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		status int
+		want   string
+	}{
+		{name: "update", method: http.MethodPatch, path: "/api/workflows/" + validID, body: `{"name":"名称","description":"说明"}`, status: http.StatusOK, want: "update"},
+		{name: "copy", method: http.MethodPost, path: "/api/workflows/" + validID + "/copies", body: `{"name":"副本","slug":"copy"}`, status: http.StatusCreated, want: "copy"},
+		{name: "archive", method: http.MethodPost, path: "/api/workflows/" + validID + "/archive", status: http.StatusOK, want: "archive"},
+		{name: "restore", method: http.MethodPost, path: "/api/workflows/" + validID + "/restore", status: http.StatusOK, want: "restore"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dependencies := fixtureDeps()
+			recorder := performRequest(NewRouter(dependencies), test.method, test.path, test.body)
+			manager := dependencies.WorkflowManagement.(*fixtureWorkflowManager)
+			if recorder.Code != test.status || manager.mutation != test.want || manager.id != validID {
+				t.Fatalf("status=%d mutation=%q id=%q body=%s", recorder.Code, manager.mutation, manager.id, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRunManagementListParsesStrictQuery(t *testing.T) {
+	dependencies := fixtureDeps()
+	workflowID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	runID := "11111111-1111-4111-8111-111111111111"
+	path := "/api/runs?workflowId=" + workflowID + "&runId=" + runID + "&status=failed&status=running&mode=test&startedAfter=2026-08-01T00:00:00%2B08:00&startedBefore=2026-08-25T00:00:00%2B08:00&limit=20"
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, path, "")
+	request := dependencies.RunManagement.(*fixtureRunManager).request
+	if recorder.Code != http.StatusOK || request.WorkflowID != workflowID || request.RunID != runID || len(request.Statuses) != 2 || len(request.Modes) != 1 || request.Limit != 20 || request.StartedAfter == nil || request.StartedAfter.Location() != time.UTC {
+		t.Fatalf("status=%d request=%+v body=%s", recorder.Code, request, recorder.Body.String())
+	}
+}
+
+func TestRunManagementListRejectsInvalidQuery(t *testing.T) {
+	tests := []string{
+		"?workflowId=a&workflowId=b", "?runId=a&runId=b", "?cursor=a&cursor=b", "?limit=1&limit=2",
+		"?status=running&status=completed&status=failed&status=cancelled&status=failed",
+		"?mode=test&mode=published&mode=debug&mode=test", "?workflowId=bad", "?runId=bad",
+		"?startedAfter=2026-01-01T00:00:00Z&startedBefore=2026-04-02T00:00:00Z",
+		"?startedAfter=2026-01-02T00:00:00Z&startedBefore=2026-01-01T00:00:00Z",
+		"?limit=101", "?cursor=" + strings.Repeat("a", 513), "?unknown=true",
+	}
+	for _, query := range tests {
+		recorder := performRequest(NewRouter(fixtureDeps()), http.MethodGet, "/api/runs"+query, "")
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+	}
+}
+
+func TestManagementErrorsUseStableCodes(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.WorkflowManagement.(*fixtureWorkflowManager).err = domain.ErrWorkflowArchived
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/workflows/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/archive", "")
+	assertJSONError(t, recorder, http.StatusConflict, "WORKFLOW_ARCHIVED")
+
+	dependencies = fixtureDeps()
+	dependencies.RunManagement.(*fixtureRunManager).err = workflow.ErrCursorInvalid
+	recorder = performRequest(NewRouter(dependencies), http.MethodGet, "/api/runs", "")
+	assertJSONError(t, recorder, http.StatusBadRequest, "CURSOR_INVALID")
 }
 
 func TestRouterRejectsUnknownJSONAndAppliesCORS(t *testing.T) {
@@ -707,11 +863,15 @@ func fixtureDeps() Dependencies {
 			workflow:        domain.Workflow{ID: "w1", DraftRevision: 2},
 			templatePreview: workflowtemplate.Preview{Issues: []domain.ValidationIssue{}, Summary: workflowtemplate.Summary{InputSchema: json.RawMessage(`{}`), NodeTypes: []workflowtemplate.NodeTypeSummary{}}},
 		},
-		Runner:    &fixtureRunner{},
-		Runs:      fixtureRunReader{},
-		Debugger:  &fixtureDebugger{},
-		Readiness: fixtureReady{},
-		WebOrigin: "http://localhost:5173",
+		Runner: &fixtureRunner{},
+		Runs:   fixtureRunReader{},
+		WorkflowManagement: &fixtureWorkflowManager{
+			workflow: domain.Workflow{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Name: "演示"},
+		},
+		RunManagement: &fixtureRunManager{},
+		Debugger:      &fixtureDebugger{},
+		Readiness:     fixtureReady{},
+		WebOrigin:     "http://localhost:5173",
 	}
 }
 
