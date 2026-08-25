@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -98,6 +99,7 @@ type runtimeBranchNode struct {
 	tracker *concurrencyTracker
 	mu      sync.Mutex
 	done    map[string]bool
+	inputs  map[string][]any
 	failure error
 }
 
@@ -146,9 +148,139 @@ func (node *runtimeBranchNode) Execute(ctx context.Context, request domain.NodeR
 	if node.done == nil {
 		node.done = make(map[string]bool)
 	}
+	if node.inputs == nil {
+		node.inputs = make(map[string][]any)
+	}
 	node.done[config.Result] = true
+	node.inputs[config.Result] = append([]any(nil), request.Inputs["in"]...)
 	node.mu.Unlock()
 	return domain.NodeResult{Outputs: map[string]any{"out": config.Result}}, nil
+}
+
+func (node *runtimeBranchNode) inputFor(result string) []any {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	return append([]any(nil), node.inputs[result]...)
+}
+
+func TestCompletedEventPreservesExplicitActivePorts(t *testing.T) {
+	plan, _ := compileConditionalRuntimeFixture(t, nil)
+	observer := &memoryObserver{}
+	if _, err := New(Options{}).Run(context.Background(), "run-active-ports", plan, map[string]any{"value": "yes"}, observer); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range observer.Events() {
+		if event.Type == "node.completed" && event.NodeID == "condition" {
+			if !reflect.DeepEqual(event.ActivePorts, []string{"true"}) {
+				t.Fatalf("active ports=%v", event.ActivePorts)
+			}
+			return
+		}
+	}
+	t.Fatal("condition node.completed event not found")
+}
+
+func TestRunWithScopeExecutesEntryAndDescendantsOnly(t *testing.T) {
+	plan, branch := compileJoinedRuntimeFixture(t, nil, false)
+	observer := &memoryObserver{}
+	result, err := New(Options{}).RunWithScope(context.Background(), "debug-1", plan, map[string]any{}, observer, ExecutionScope{
+		EntryNodeID: "left",
+		ActiveNodeIDs: map[string]struct{}{
+			"left": {}, "join": {}, "end": {},
+		},
+		EntryNodeInputs: map[string][]any{"in": {"new-left"}},
+		FrozenEdges: map[string]FrozenEdge{
+			"e4": {Active: true, Value: "historic-right"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "left+historic-right" {
+		t.Fatalf("output=%v", result.Output)
+	}
+	if branch.completed("right") {
+		t.Fatal("right branch executed")
+	}
+	for _, event := range observer.Events() {
+		if event.NodeID == "right" || event.NodeID == "start" {
+			t.Fatalf("out-of-scope event=%+v", event)
+		}
+	}
+	assertStrictSequences(t, observer.Events())
+}
+
+func TestRunWithScopeJoinsNewAndFrozenInputs(t *testing.T) {
+	plan, _ := compileJoinedRuntimeFixture(t, nil, false)
+	result, err := New(Options{}).RunWithScope(context.Background(), "debug-join", plan, map[string]any{}, &memoryObserver{}, ExecutionScope{
+		EntryNodeID: "left",
+		ActiveNodeIDs: map[string]struct{}{
+			"left": {}, "join": {}, "end": {},
+		},
+		EntryNodeInputs: map[string][]any{"in": {"new-left"}},
+		FrozenEdges: map[string]FrozenEdge{
+			"e4": {Active: true, Value: "historic-right"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "left+historic-right" {
+		t.Fatalf("output=%v", result.Output)
+	}
+}
+
+func TestRunWithScopeUsesEditableEntryInputs(t *testing.T) {
+	plan, branch := compileJoinedRuntimeFixture(t, nil, false)
+	_, err := New(Options{}).RunWithScope(context.Background(), "debug-input", plan, map[string]any{}, &memoryObserver{}, ExecutionScope{
+		EntryNodeID: "left",
+		ActiveNodeIDs: map[string]struct{}{
+			"left": {}, "join": {}, "end": {},
+		},
+		EntryNodeInputs: map[string][]any{"in": {"edited"}},
+		FrozenEdges: map[string]FrozenEdge{
+			"e4": {Active: true, Value: "historic-right"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := branch.inputFor("left"); !reflect.DeepEqual(got, []any{"edited"}) {
+		t.Fatalf("entry inputs=%v", got)
+	}
+}
+
+func TestExecutionScopeRejectsUnknownNodesAndEdges(t *testing.T) {
+	plan, _ := compileJoinedRuntimeFixture(t, nil, false)
+	valid := func() ExecutionScope {
+		return ExecutionScope{
+			EntryNodeID: "left",
+			ActiveNodeIDs: map[string]struct{}{
+				"left": {}, "join": {}, "end": {},
+			},
+			FrozenEdges: map[string]FrozenEdge{"e4": {Active: true, Value: "historic-right"}},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ExecutionScope)
+	}{
+		{name: "unknown entry", mutate: func(scope *ExecutionScope) { scope.EntryNodeID = "missing" }},
+		{name: "unknown active node", mutate: func(scope *ExecutionScope) { scope.ActiveNodeIDs["missing"] = struct{}{} }},
+		{name: "unknown frozen edge", mutate: func(scope *ExecutionScope) { scope.FrozenEdges["missing"] = FrozenEdge{} }},
+		{name: "active to active frozen", mutate: func(scope *ExecutionScope) { scope.FrozenEdges["e3"] = FrozenEdge{Active: true, Value: "bad"} }},
+		{name: "outside to entry frozen", mutate: func(scope *ExecutionScope) { scope.FrozenEdges["e1"] = FrozenEdge{Active: true, Value: "bad"} }},
+		{name: "missing outside to active frozen", mutate: func(scope *ExecutionScope) { delete(scope.FrozenEdges, "e4") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			scope := valid()
+			test.mutate(&scope)
+			if err := scope.Validate(plan); err == nil {
+				t.Fatal("expected invalid execution scope")
+			}
+		})
+	}
 }
 
 func (node *runtimeBranchNode) completed(result string) bool {
