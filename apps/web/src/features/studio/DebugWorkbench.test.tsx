@@ -23,6 +23,7 @@ describe('DebugWorkbench', () => {
 		const onSelectSequence = vi.fn()
 		const onSelectNode = vi.fn()
 		const { rerender } = render(<DebugWorkbench overview={overview} events={events} selectedSequence={2} selectedNodeID="node-1" onSelectSequence={onSelectSequence} onSelectNode={onSelectNode} />)
+		expect(screen.queryByRole('complementary', { name: '调试工作台' })).not.toBeInTheDocument()
 		expect(screen.getByText('已定位事件 2：node.started')).toBeInTheDocument()
 		await userEvent.click(screen.getByRole('button', { name: '下一项' }))
 		expect(onSelectSequence).toHaveBeenCalledWith(3)

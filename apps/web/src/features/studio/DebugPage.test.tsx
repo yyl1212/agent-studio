@@ -54,6 +54,7 @@ describe('DebugPage', () => {
 	it('加载全部事件页、保留只读画布并联动时间线节点', async () => {
 		renderDebugPage()
 		expect(await screen.findByText('只读回放')).toBeInTheDocument()
+		expect(screen.getByRole('dialog', { name: '调试工作台' })).toBeInTheDocument()
 		await waitFor(() => expect(api.listRunEvents).toHaveBeenNthCalledWith(2, 'r1', 3, expect.any(AbortSignal)))
 		expect(api.resolveNodeType).toHaveBeenCalledTimes(2)
 		expect(api.saveWorkflow).not.toHaveBeenCalled()

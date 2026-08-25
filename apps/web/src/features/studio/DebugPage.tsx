@@ -7,6 +7,7 @@ import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { portsFromDefinition, toFlowGraph } from './graphAdapter'
 import type { StudioEdge, StudioNode } from './types'
 import { DebugWorkbench } from './DebugWorkbench'
+import { WorkbenchPanel } from './WorkbenchPanel'
 import { WorkflowCanvas } from './WorkflowCanvas'
 import '@xyflow/react/dist/style.css'
 import './studio.css'
@@ -162,9 +163,12 @@ export function DebugPage() {
 				<span className={`debug-run-status status-${overview.run.status}`}>{runStatusLabel(overview.run.status)}</span>
 			</header>
 			<WorkflowCanvas readOnly currentNodeID={selectedNodeID} nodes={displayNodes} edges={edges} onNodesChange={ignoreNodes} onEdgesChange={ignoreEdges} onConnect={ignoreConnect} isValidConnection={() => false} onNodeClick={(node) => setSelectedNodeID(node.id)} />
-			{overview.replayAvailable
-				? <DebugWorkbench overview={overview} events={events} selectedSequence={selectedSequence} selectedNodeID={selectedNodeID} onSelectSequence={setSelectedSequence} onSelectNode={setSelectedNodeID} onStartRerun={startRerun} rerunPreview={rerunPreview} rerunEvents={rerunEvents} rerunRunning={rerunRunning} rerunError={rerunError} debugRunPath={newRunID ? `/workflows/${id}/runs/${newRunID}/debug` : undefined} onSubmitRerun={submitRerun} onCancelRerun={() => rerunController.current?.abort()} onCloseRerun={closeRerun} />
-				: <aside className="debug-workbench debug-unavailable"><h2>运行摘要</h2><p role="status">{overview.unavailableReason || '当前运行无法精确回放'}</p><p>仍可查看画布和节点最终摘要，但不能执行局部重跑。</p></aside>}
+			<WorkbenchPanel titleId="debug-workbench-title" onRequestClose={() => rerunPreview ? closeRerun() : navigate(`/workflows/${id}/runs`)}>
+				<h2 id="debug-workbench-title" className="workbench-title">调试工作台</h2>
+				{overview.replayAvailable
+					? <DebugWorkbench overview={overview} events={events} selectedSequence={selectedSequence} selectedNodeID={selectedNodeID} onSelectSequence={setSelectedSequence} onSelectNode={setSelectedNodeID} onStartRerun={startRerun} rerunPreview={rerunPreview} rerunEvents={rerunEvents} rerunRunning={rerunRunning} rerunError={rerunError} debugRunPath={newRunID ? `/workflows/${id}/runs/${newRunID}/debug` : undefined} onSubmitRerun={submitRerun} onCancelRerun={() => rerunController.current?.abort()} onCloseRerun={closeRerun} />
+					: <div className="debug-workbench debug-unavailable"><h2>运行摘要</h2><p role="status">{overview.unavailableReason || '当前运行无法精确回放'}</p><p>仍可查看画布和节点最终摘要，但不能执行局部重跑。</p></div>}
+			</WorkbenchPanel>
 		</main>
 	)
 }
