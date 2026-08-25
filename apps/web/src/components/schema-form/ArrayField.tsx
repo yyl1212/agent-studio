@@ -1,4 +1,4 @@
-import type { JSONSchema } from './types'
+import { pointerChild, type JSONSchema } from './types'
 import { Field } from './Field'
 
 interface ArrayFieldProps {
@@ -10,14 +10,18 @@ interface ArrayFieldProps {
   onChange: (value: unknown[]) => void
   onBlur?: (path: string) => void
   errors: Record<string, string>
+  isPathEditable?: (pointer: string) => boolean
+  requiredPaths?: ReadonlySet<string>
+  lockArrayShape?: boolean
+  autoFocusPath?: string
 }
 
-export function ArrayField({ id, label, description, schema, value, onChange, onBlur, errors }: ArrayFieldProps) {
+export function ArrayField({ id, label, description, schema, value, onChange, onBlur, errors, isPathEditable, requiredPaths, lockArrayShape, autoFocusPath }: ArrayFieldProps) {
   const itemSchema = schema.items ?? { type: 'string' }
   const atMinimum = schema.minItems !== undefined && value.length <= schema.minItems
   const atMaximum = schema.maxItems !== undefined && value.length >= schema.maxItems
-  const error = errors[`/${id}`]
-  const fieldID = `field-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+  const error = errors[id]
+  const fieldID = `field-${id.slice(1).replace(/[^a-zA-Z0-9_-]/g, '-')}`
   const errorID = error ? `${fieldID}-error` : undefined
   const descriptionID = description ? `${fieldID}-description` : undefined
   return (
@@ -27,7 +31,7 @@ export function ArrayField({ id, label, description, schema, value, onChange, on
       {value.map((item, index) => (
         <div className="schema-array-row" key={`${id}-${index}`}>
           <Field
-            path={`${id}/${index}`}
+            path={pointerChild(id, String(index))}
             name={`${label} ${index + 1}`}
             schema={itemSchema}
             value={item}
@@ -39,12 +43,16 @@ export function ArrayField({ id, label, description, schema, value, onChange, on
               onChange(next)
             }}
             onBlur={onBlur}
+            isPathEditable={isPathEditable}
+            requiredPaths={requiredPaths}
+            lockArrayShape={lockArrayShape}
+            autoFocusPath={autoFocusPath}
           />
-          <button type="button" aria-label={`移除${label} ${index + 1}`} disabled={atMinimum} onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>移除</button>
+          <button type="button" aria-label={`移除${label} ${index + 1}`} disabled={lockArrayShape || atMinimum} onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>移除</button>
         </div>
       ))}
       {error && <span className="field-error" id={errorID}>{error}</span>}
-      <button type="button" disabled={atMaximum} onClick={() => onChange([...value, defaultItem(itemSchema)])}>添加一项</button>
+      <button type="button" disabled={lockArrayShape || atMaximum} onClick={() => onChange([...value, defaultItem(itemSchema)])}>添加一项</button>
     </fieldset>
   )
 }

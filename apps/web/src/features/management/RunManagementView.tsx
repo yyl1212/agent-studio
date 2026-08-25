@@ -22,6 +22,7 @@ export function RunManagementView() {
   const returnFocus = useRef<HTMLButtonElement | null>(null)
   const previousFilter = useRef('')
 	const selectedFilter = useRef('')
+	const pendingSelection = useRef('')
 	const filterKey = writeRunSearch({ ...parsed.query, cursor: undefined }).toString()
 
   useEffect(() => {
@@ -44,6 +45,14 @@ export function RunManagementView() {
 		previousFilter.current = filterKey
 	}, [filterKey])
 	useEffect(() => {
+		if (page && pendingSelection.current) {
+			const created = page.items.find((item) => item.id === pendingSelection.current)
+			if (created) {
+				pendingSelection.current = ''
+				selectedFilter.current = filterKey
+				setSelected(created)
+			}
+		}
 		if (!selected || !page || selectedFilter.current !== filterKey) return
 		const refreshed = page.items.find((item) => item.id === selected.id)
 		if (refreshed && refreshed !== selected) setSelected(refreshed)
@@ -84,7 +93,12 @@ export function RunManagementView() {
     {page && page.items.length > 0 && <><div className="management-table-scroll" tabIndex={0} aria-label="运行列表，可横向滚动"><table className="management-table"><thead><tr><th>工作流</th><th>模式</th><th>状态</th><th>开始时间</th><th>耗时</th><th>操作</th></tr></thead><tbody>{page.items.map((summary) => <tr key={summary.id}>
       <td>{summary.workflowName}<small>{summary.workflowSlug}</small></td><td>{modeLabel(summary.mode)}</td><td><StatusBadge tone={statusTone(summary.status)}>{statusLabel(summary.status)}</StatusBadge></td><td>{formatDate(summary.startedAt)}</td><td>{duration(summary)}</td><td><button type="button" aria-label={`查看运行 ${summary.id}`} onClick={(event) => selectRun(summary, event)}>查看</button></td>
     </tr>)}</tbody></table></div>{page.nextCursor && <button type="button" disabled={loading} onClick={() => setSearchParams(writeRunSearch({ ...parsed.query, cursor: page.nextCursor ?? undefined }))}>下一页</button>}</>}
-    {selected && <RunDetailPanel summary={selected} onRequestClose={closeDetail} />}
+    {selected && <RunDetailPanel summary={selected} onRequestClose={closeDetail} onRunChanged={(changed) => { setSelected(changed); reload() }} onRetryCreated={(runID) => {
+		pendingSelection.current = runID
+		selectedFilter.current = ''
+		setSelected(undefined)
+		setSearchParams(writeRunSearch({ ...parsed.query, runId: runID, cursor: undefined }))
+	}} />}
   </section>
 }
 
