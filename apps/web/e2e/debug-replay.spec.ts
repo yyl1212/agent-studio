@@ -62,7 +62,7 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	await expect(page).not.toHaveURL(originalURL)
 
 	await expect(page.getByRole('link', { name: `来源运行 ${originalRunID}` })).toHaveAttribute('href', `/workflows/${workflowID}/runs/${originalRunID}/debug`)
-	await page.getByRole('button', { name: '关闭局部重跑' }).click()
+	await expect(page.getByRole('region', { name: '运行时间线' })).toBeVisible({ timeout: 5_000 })
 	await page.getByRole('button', { name: new RegExp(`node.completed ${escapeRegExp(joinID)}$`) }).click()
 	await expect(page.getByRole('region', { name: `节点详情 ${joinID}` })).toContainText('L-B+R-A')
 	await expect(page.getByRole('button', { name: new RegExp(`node.started ${escapeRegExp(rightID)}$`) })).toHaveCount(0)

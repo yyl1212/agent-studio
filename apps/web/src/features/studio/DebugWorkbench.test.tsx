@@ -42,4 +42,17 @@ describe('DebugWorkbench', () => {
 		await userEvent.click(screen.getByRole('button', { name: '从此节点重新运行' }))
 		expect(onStartRerun).toHaveBeenCalledWith('node-1')
 	})
+
+	it('节点详情显示类型版本、状态和起止时间', () => {
+		const detailed = {
+			...overview,
+			graph: { schemaVersion: 1, nodes: [{ id: 'node-1', type: 'template', typeVersion: '1', position: { x: 0, y: 0 }, config: {} }], edges: [] },
+			nodeRuns: [{ id: 'nr1', runId: 'r1', nodeId: 'node-1', nodeType: 'template', status: 'completed', startedAt: '2026-08-25T00:00:00Z', endedAt: '2026-08-25T00:00:01Z' }],
+		} satisfies DebugOverview
+		render(<DebugWorkbench overview={detailed} events={events} selectedNodeID="node-1" onSelectSequence={vi.fn()} onSelectNode={vi.fn()} />)
+		expect(screen.getByText('template@1')).toBeInTheDocument()
+		expect(screen.getByText('状态：已完成')).toBeInTheDocument()
+		expect(screen.getByText('开始：2026-08-25T00:00:00Z')).toBeInTheDocument()
+		expect(screen.getByText('结束：2026-08-25T00:00:01Z')).toBeInTheDocument()
+	})
 })

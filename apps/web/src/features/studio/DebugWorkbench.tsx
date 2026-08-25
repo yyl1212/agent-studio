@@ -31,6 +31,8 @@ export function DebugWorkbench(props: DebugWorkbenchProps) {
 		)
 	}
 	const currentEvent = props.events.find((event) => event.sequence === props.selectedSequence)
+	const selectedNode = props.overview.graph.nodes.find((node) => node.id === props.selectedNodeID)
+	const selectedNodeRun = props.overview.nodeRuns.find((nodeRun) => nodeRun.nodeId === props.selectedNodeID)
 	const selectEvent = (event: RunEvent) => {
 		props.onSelectSequence(event.sequence)
 		if (event.nodeId) props.onSelectNode(event.nodeId)
@@ -43,7 +45,7 @@ export function DebugWorkbench(props: DebugWorkbenchProps) {
 			<RunTimeline events={props.events} selectedSequence={props.selectedSequence} onSelect={selectEvent} />
 			<div className="debug-detail-stack">
 				{props.rerunError && <p className="form-error" role="alert">{props.rerunError}</p>}
-				<NodeRunDetail nodeID={props.selectedNodeID} events={props.events} onRerun={props.overview.rerunAvailable ? props.onStartRerun : undefined} />
+				<NodeRunDetail nodeID={props.selectedNodeID} node={selectedNode} nodeRun={selectedNodeRun} events={props.events} onRerun={props.overview.rerunAvailable ? props.onStartRerun : undefined} />
 			</div>
 		</aside>
 	)

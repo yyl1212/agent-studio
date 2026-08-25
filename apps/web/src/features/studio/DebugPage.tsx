@@ -31,6 +31,20 @@ export function DebugPage() {
 	useEffect(() => () => rerunController.current?.abort(), [])
 
 	useEffect(() => {
+		rerunController.current?.abort()
+		rerunController.current = undefined
+		setOverview(undefined)
+		setNodes([])
+		setEdges([])
+		setEvents([])
+		setSelectedSequence(undefined)
+		setSelectedNodeID(undefined)
+		setError('')
+		setRerunPreview(undefined)
+		setRerunEvents([])
+		setRerunRunning(false)
+		setRerunError('')
+		setNewRunID(undefined)
 		const controller = new AbortController()
 		const load = async () => {
 			try {
@@ -89,7 +103,7 @@ export function DebugPage() {
 			setRerunEvents([])
 			setNewRunID(undefined)
 		} catch (failure) {
-			if (!(failure instanceof DOMException && failure.name === 'AbortError')) setRerunError(debugMessage(failure))
+			if (rerunController.current === controller && !(failure instanceof DOMException && failure.name === 'AbortError')) setRerunError(debugMessage(failure))
 		}
 	}
 	const submitRerun = async (entryInput: Record<string, unknown>, confirmed: boolean) => {
@@ -102,6 +116,7 @@ export function DebugPage() {
 		setRerunEvents([])
 		setNewRunID(undefined)
 		let currentRunID = ''
+		let completedRunID = ''
 		try {
 			const response = await api.rerunFromNode(runId, rerunPreview.sourceNodeId, {
 				entryInput,
@@ -113,17 +128,25 @@ export function DebugPage() {
 					setNewRunID(currentRunID)
 				}
 				setRerunEvents((current) => [...current, event])
-				if (event.type === 'run.completed' && currentRunID) navigate(`/workflows/${id}/runs/${currentRunID}/debug`)
+				if (event.type === 'run.completed' && currentRunID) completedRunID = currentRunID
 			}, controller.signal)
+			if (completedRunID) navigate(`/workflows/${id}/runs/${completedRunID}/debug`)
 		} catch (failure) {
-			if (failure instanceof DOMException && failure.name === 'AbortError') setRerunError('运行已取消')
-			else setRerunError(debugMessage(failure))
+			if (rerunController.current === controller) {
+				if (failure instanceof DOMException && failure.name === 'AbortError') setRerunError('运行已取消')
+				else setRerunError(debugMessage(failure))
+			}
 		} finally {
-			setRerunRunning(false)
+			if (rerunController.current === controller) {
+				rerunController.current = undefined
+				setRerunRunning(false)
+			}
 		}
 	}
 	const closeRerun = () => {
-		rerunController.current?.abort()
+		const controller = rerunController.current
+		rerunController.current = undefined
+		controller?.abort()
 		setRerunPreview(undefined)
 		setRerunEvents([])
 		setRerunError('')
