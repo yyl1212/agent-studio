@@ -2,7 +2,7 @@ import fs from 'node:fs'
 
 import { expect, test } from '@playwright/test'
 
-import { configureStartTextField, connectPorts, createWorkflow } from './helpers'
+import { applyNodeConfig, configureStartTextField, connectPorts, createWorkflow, openOptionalConfig } from './helpers'
 
 test('导出草稿模板并导入为未发布新工作流', async ({ page }) => {
   const suffix = Date.now().toString(36)
@@ -10,8 +10,10 @@ test('导出草稿模板并导入为未发布新工作流', async ({ page }) => 
   await configureStartTextField(page, 'topic', '主题')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^Echo/ }).click()
+  await openOptionalConfig(page)
   await page.getByLabel('前缀').fill('回答：')
-  await page.getByRole('button', { name: '关闭节点配置' }).click()
+  await applyNodeConfig(page)
+  await page.getByRole('button', { name: '关闭工作台' }).click()
   await connectPorts(page, [
     ['start', 'topic', 'extension.echo', 'text'],
     ['extension.echo', 'text', 'end', 'result'],
@@ -113,6 +115,7 @@ test('LLM v2 结构化配置导出并按精确版本导入', async ({ page }) =>
   await configureStartTextField(page, 'topic', '主题')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^LLM · 结构化输出/ }).click()
+  await openOptionalConfig(page)
   await page.getByLabel('输出模式').selectOption('structured')
   await page.getByRole('button', { name: '添加一项' }).click()
   await page.getByRole('button', { name: '添加一项' }).click()
@@ -122,7 +125,8 @@ test('LLM v2 结构化配置导出并按精确版本导入', async ({ page }) =>
   await page.getByLabel('字段 Key').nth(1).fill('score')
   await page.getByLabel('字段名称').nth(1).fill('分数')
   await page.getByLabel('字段类型').nth(1).selectOption('integer')
-  await page.getByRole('button', { name: '关闭节点配置' }).click()
+  await applyNodeConfig(page)
+  await page.getByRole('button', { name: '关闭工作台' }).click()
   await connectPorts(page, [
     ['start', 'topic', 'llm', 'prompt'],
     ['llm', 'json', 'end', 'result'],
@@ -157,6 +161,7 @@ test('LLM v2 结构化配置导出并按精确版本导入', async ({ page }) =>
   await page.getByRole('button', { name: '导入并打开' }).click()
   await expect(page.getByText(`结构化模板副本 ${suffix}`)).toBeVisible()
   await page.getByTestId('node-llm').click()
+  await openOptionalConfig(page)
   await expect(page.getByLabel('输出模式')).toHaveValue('structured')
   await expect(page.getByLabel('字段 Key').nth(0)).toHaveValue('answer')
   await expect(page.getByLabel('字段名称').nth(0)).toHaveValue('回答')

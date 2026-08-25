@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { configureStartTextField, connectIndexedPorts, createWorkflow, moveIndexedNode } from './helpers'
+import { applyNodeConfig, configureStartTextField, connectIndexedPorts, createWorkflow, moveIndexedNode } from './helpers'
 
 test('fork/join 完整运行、回放与冻结外部分支局部重跑', async ({ page }) => {
 	const suffix = Date.now().toString(36)
@@ -10,8 +10,9 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	for (const template of ['L-{{topic}}', 'R-{{topic}}', '{{left}}+{{right}}']) {
 		await page.getByRole('button', { name: '添加节点' }).click()
 		await page.getByRole('button', { name: '提示词模板' }).click()
-		await page.getByLabel('模板').fill(template)
-		await page.getByRole('button', { name: '关闭节点配置' }).click()
+		await page.getByLabel('模板', { exact: true }).fill(template)
+		await applyNodeConfig(page)
+		await page.getByRole('button', { name: '关闭工作台' }).click()
 	}
 
 	const templates = page.getByTestId('node-template')
@@ -34,10 +35,10 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	])
 
 	await page.getByRole('button', { name: '测试运行' }).click()
-	await page.getByLabel('主题').fill('A')
+	await page.getByLabel('主题', { exact: true }).fill('A')
 	await page.getByRole('button', { name: '运行', exact: true }).click()
 	await expect(page.locator('.run-output')).toContainText('L-A+R-A')
-	await page.getByRole('button', { name: '关闭测试运行' }).click()
+	await page.getByRole('button', { name: '关闭工作台' }).click()
 	await page.getByRole('link', { name: '运行记录' }).click()
 	await page.getByRole('link', { name: '调试回放' }).first().click()
 	await expect(page.getByText('只读回放')).toBeVisible()

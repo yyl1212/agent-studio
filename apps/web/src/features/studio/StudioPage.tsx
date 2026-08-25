@@ -120,7 +120,7 @@ export function StudioPage() {
     const addedCount = nodes.filter((existing) => existing.data.nodeType !== 'start' && existing.data.nodeType !== 'end').length
     const node: StudioNode = {
       id: createID(definition.type), type: 'studio',
-      position: { x: 320, y: 180 + addedCount * 220 },
+      position: { x: 320, y: 260 + addedCount * 220 },
       data: {
         nodeType: definition.type,
         typeVersion: definition.version,
