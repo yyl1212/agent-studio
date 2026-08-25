@@ -26,6 +26,30 @@ describe('API client', () => {
     await expect(api.runAgent('demo', { workflowVersionId: 'v1', input: {} })).resolves.toBe(response)
   })
 
+	it('调试接口编码路径、使用独占游标并透传 AbortSignal', async () => {
+		const controller = new AbortController()
+		const stream = new Response('{"type":"run.started"}\n', { status: 200 })
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(jsonResponse({ run: {}, graph: {}, nodeRuns: [], sourceChain: [], replayAvailable: true, rerunAvailable: true }))
+			.mockResolvedValueOnce(jsonResponse({ events: [], nextAfterSequence: 7 }))
+			.mockResolvedValueOnce(jsonResponse({ sourceRunId: 'run/1', sourceNodeId: 'node/1', entryInput: {}, entryInputRedactedPaths: [], activeNodes: [], frozenEdges: [], effectiveSafety: 'pure', requiresConfirmation: false }))
+			.mockResolvedValueOnce(stream)
+		vi.stubGlobal('fetch', fetchMock)
+
+		await api.getDebugOverview('run/1', controller.signal)
+		await api.listRunEvents('run/1', 7, controller.signal)
+		await api.previewRerun('run/1', 'node/1', controller.signal)
+		await expect(api.rerunFromNode('run/1', 'node/1', { entryInput: { in: ['edited'] }, confirmSideEffects: true }, controller.signal)).resolves.toBe(stream)
+
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/runs/run%2F1/debug', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/runs/run%2F1/events?afterSequence=7', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/runs/run%2F1/nodes/node%2F1/rerun-preview', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/runs/run%2F1/nodes/node%2F1/reruns', expect.objectContaining({
+			method: 'POST', signal: controller.signal,
+			body: JSON.stringify({ entryInput: { in: ['edited'] }, confirmSideEffects: true }),
+		}))
+	})
+
 	it('编码节点包筛选和包含斜杠的模块名', async () => {
 		const fetchMock = vi.fn()
 			.mockResolvedValueOnce(jsonResponse({ release: 'v0.3.0', total: 0, offset: 40, limit: 20, items: [] }))

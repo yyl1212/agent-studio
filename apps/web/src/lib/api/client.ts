@@ -8,6 +8,10 @@ export type WorkflowVersion = components['schemas']['WorkflowVersion']
 export type AgentManifest = components['schemas']['AgentManifest']
 export type Run = components['schemas']['Run']
 export type NodeRun = components['schemas']['NodeRun']
+export type DebugOverview = components['schemas']['DebugOverview']
+export type RunEventPage = components['schemas']['RunEventPage']
+export type RerunPreview = components['schemas']['RerunPreview']
+export type RerunRequest = components['schemas']['RerunRequest']
 export type ErrorResponse = components['schemas']['ErrorResponse']
 export type ValidationIssue = components['schemas']['ValidationIssue']
 export type CreateWorkflowRequest = components['schemas']['CreateWorkflowRequest']
@@ -137,6 +141,16 @@ export const api = {
     request<Run[]>(`/api/workflows/${encodeURIComponent(id)}/runs?limit=${limit}`, { signal }),
   getRun: (id: string, signal?: AbortSignal) =>
     request<{ run: Run; nodeRuns: NodeRun[] }>(`/api/runs/${encodeURIComponent(id)}`, { signal }),
+  getDebugOverview: (id: string, signal?: AbortSignal) =>
+    request<DebugOverview>(`/api/runs/${encodeURIComponent(id)}/debug`, { signal }),
+  listRunEvents: (id: string, afterSequence = 0, signal?: AbortSignal) =>
+    request<RunEventPage>(`/api/runs/${encodeURIComponent(id)}/events?afterSequence=${afterSequence}`, { signal }),
+  previewRerun: (runID: string, nodeID: string, signal?: AbortSignal) =>
+    request<RerunPreview>(`/api/runs/${encodeURIComponent(runID)}/nodes/${encodeURIComponent(nodeID)}/rerun-preview`, { signal }),
+  rerunFromNode: (runID: string, nodeID: string, body: RerunRequest, signal?: AbortSignal) =>
+    streamRequest(`/api/runs/${encodeURIComponent(runID)}/nodes/${encodeURIComponent(nodeID)}/reruns`, {
+      method: 'POST', body: jsonBody(body), signal,
+    }),
   getAgentManifest: (slug: string, signal?: AbortSignal) =>
     request<AgentManifest>(`/api/agents/${encodeURIComponent(slug)}`, { signal }),
   runAgent: (slug: string, body: AgentRunRequest, signal?: AbortSignal) =>

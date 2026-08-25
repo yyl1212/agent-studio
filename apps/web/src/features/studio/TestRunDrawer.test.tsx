@@ -11,8 +11,8 @@ describe('TestRunDrawer', () => {
       <TestRunDrawer
         schema={{ type: 'object', properties: {} }}
         events={[
-          { sequence: 1, type: 'node.started', runId: 'r1', nodeId: 'llm', timestamp: '2026-08-17T00:00:00Z' },
-          { sequence: 2, type: 'run.completed', runId: 'r1', output: '<script>安全文本</script>', timestamp: '2026-08-17T00:00:01Z' },
+          { sequence: 1, type: 'node.started', runId: 'r1', nodeId: 'llm', activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [], timestamp: '2026-08-17T00:00:00Z' },
+          { sequence: 2, type: 'run.completed', runId: 'r1', output: '<script>安全文本</script>', activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [], timestamp: '2026-08-17T00:00:01Z' },
         ]}
         running
         error=""
@@ -38,6 +38,9 @@ describe('TestRunDrawer', () => {
           nodeId: 'extension.webhook-1',
           status: 'failed',
           error: { code: 'NODE_EXECUTION_FAILED', kind: 'input', message: '节点输入无效', nodeId: 'extension.webhook-1' },
+          activePorts: [],
+          inputRedactedPaths: [],
+          outputRedactedPaths: [],
           timestamp: '2026-08-19T00:00:00Z',
         }]}
         running={false}

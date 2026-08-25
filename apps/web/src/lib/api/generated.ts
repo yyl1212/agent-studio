@@ -324,6 +324,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/debug": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getRunDebug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listRunEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/nodes/{nodeId}/rerun-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["previewNodeRerun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/nodes/{nodeId}/reruns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rerunFromNode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -382,6 +446,8 @@ export interface components {
             inputs: components["schemas"]["PortDefinition"][];
             outputs: components["schemas"]["PortDefinition"][];
             capabilities: ("network" | "secrets" | "filesystem-read" | "filesystem-write")[];
+            /** @enum {string} */
+            executionSafety: "pure" | "read_only" | "side_effect";
             package: components["schemas"]["NodePackageSummary"];
         };
         /** @enum {string} */
@@ -611,6 +677,9 @@ export interface components {
             /** Format: int64 */
             draftRevision: number;
             /** Format: uuid */
+            sourceRunId?: string | null;
+            sourceNodeId?: string | null;
+            /** Format: uuid */
             publishedVersionId?: string | null;
             publishedVersion?: number | null;
             /** Format: date-time */
@@ -652,7 +721,7 @@ export interface components {
             draftRevision?: number | null;
             graphSnapshot?: components["schemas"]["Graph"] | null;
             /** @enum {string} */
-            mode: "test" | "published";
+            mode: "test" | "published" | "debug";
             /** @enum {string} */
             status: "running" | "completed" | "failed" | "cancelled";
             input: unknown;
@@ -690,9 +759,72 @@ export interface components {
             status?: string;
             input?: unknown;
             output?: unknown;
+            activePorts: string[];
+            inputRedactedPaths: string[];
+            outputRedactedPaths: string[];
             error?: components["schemas"]["PublicError"] | null;
             /** Format: date-time */
             timestamp: string;
+        };
+        DebugSource: {
+            /** Format: uuid */
+            runId: string;
+            sourceNodeId?: string;
+            /** @enum {string} */
+            mode: "test" | "published" | "debug";
+            /** @enum {string} */
+            status: "running" | "completed" | "failed" | "cancelled";
+        };
+        DebugOverview: {
+            run: components["schemas"]["Run"];
+            graph: components["schemas"]["Graph"];
+            nodeRuns: components["schemas"]["NodeRun"][];
+            sourceChain: components["schemas"]["DebugSource"][];
+            replayAvailable: boolean;
+            rerunAvailable: boolean;
+            unavailableReason?: string;
+        };
+        RunEventPage: {
+            events: components["schemas"]["RunEvent"][];
+            /** Format: int64 */
+            nextAfterSequence: number;
+        };
+        /** @enum {string} */
+        ExecutionSafety: "pure" | "read_only" | "side_effect";
+        RerunNode: {
+            id: string;
+            type: string;
+            version: string;
+            title: string;
+            safety: components["schemas"]["ExecutionSafety"];
+        };
+        FrozenEdgePreview: {
+            edgeId: string;
+            source: string;
+            sourcePort: string;
+            target: string;
+            targetPort: string;
+            active: boolean;
+            value?: unknown;
+        };
+        RerunPreview: {
+            /** Format: uuid */
+            sourceRunId: string;
+            sourceNodeId: string;
+            entryInput: {
+                [key: string]: unknown;
+            };
+            entryInputRedactedPaths: string[];
+            activeNodes: components["schemas"]["RerunNode"][];
+            frozenEdges: components["schemas"]["FrozenEdgePreview"][];
+            effectiveSafety: components["schemas"]["ExecutionSafety"];
+            requiresConfirmation: boolean;
+        };
+        RerunRequest: {
+            entryInput: {
+                [key: string]: unknown;
+            };
+            confirmSideEffects: boolean;
         };
         PublicError: {
             code: string;
@@ -1293,6 +1425,117 @@ export interface operations {
                 };
             };
             404: components["responses"]["Error"];
+        };
+    };
+    getRunDebug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 运行回放概览 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DebugOverview"];
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    listRunEvents: {
+        parameters: {
+            query?: {
+                afterSequence?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 运行事件页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunEventPage"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    previewNodeRerun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 局部重跑预览 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RerunPreview"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    rerunFromNode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RerunRequest"];
+            };
+        };
+        responses: {
+            /** @description 每行一个新 Debug RunEvent 的 NDJSON 流 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
 }
