@@ -32,4 +32,15 @@ describe('useStudioWorkbench', () => {
     expect(intent).toEqual({ kind: 'publish' })
     expect(result.current.mode).toEqual({ kind: 'config', nodeId: 'a' })
   })
+
+  it('应用草稿后取出并清除待执行意图', () => {
+    const { result } = renderHook(() => useStudioWorkbench())
+    act(() => result.current.request({ kind: 'config', nodeId: 'a' }, false))
+    act(() => result.current.request({ kind: 'test' }, true))
+    let intent
+    act(() => { intent = result.current.resolveDirty('apply') })
+    expect(intent).toEqual({ kind: 'test' })
+    expect(result.current.pendingIntent).toBeUndefined()
+    expect(result.current.mode).toEqual({ kind: 'config', nodeId: 'a' })
+  })
 })

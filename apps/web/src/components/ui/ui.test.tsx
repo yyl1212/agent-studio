@@ -31,4 +31,9 @@ describe('基础界面控件', () => {
     expect(onCancel).toHaveBeenCalledOnce()
     expect(trigger).toHaveFocus()
   })
+
+  it('条件未就绪时禁用主确认操作', () => {
+    render(<ConfirmDialog open title="未应用配置" description="端口仍在解析" confirmLabel="应用" discardLabel="放弃" cancelLabel="继续编辑" confirmDisabled onConfirm={vi.fn()} onDiscard={vi.fn()} onCancel={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '应用' })).toBeDisabled()
+  })
 })

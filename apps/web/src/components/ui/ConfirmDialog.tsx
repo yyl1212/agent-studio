@@ -9,6 +9,7 @@ export interface ConfirmDialogProps {
   confirmLabel: string
   discardLabel: string
   cancelLabel: string
+  confirmDisabled?: boolean
   onConfirm: () => void
   onDiscard: () => void
   onCancel: () => void
@@ -35,7 +36,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         <h3 id="confirm-dialog-title">{props.title}</h3>
         <p id="confirm-dialog-description">{props.description}</p>
         <div className="dialog-actions">
-          <Button ref={confirmRef} variant="primary" onClick={props.onConfirm}>{props.confirmLabel}</Button>
+          <Button ref={confirmRef} variant="primary" disabled={props.confirmDisabled} onClick={props.onConfirm}>{props.confirmLabel}</Button>
           <Button variant="danger" onClick={props.onDiscard}>{props.discardLabel}</Button>
           <Button variant="ghost" onClick={props.onCancel}>{props.cancelLabel}</Button>
         </div>

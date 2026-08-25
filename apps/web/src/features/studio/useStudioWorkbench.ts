@@ -16,6 +16,7 @@ export function useStudioWorkbench(): StudioWorkbench {
     const intent = pendingIntent
     if (choice === 'cancel') { setPendingIntent(undefined); return undefined }
     if (choice === 'discard' && intent) { setMode((current) => modeForIntent(intent, current)); setPendingIntent(undefined) }
+    if (choice === 'apply') setPendingIntent(undefined)
     return intent
   }, [pendingIntent])
   return { mode, pendingIntent, request, resolveDirty }

@@ -6,19 +6,24 @@ import {
   type EdgeChange,
   type NodeChange,
 } from '@xyflow/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import type { JSONSchema } from '../../components/schema-form/types'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { APIError, api, type NodeDefinition, type Workflow } from '../../lib/api/client'
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
-import { ConfigDrawer } from './ConfigDrawer'
-import { fromFlowGraph, normalizePorts, portsFromDefinition, toFlowGraph } from './graphAdapter'
+import { applyNodeConfig } from './configDraft'
+import { fromFlowGraph, portsFromDefinition, toFlowGraph } from './graphAdapter'
+import { NodeConfigPanel } from './NodeConfigPanel'
 import { NodeLibraryDrawer } from './NodeLibraryDrawer'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
-import { TestRunDrawer } from './TestRunDrawer'
+import { TestRunPanel } from './TestRunPanel'
 import type { StudioEdge, StudioNode } from './types'
+import { useNodeConfigDraft } from './useNodeConfigDraft'
+import { useStudioWorkbench, type WorkbenchIntent } from './useStudioWorkbench'
+import { WorkbenchPanel } from './WorkbenchPanel'
 import { WorkflowCanvas } from './WorkflowCanvas'
 import '@xyflow/react/dist/style.css'
 import './studio.css'
@@ -29,9 +34,7 @@ export function StudioPage() {
   const [definitions, setDefinitions] = useState<NodeDefinition[]>([])
   const [nodes, setNodes] = useState<StudioNode[]>([])
   const [edges, setEdges] = useState<StudioEdge[]>([])
-  const [selectedID, setSelectedID] = useState<string>()
   const [libraryOpen, setLibraryOpen] = useState(false)
-  const [testOpen, setTestOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [publishedVersion, setPublishedVersion] = useState<number>()
   const [publishError, setPublishError] = useState('')
@@ -46,6 +49,7 @@ export function StudioPage() {
   const saveQueue = useRef<SaveQueue | undefined>(undefined)
   const runController = useRef<AbortController | undefined>(undefined)
   const exportController = useRef<AbortController | undefined>(undefined)
+  const workbench = useStudioWorkbench()
 
   useEffect(() => () => exportController.current?.abort(), [])
 
@@ -82,25 +86,10 @@ export function StudioPage() {
     return () => controller.abort()
   }, [id])
 
+  const selectedID = workbench.mode.kind === 'config' ? workbench.mode.nodeId : undefined
   const selectedNode = nodes.find((node) => node.id === selectedID)
-  const resolveKey = JSON.stringify(nodes.map((node) => [node.id, node.data.nodeType, node.data.typeVersion, node.data.config]))
-  useEffect(() => {
-    if (nodes.length === 0) return
-    const controller = new AbortController()
-    const timer = setTimeout(() => {
-      Promise.all(nodes.map(async (node) => [node.id, await api.resolveNodeType(node.data.nodeType, node.data.typeVersion, node.data.config, controller.signal)] as const))
-        .then((resolved) => {
-          const portsByID = new Map(resolved)
-          setNodes((currentNodes) => {
-            const nextNodes = currentNodes.map((node) => portsByID.has(node.id) ? { ...node, data: { ...node.data, ports: normalizePorts(portsByID.get(node.id)!) } } : node)
-            setEdges((currentEdges) => markInvalidEdges(nextNodes, currentEdges))
-            return nextNodes
-          })
-        })
-        .catch(() => undefined)
-    }, 250)
-    return () => { clearTimeout(timer); controller.abort() }
-  }, [resolveKey])
+  const resolveNodePorts = useCallback((type: string, version: string, config: Record<string, unknown>, signal: AbortSignal) => api.resolveNodeType(type, version, config, signal), [])
+  const configDraft = useNodeConfigDraft({ node: selectedNode, edges, resolve: resolveNodePorts })
 
   const commit = (nextNodes: StudioNode[], nextEdges: StudioEdge[]) => saveQueue.current?.enqueue(fromFlowGraph(nextNodes, nextEdges))
   const handleNodesChange = (changes: NodeChange<StudioNode>[]) => {
@@ -143,17 +132,18 @@ export function StudioPage() {
     }
     const next = [...nodes, node]
     setNodes(next)
-    setSelectedID(node.id)
     setLibraryOpen(false)
+    workbench.request({ kind: 'config', nodeId: node.id }, false)
     commit(next, edges)
   }
 
-  const updateSelectedConfig = (config: Record<string, unknown>) => {
-    setNodes((current) => {
-      const next = current.map((node) => node.id === selectedID ? { ...node, data: { ...node.data, config } } : node)
-      commit(next, edges)
-      return next
-    })
+  const applySelectedConfig = (config: Record<string, unknown>, ports: Parameters<typeof applyNodeConfig>[4]) => {
+    if (!selectedID) return
+    const applied = applyNodeConfig(nodes, edges, selectedID, config, ports)
+    setNodes(applied.nodes)
+    setEdges(applied.edges)
+    commit(applied.nodes, applied.edges)
+    configDraft.markApplied(config, ports)
   }
 
   const startSchema = useMemo(() => deriveStartSchema(nodes), [nodes])
@@ -185,7 +175,11 @@ export function StudioPage() {
       const validation = await api.validateWorkflow(workflow.id)
       if (!validation.valid) {
         setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, issues: validation.issues.filter((issue) => issue.nodeId === node.id) } })))
-        setSelectedID(validation.issues.find((issue) => issue.nodeId)?.nodeId)
+        const issueNodeID = validation.issues.find((issue) => issue.nodeId)?.nodeId
+        if (issueNodeID && nodes.some((node) => node.id === issueNodeID)) {
+          workbench.request({ kind: 'config', nodeId: issueNodeID }, false)
+          setPublishOpen(false)
+        }
         setPublishError(validation.issues[0]?.message ?? '工作流校验失败')
         return
       }
@@ -232,6 +226,43 @@ export function StudioPage() {
     }
   }
 
+  const executeIntent = (intent: WorkbenchIntent) => {
+    if (intent.kind === 'open-library') {
+      workbench.request({ kind: 'close' }, false)
+      setLibraryOpen(true)
+      return
+    }
+    if (intent.kind === 'publish') {
+      setPublishOpen(true)
+      setPublishedVersion(undefined)
+      setPublishError('')
+      return
+    }
+    if (intent.kind === 'export') {
+      void exportTemplate()
+      return
+    }
+    setLibraryOpen(false)
+    workbench.request(intent, false)
+  }
+
+  const requestIntent = (intent: WorkbenchIntent) => {
+    if (intent.kind === 'config' && workbench.mode.kind === 'config' && intent.nodeId === workbench.mode.nodeId) return
+    if (configDraft.dirty && workbench.mode.kind === 'config') workbench.request(intent, true)
+    else executeIntent(intent)
+  }
+
+  const continuePendingIntent = (choice: 'apply' | 'discard') => {
+    if (choice === 'apply') {
+      if (!configDraft.normalized || !configDraft.preview || configDraft.status !== 'ready') return
+      applySelectedConfig(configDraft.normalized, configDraft.preview.ports)
+    } else {
+      configDraft.reset()
+    }
+    const intent = workbench.resolveDirty(choice)
+    if (intent) executeIntent(intent)
+  }
+
   if (loadError) return <main className="page-container"><p role="alert">{loadError}</p></main>
   if (!workflow) return <main className="page-container" aria-live="polite">正在加载编辑器…</main>
 
@@ -241,17 +272,31 @@ export function StudioPage() {
         <div className="studio-title"><Link to="/workflows" aria-label="返回工作流列表">←</Link><div><strong>{workflow.name}</strong><small>{saveLabel(saveState)}</small></div></div>
         <div className="studio-actions">
           <Link to={`/workflows/${workflow.id}/runs`}>运行记录</Link>
-          <button type="button" onClick={() => setLibraryOpen(true)}>添加节点</button>
-          <button type="button" onClick={() => setTestOpen(true)}>测试运行</button>
-          <button type="button" onClick={exportTemplate} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
-          <button className="primary-button" type="button" onClick={() => { setPublishOpen(true); setPublishedVersion(undefined); setPublishError('') }}>发布</button>
+          <button type="button" onClick={() => requestIntent({ kind: 'open-library' })}>添加节点</button>
+          <button type="button" onClick={() => requestIntent({ kind: 'test' })}>测试运行</button>
+          <button type="button" onClick={() => requestIntent({ kind: 'export' })} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
+          <button className="primary-button" type="button" onClick={() => requestIntent({ kind: 'publish' })}>发布</button>
           {exportError && <span className="studio-toolbar-error" role="alert">{exportError}</span>}
         </div>
       </header>
-      <WorkflowCanvas nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => setSelectedID(node.id)} />
+      <WorkflowCanvas nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => requestIntent({ kind: 'config', nodeId: node.id })} />
       {libraryOpen && <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} />}
-      {selectedNode && <ConfigDrawer node={selectedNode} onChange={updateSelectedConfig} onClose={() => setSelectedID(undefined)} />}
-      {testOpen && <TestRunDrawer schema={startSchema} events={events} running={running} error={runError} onRun={runDraft} onCancel={() => runController.current?.abort()} onClose={() => setTestOpen(false)} />}
+      {workbench.mode.kind !== 'closed' && <WorkbenchPanel titleId="studio-workbench-title" onRequestClose={() => requestIntent({ kind: 'close' })}>
+        {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={applySelectedConfig} />}
+        {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} error={runError} onRun={runDraft} onCancel={() => runController.current?.abort()} /></>}
+      </WorkbenchPanel>}
+      <ConfirmDialog
+        open={Boolean(workbench.pendingIntent)}
+        title="保存节点配置更改？"
+        description="当前节点有尚未应用的配置。应用后继续，或放弃这些更改。"
+        confirmLabel="应用并继续"
+        discardLabel="放弃更改"
+        cancelLabel="取消"
+        confirmDisabled={configDraft.status !== 'ready' || !configDraft.normalized || !configDraft.preview}
+        onConfirm={() => continuePendingIntent('apply')}
+        onDiscard={() => continuePendingIntent('discard')}
+        onCancel={() => workbench.resolveDirty('cancel')}
+      />
       {publishOpen && <PublishDialog slug={workflow.slug} version={publishedVersion} error={publishError} publishing={publishing} onConfirm={publish} onClose={() => setPublishOpen(false)} />}
     </main>
   )

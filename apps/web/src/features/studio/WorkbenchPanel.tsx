@@ -25,7 +25,7 @@ export function WorkbenchPanel({ titleId, onRequestClose, children }: WorkbenchP
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop) }
   }, [updateWidth])
   const style = { '--as-workbench-width': `${width}px` } as CSSProperties
-  return <aside className="workbench-panel" aria-labelledby={titleId} style={style}>
+  return <aside className="workbench-panel" role="dialog" aria-labelledby={titleId} style={style}>
     <div className="workbench-resizer" role="separator" aria-label="调整工作台宽度" aria-orientation="vertical" aria-valuemin={minimumWidth} aria-valuemax={maximumWidth} aria-valuenow={width} tabIndex={0} onPointerDown={(event: ReactPointerEvent) => { drag.current = { startX: event.clientX, startWidth: width } }} onKeyDown={(event) => {
       if (event.key === 'ArrowLeft') { event.preventDefault(); updateWidth(width - 16) }
       if (event.key === 'ArrowRight') { event.preventDefault(); updateWidth(width + 16) }
