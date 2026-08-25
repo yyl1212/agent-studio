@@ -278,7 +278,7 @@ export function StudioPage() {
       <header className="studio-toolbar">
         <div className="studio-title"><Link to="/workflows" aria-label="返回工作流列表">←</Link><div><strong>{workflow.name}</strong><small>{saveLabel(saveState)}</small></div></div>
         <div className="studio-actions">
-          <Link to={`/workflows/${workflow.id}/runs`}>运行记录</Link>
+          <Link to={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}>运行记录</Link>
           <button type="button" onClick={() => requestIntent({ kind: 'open-library' })}>添加节点</button>
           <button type="button" onClick={() => requestIntent({ kind: 'test' })}>测试运行</button>
           <button type="button" onClick={() => requestIntent({ kind: 'export' })} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
