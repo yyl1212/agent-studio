@@ -146,6 +146,10 @@ button { cursor: pointer; }
 .status-badge[data-tone="danger"] { color: var(--as-danger); }
 .status-badge[data-tone="info"] { color: var(--as-info); }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.form-error-summary { width: 100%; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--as-danger) 28%, var(--as-border)); border-radius: var(--as-radius-sm); color: var(--as-danger); background: color-mix(in srgb, var(--as-danger) 7%, var(--as-surface)); text-align: left; font-weight: 700; }
+.schema-section > h3 { margin: 20px 0 4px; font-size: 13px; }
+.schema-optional { margin: 18px 0; border-block: 1px solid var(--as-border); }
+.schema-optional > summary { padding: 12px 0; color: var(--as-primary); font-weight: 700; cursor: pointer; }
 
 :where(a, button, input):focus-visible {
 	outline: 3px solid color-mix(in srgb, var(--as-focus) 35%, transparent);

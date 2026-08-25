@@ -7,10 +7,11 @@ interface ArrayFieldProps {
   schema: JSONSchema
   value: unknown[]
   onChange: (value: unknown[]) => void
+  onBlur?: (path: string) => void
   errors: Record<string, string>
 }
 
-export function ArrayField({ id, label, schema, value, onChange, errors }: ArrayFieldProps) {
+export function ArrayField({ id, label, schema, value, onChange, onBlur, errors }: ArrayFieldProps) {
   const itemSchema = schema.items ?? { type: 'string' }
   const atMinimum = schema.minItems !== undefined && value.length <= schema.minItems
   const atMaximum = schema.maxItems !== undefined && value.length >= schema.maxItems
@@ -34,6 +35,7 @@ export function ArrayField({ id, label, schema, value, onChange, errors }: Array
               next[index] = itemValue
               onChange(next)
             }}
+            onBlur={onBlur}
           />
           <button type="button" aria-label={`移除${label} ${index + 1}`} disabled={atMinimum} onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>移除</button>
         </div>

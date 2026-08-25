@@ -41,6 +41,47 @@ const documentsSchema = {
 }
 
 describe('SchemaForm', () => {
+  it('按 x-ui-order 分组必要与可选配置并从摘要定位首个错误', async () => {
+    render(<SchemaForm schema={{
+      type: 'object',
+      required: ['model'],
+      'x-ui-order': ['prompt', 'model', 'temperature'],
+      properties: {
+        prompt: { type: 'string', title: '提示词' },
+        model: { type: 'string', title: '模型', minLength: 1 },
+        temperature: { type: 'number', title: '温度' },
+      },
+    }} value={{ model: '', prompt: '' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用配置" groupOptional />)
+    expect(screen.getByRole('heading', { name: '必要配置' })).toBeInTheDocument()
+    expect(screen.getByText('可选配置')).toBeInTheDocument()
+    expect(screen.getByLabelText('提示词')).not.toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
+    const summary = screen.getByRole('button', { name: '1 项需要处理' })
+    expect(summary).toBeInTheDocument()
+    await userEvent.click(summary)
+    expect(screen.getByLabelText('模型')).toHaveFocus()
+  })
+
+  it('报告归一化后的完整验证结果且不修改输入对象', async () => {
+    const value = { topic: '有效主题', payload: { answer: 42 } }
+    const original = structuredClone(value)
+    const onValidationChange = vi.fn()
+    render(<SchemaForm schema={schema} value={value} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="运行" onValidationChange={onValidationChange} />)
+    await vi.waitFor(() => expect(onValidationChange).toHaveBeenCalled())
+    expect(onValidationChange).toHaveBeenLastCalledWith(expect.objectContaining({ valid: true, normalized: value, errors: {} }))
+    expect(value).toEqual(original)
+  })
+
+  it('失焦后只显示当前字段的校验错误', async () => {
+    render(<SchemaForm schema={{ type: 'object', required: ['model', 'prompt'], properties: {
+      model: { type: 'string', title: '模型', minLength: 1 }, prompt: { type: 'string', title: '提示词', minLength: 1 },
+    } }} value={{ model: '', prompt: '' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用" />)
+    await userEvent.click(screen.getByLabelText('模型'))
+    await userEvent.tab()
+    expect(screen.getByText('模型长度不能少于 1 个字符')).toBeInTheDocument()
+    expect(screen.queryByText('提示词长度不能少于 1 个字符')).not.toBeInTheDocument()
+  })
+
   it('支持服务端生成的 JSON Schema 2020-12', () => {
     render(<SchemaForm schema={{ ...schema, $schema: 'https://json-schema.org/draft/2020-12/schema' }} value={{}} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="运行" />)
     expect(screen.getByLabelText('主题')).toBeInTheDocument()

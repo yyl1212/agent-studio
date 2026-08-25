@@ -1,9 +1,18 @@
-import type { ErrorObject } from 'ajv'
+import type { ErrorObject, ValidateFunction } from 'ajv'
 import Ajv2020 from 'ajv/dist/2020.js'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 
 import { Field } from './Field'
 import type { FormValue, JSONSchema } from './types'
+
+const ajv = new Ajv2020({ allErrors: true, strict: false, useDefaults: true })
+const validators = new WeakMap<object, ValidateFunction>()
+
+export interface FormValidation {
+  normalized: FormValue
+  errors: Record<string, string>
+  valid: boolean
+}
 
 interface SchemaFormProps {
   schema: JSONSchema
@@ -12,60 +21,94 @@ interface SchemaFormProps {
   onSubmit: (value: FormValue) => void | Promise<void>
   submitLabel: string
   disabled?: boolean
+  groupOptional?: boolean
+  onValidationChange?: (validation: FormValidation) => void
 }
 
-export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, disabled }: SchemaFormProps) {
+export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, disabled, groupOptional, onValidationChange }: SchemaFormProps) {
   const [draft, setDraft] = useState<FormValue>(value)
   const [errors, setErrors] = useState<Record<string, string>>({})
   useEffect(() => setDraft(value), [value])
-  const validate = useMemo(() => new Ajv2020({ allErrors: true, strict: false, useDefaults: true }).compile(schema as object), [schema])
   const properties = schema.properties ?? {}
   const order = [...(schema['x-ui-order'] ?? []), ...Object.keys(properties).filter((key) => !schema['x-ui-order']?.includes(key))]
+  const validation = useMemo(() => validateFormValue(schema, draft), [draft, schema])
+  useEffect(() => onValidationChange?.(validation), [onValidationChange, validation])
 
   const update = (name: string, nextValue: unknown) => {
     const next = { ...draft, [name]: nextValue }
     setDraft(next)
-    setErrors((current) => ({ ...current, [`/${name}`]: '' }))
+    setErrors((current) => {
+      const nextErrors = { ...current }
+      delete nextErrors[`/${name}`]
+      return nextErrors
+    })
     onChange(next)
   }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const normalized = { ...draft }
-    const jsonErrors: Record<string, string> = {}
-    for (const [name, fieldSchema] of Object.entries(properties)) {
-      if (fieldSchema['x-ui-widget'] === 'json' && typeof normalized[name] === 'string') {
-        try {
-          normalized[name] = JSON.parse(normalized[name] as string)
-        } catch {
-          jsonErrors[`/${name}`] = `${fieldSchema.title ?? name}必须是合法 JSON`
-        }
-      }
-    }
-    if (Object.keys(jsonErrors).length > 0) {
-      setErrors(jsonErrors)
+    if (!validation.valid) {
+      setErrors(validation.errors)
       return
     }
-    if (!validate(normalized)) {
-      setErrors(mapErrors(validate.errors ?? [], schema))
-      return
-    }
-    setDraft(normalized)
+    setDraft(validation.normalized)
     setErrors({})
-    onChange(normalized)
-    await onSubmit(normalized)
+    onChange(validation.normalized)
+    await onSubmit(validation.normalized)
   }
+
+  const renderField = (name: string) => {
+    const fieldSchema = properties[name]
+    if (!fieldSchema) return null
+    return <Field key={name} path={name} name={name} schema={fieldSchema} value={draft[name]} required={schema.required?.includes(name) ?? false} errors={errors} onChange={(next) => update(name, next)} onBlur={(path) => setErrors((current) => {
+      const nextErrors = { ...current }
+      const pathKey = `/${path}`
+      if (validation.errors[pathKey]) nextErrors[pathKey] = validation.errors[pathKey]
+      else delete nextErrors[pathKey]
+      return nextErrors
+    })} />
+  }
+  const required = order.filter((name) => schema.required?.includes(name))
+  const optional = order.filter((name) => !schema.required?.includes(name))
+  const firstError = Object.keys(errors)[0]
+  const focusFirstError = () => document.getElementById(`field-${firstError.slice(1).replace(/[^a-zA-Z0-9_-]/g, '-')}`)?.focus()
 
   return (
     <form className="schema-form" noValidate onSubmit={submit}>
-      {order.map((name) => {
-        const fieldSchema = properties[name]
-        if (!fieldSchema) return null
-        return <Field key={name} path={name} name={name} schema={fieldSchema} value={draft[name]} required={schema.required?.includes(name) ?? false} errors={errors} onChange={(next) => update(name, next)} />
-      })}
+      {firstError && <button className="form-error-summary" type="button" onClick={focusFirstError}>{Object.keys(errors).length} 项需要处理</button>}
+      {groupOptional ? <>
+        {required.length > 0 && <section className="schema-section"><h3>必要配置</h3>{required.map(renderField)}</section>}
+        {optional.length > 0 && <details className="schema-optional"><summary>可选配置</summary>{optional.map(renderField)}</details>}
+      </> : order.map(renderField)}
       <button className="primary-button" type="submit" disabled={disabled}>{submitLabel}</button>
     </form>
   )
+}
+
+export function validateFormValue(schema: JSONSchema, value: FormValue): FormValidation {
+  const normalized = structuredClone(value)
+  const jsonErrors: Record<string, string> = {}
+  normalizeJSONWidgets(schema, normalized, [], jsonErrors)
+  if (Object.keys(jsonErrors).length > 0) return { normalized, errors: jsonErrors, valid: false }
+  let validate = validators.get(schema)
+  if (!validate) {
+    validate = ajv.compile(schema as object)
+    validators.set(schema, validate)
+  }
+  const valid = validate(normalized)
+  const errors = valid ? {} : mapErrors(validate.errors ?? [], schema)
+  return { normalized, errors, valid: valid && Object.keys(errors).length === 0 }
+}
+
+function normalizeJSONWidgets(schema: JSONSchema, value: unknown, path: string[], errors: Record<string, string>) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return
+  const object = value as Record<string, unknown>
+  for (const [name, child] of Object.entries(schema.properties ?? {})) {
+    const childPath = [...path, name]
+    if (child['x-ui-widget'] === 'json' && typeof object[name] === 'string') {
+      try { object[name] = JSON.parse(object[name] as string) as unknown } catch { errors[`/${childPath.join('/')}`] = `${child.title ?? name}必须是合法 JSON` }
+    } else if (child.type === 'object') normalizeJSONWidgets(child, object[name], childPath, errors)
+  }
 }
 
 function mapErrors(errors: ErrorObject[], rootSchema: JSONSchema) {
