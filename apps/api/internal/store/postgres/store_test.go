@@ -447,6 +447,100 @@ func TestRunAndNodeRunRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunSummaryFiltersModesStatusesTimeAndExactID(t *testing.T) {
+	store := migratedTestStore(t)
+	firstWorkflow := createWorkflowFixture(t, store, "run-summary-first")
+	secondWorkflow := createWorkflowFixture(t, store, "run-summary-second")
+	version := publishFixture(t, store, firstWorkflow)
+
+	source := newTestRun(firstWorkflow.ID, firstWorkflow.DraftRevision, firstWorkflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+	published := newPublishedRun(firstWorkflow.ID, version.ID)
+	if err := store.CreateRun(context.Background(), published); err != nil {
+		t.Fatal(err)
+	}
+	sourceNodeID := "echo-1"
+	debug := domain.Run{
+		ID: fixtureUUID(), WorkflowID: firstWorkflow.ID, GraphSnapshot: firstWorkflow.DraftGraph,
+		SourceRunID: &source.ID, SourceNodeID: &sourceNodeID, Mode: domain.RunModeDebug,
+		Status: domain.RunRunning, Input: json.RawMessage(`{}`), StartedAt: time.Now().UTC(),
+	}
+	if err := store.CreateRun(context.Background(), debug); err != nil {
+		t.Fatal(err)
+	}
+	second := newTestRun(secondWorkflow.ID, secondWorkflow.DraftRevision, secondWorkflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+	updates := []struct {
+		runID  string
+		status domain.RunStatus
+		at     time.Time
+	}{
+		{runID: source.ID, status: domain.RunRunning, at: base.Add(time.Hour)},
+		{runID: second.ID, status: domain.RunCancelled, at: base.Add(2 * time.Hour)},
+		{runID: debug.ID, status: domain.RunFailed, at: base.Add(3 * time.Hour)},
+		{runID: published.ID, status: domain.RunCompleted, at: base.Add(4 * time.Hour)},
+	}
+	for _, update := range updates {
+		if _, err := store.pool.Exec(context.Background(), "UPDATE runs SET status=$2,started_at=$3 WHERE id=$1", update.runID, update.status, update.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all, err := store.ListRunSummaries(context.Background(), workflowservice.RunSummaryStoreQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 4 || all[0].ID != published.ID || all[1].ID != debug.ID || all[2].ID != second.ID || all[3].ID != source.ID {
+		t.Fatalf("all=%+v", all)
+	}
+	if all[0].WorkflowVersionID == nil || *all[0].WorkflowVersionID != version.ID || all[0].WorkflowVersion == nil || *all[0].WorkflowVersion != 1 || all[0].StartedAt.Location() != time.UTC {
+		t.Fatalf("published summary=%+v", all[0])
+	}
+
+	firstOnly, err := store.ListRunSummaries(context.Background(), workflowservice.RunSummaryStoreQuery{WorkflowID: firstWorkflow.ID, Limit: 10})
+	if err != nil || len(firstOnly) != 3 {
+		t.Fatalf("workflow rows=%+v error=%v", firstOnly, err)
+	}
+	statusRows, err := store.ListRunSummaries(context.Background(), workflowservice.RunSummaryStoreQuery{
+		Statuses: []domain.RunStatus{domain.RunFailed, domain.RunCancelled}, Limit: 10,
+	})
+	if err != nil || len(statusRows) != 2 || statusRows[0].ID != debug.ID || statusRows[1].ID != second.ID {
+		t.Fatalf("status rows=%+v error=%v", statusRows, err)
+	}
+	modeRows, err := store.ListRunSummaries(context.Background(), workflowservice.RunSummaryStoreQuery{
+		Modes: []domain.RunMode{domain.RunModeTest}, Limit: 10,
+	})
+	if err != nil || len(modeRows) != 2 || modeRows[0].ID != second.ID || modeRows[1].ID != source.ID {
+		t.Fatalf("mode rows=%+v error=%v", modeRows, err)
+	}
+	after, before := base.Add(2*time.Hour), base.Add(4*time.Hour)
+	timeRows, err := store.ListRunSummaries(context.Background(), workflowservice.RunSummaryStoreQuery{
+		StartedAfter: &after, StartedBefore: &before, Limit: 10,
+	})
+	if err != nil || len(timeRows) != 2 || timeRows[0].ID != debug.ID || timeRows[1].ID != second.ID {
+		t.Fatalf("time rows=%+v error=%v", timeRows, err)
+	}
+	exactMismatch, err := store.ListRunSummaries(context.Background(), workflowservice.RunSummaryStoreQuery{
+		WorkflowID: secondWorkflow.ID, RunID: published.ID, Limit: 10,
+	})
+	if err != nil || exactMismatch == nil || len(exactMismatch) != 0 {
+		t.Fatalf("exact mismatch=%+v error=%v", exactMismatch, err)
+	}
+	afterStarted := base.Add(3 * time.Hour)
+	next, err := store.ListRunSummaries(context.Background(), workflowservice.RunSummaryStoreQuery{
+		AfterStarted: &afterStarted, AfterID: debug.ID, Limit: 10,
+	})
+	if err != nil || len(next) != 2 || next[0].ID != second.ID || next[1].ID != source.ID {
+		t.Fatalf("next=%+v error=%v", next, err)
+	}
+}
+
 func TestDebugRunRequiresSameWorkflowSourceAndSnapshot(t *testing.T) {
 	store := migratedTestStore(t)
 	first := createWorkflowFixture(t, store, "debug-source")

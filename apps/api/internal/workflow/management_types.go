@@ -53,3 +53,35 @@ type WorkflowManagementStore interface {
 	ArchiveWorkflow(context.Context, string) (domain.Workflow, error)
 	RestoreWorkflow(context.Context, string) (domain.Workflow, error)
 }
+
+type RunSummaryRequest struct {
+	WorkflowID    string
+	Statuses      []domain.RunStatus
+	Modes         []domain.RunMode
+	StartedAfter  *time.Time
+	StartedBefore *time.Time
+	RunID         string
+	Cursor        string
+	Limit         int
+}
+
+type RunSummaryStoreQuery struct {
+	WorkflowID    string
+	Statuses      []domain.RunStatus
+	Modes         []domain.RunMode
+	StartedAfter  *time.Time
+	StartedBefore *time.Time
+	RunID         string
+	AfterStarted  *time.Time
+	AfterID       string
+	Limit         int
+}
+
+type RunSummaryPage struct {
+	Items      []domain.RunSummary `json:"items"`
+	NextCursor *string             `json:"nextCursor"`
+}
+
+type RunManagementStore interface {
+	ListRunSummaries(context.Context, RunSummaryStoreQuery) ([]domain.RunSummary, error)
+}
