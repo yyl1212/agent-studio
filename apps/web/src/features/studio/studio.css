@@ -2,6 +2,12 @@
 .workbench-panel { position: absolute; z-index: 12; top: 90px; right: 16px; bottom: 16px; width: var(--as-workbench-width); padding: 22px; overflow: auto; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-surface); box-shadow: var(--as-shadow-panel); transition: width var(--as-motion-fast) ease; }
 .workbench-resizer { position: absolute; top: 0; bottom: 0; left: -6px; width: 12px; cursor: ew-resize; touch-action: none; }
 .workbench-close { position: absolute; top: 12px; right: 12px; width: 34px; padding: 5px; font-size: 20px; }
+.node-config-panel > header { display: grid; gap: 3px; padding-right: 42px; }
+.node-config-panel > header h2 { margin: 0; }
+.node-config-panel > header small { color: var(--as-text-muted); }
+.port-preview { margin-top: 18px; padding: 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface-muted); }
+.port-preview h3 { margin: 0 0 8px; font-size: 13px; }
+.port-preview p { margin: 4px 0; font-size: 13px; }
 .studio-toolbar { position: absolute; inset: 16px 16px auto 16px; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; padding: 10px 14px; border: 1px solid #dce3ee; border-radius: 14px; background: rgb(255 255 255 / 94%); box-shadow: 0 12px 36px rgb(23 32 51 / 10%); }
 .studio-title, .studio-actions { display: flex; align-items: center; gap: 12px; }
 .studio-title > a { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid #dce3ee; border-radius: 9px; }
