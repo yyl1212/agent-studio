@@ -18,7 +18,8 @@ type Store interface {
 	GetCurrentAgentVersion(context.Context, string) (domain.Workflow, domain.WorkflowVersion, error)
 	GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error)
 	CreateRun(context.Context, domain.Run) error
-	UpsertNodeRun(context.Context, domain.NodeRun) error
+	PersistRunEvent(context.Context, domain.RunEvent, *domain.NodeRun, domain.RunEventBudget) error
+	ListRunEvents(context.Context, string, int64, int) ([]domain.RunEvent, error)
 	FinishRun(context.Context, string, domain.RunStatus, any, *domain.PublicError, time.Time) error
 	GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error)
 	ListRuns(context.Context, string, int) ([]domain.Run, error)
@@ -30,4 +31,5 @@ type Compiler interface {
 
 type Engine interface {
 	Run(context.Context, string, *engine.Plan, map[string]any, engine.Observer) (engine.RunResult, error)
+	RunWithScope(context.Context, string, *engine.Plan, map[string]any, engine.Observer, engine.ExecutionScope) (engine.RunResult, error)
 }

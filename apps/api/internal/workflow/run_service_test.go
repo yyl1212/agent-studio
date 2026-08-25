@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -29,12 +31,143 @@ func (runtime failingRunEngine) Run(_ context.Context, runID string, _ *engine.P
 	return engine.RunResult{RunID: runID, EndedAt: time.Now().UTC()}, runtime.err
 }
 
+func (runtime failingRunEngine) RunWithScope(_ context.Context, runID string, _ *engine.Plan, _ map[string]any, _ engine.Observer, _ engine.ExecutionScope) (engine.RunResult, error) {
+	return engine.RunResult{RunID: runID, EndedAt: time.Now().UTC()}, runtime.err
+}
+
 func (observer *recordingObserver) Observe(_ context.Context, event engine.Event) error {
 	if observer.err != nil {
 		return observer.err
 	}
 	observer.events = append(observer.events, event)
 	return nil
+}
+
+func TestPersistenceObserverCommitsRedactedEventBeforeDownstream(t *testing.T) {
+	store := newFakeStore(t)
+	downstream := &recordingObserver{}
+	plan := &engine.Plan{
+		Graph: domain.Graph{Nodes: []domain.Node{{ID: "node"}}},
+		Nodes: map[string]engine.CompiledNode{"node": {Node: domain.Node{ID: "node", Type: "fixture"}}},
+	}
+	observer := &persistenceObserver{
+		store: store, prepared: &PreparedRun{RunID: "run-1", Plan: plan}, downstream: downstream,
+		started: make(map[string]time.Time),
+	}
+	event := engine.Event{
+		Sequence: 1, RunID: "run-1", Type: "node.started", NodeID: "node", Status: domain.NodeRunning,
+		Input: map[string]any{"api/token": "top-secret"}, ActivePorts: []string{}, Timestamp: time.Now().UTC(),
+	}
+	if err := observer.Observe(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.runEvents) != 1 || len(downstream.events) != 1 {
+		t.Fatalf("stored=%d downstream=%d", len(store.runEvents), len(downstream.events))
+	}
+	persisted := store.runEvents[0]
+	if string(persisted.Input) != `{"api/token":"[REDACTED]"}` || !reflect.DeepEqual(persisted.InputRedactedPaths, []string{"/api~1token"}) {
+		t.Fatalf("persisted=%+v", persisted)
+	}
+	if store.eventBudget.MaxEvents != 4 || store.eventBudget.MaxTotalDataBytes != 16<<20 || persisted.DataBytes == 0 {
+		t.Fatalf("budget=%+v bytes=%d", store.eventBudget, persisted.DataBytes)
+	}
+	if got := downstream.events[0].Input.(map[string]any)["api/token"]; got != "[REDACTED]" {
+		t.Fatalf("downstream secret=%v", got)
+	}
+	if !reflect.DeepEqual(downstream.events[0].InputRedactedPaths, []string{"/api~1token"}) {
+		t.Fatalf("downstream paths=%v", downstream.events[0].InputRedactedPaths)
+	}
+
+	store.failPersist = errors.New("persist failed")
+	downstream.events = nil
+	if err := observer.Observe(context.Background(), event); !errors.Is(err, store.failPersist) {
+		t.Fatalf("error=%v", err)
+	}
+	if len(downstream.events) != 0 {
+		t.Fatalf("downstream observed uncommitted event=%+v", downstream.events)
+	}
+}
+
+func TestRunEventBudgetsRejectOffendingEventWithoutDownstreamDelivery(t *testing.T) {
+	tests := []struct {
+		name  string
+		event engine.Event
+	}{
+		{name: "input over one MiB", event: engine.Event{Input: strings.Repeat("x", 1<<20)}},
+		{name: "output over one MiB", event: engine.Event{Output: strings.Repeat("x", 1<<20)}},
+		{name: "error over 64 KiB", event: engine.Event{Error: &domain.PublicError{Code: "TOO_LARGE", Message: strings.Repeat("x", 64<<10)}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeStore(t)
+			downstream := &recordingObserver{}
+			observer := &persistenceObserver{
+				store: store, prepared: &PreparedRun{RunID: "run-budget", Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{}}},
+				downstream: downstream, started: make(map[string]time.Time),
+			}
+			test.event.Sequence = 1
+			test.event.RunID = "run-budget"
+			test.event.Type = "run.started"
+			test.event.Timestamp = time.Now().UTC()
+			if err := observer.Observe(context.Background(), test.event); !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
+				t.Fatalf("error=%v", err)
+			}
+			if len(store.runEvents) != 0 || len(downstream.events) != 0 {
+				t.Fatalf("stored=%d downstream=%d", len(store.runEvents), len(downstream.events))
+			}
+		})
+	}
+}
+
+func TestRunEventCountAndTotalBudgetsKeepPreviouslyCommittedEvents(t *testing.T) {
+	t.Run("event count", func(t *testing.T) {
+		store := newFakeStore(t)
+		downstream := &recordingObserver{}
+		observer := &persistenceObserver{
+			store: store, prepared: &PreparedRun{RunID: "run-count", Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{"node": {}}}},
+			downstream: downstream, started: make(map[string]time.Time),
+		}
+		for sequence := int64(1); sequence <= 4; sequence++ {
+			if err := observer.Observe(context.Background(), engine.Event{Sequence: sequence, RunID: "run-count", Type: "run.started", Timestamp: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := observer.Observe(context.Background(), engine.Event{Sequence: 5, RunID: "run-count", Type: "run.completed", Timestamp: time.Now().UTC()}); !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
+			t.Fatalf("error=%v", err)
+		}
+		if len(store.runEvents) != 4 || len(downstream.events) != 4 {
+			t.Fatalf("stored=%d downstream=%d", len(store.runEvents), len(downstream.events))
+		}
+	})
+
+	t.Run("total bytes", func(t *testing.T) {
+		store := newFakeStore(t)
+		downstream := &recordingObserver{}
+		nodes := make(map[string]engine.CompiledNode, 9)
+		for index := range 9 {
+			nodes[fmt.Sprintf("node-%d", index)] = engine.CompiledNode{}
+		}
+		observer := &persistenceObserver{
+			store: store, prepared: &PreparedRun{RunID: "run-total", Plan: &engine.Plan{Nodes: nodes}},
+			downstream: downstream, started: make(map[string]time.Time),
+		}
+		payload := strings.Repeat("x", (1<<20)-2)
+		var budgetErr error
+		for sequence := int64(1); sequence <= 20; sequence++ {
+			budgetErr = observer.Observe(context.Background(), engine.Event{
+				Sequence: sequence, RunID: "run-total", Type: "run.started", Output: payload, Timestamp: time.Now().UTC(),
+			})
+			if budgetErr != nil {
+				break
+			}
+		}
+		if !errors.Is(budgetErr, domain.ErrRunEventBudgetExceeded) {
+			t.Fatalf("error=%v", budgetErr)
+		}
+		if len(store.runEvents) == 0 || len(store.runEvents) != len(downstream.events) {
+			t.Fatalf("stored=%d downstream=%d", len(store.runEvents), len(downstream.events))
+		}
+	})
 }
 
 func TestPrepareAgentUsesRequestedVersionAfterNewPublish(t *testing.T) {
@@ -106,9 +239,13 @@ func TestPrepareRejectsUnknownInputAndExecutePropagatesObservers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.failUpsert = errors.New("persistence failed")
-	if _, err := service.Execute(context.Background(), prepared, &recordingObserver{}); !errors.Is(err, store.failUpsert) {
+	store.failPersist = domain.ErrRunEventBudgetExceeded
+	if _, err := service.Execute(context.Background(), prepared, &recordingObserver{}); !errors.Is(err, store.failPersist) {
 		t.Fatalf("persistence error=%v", err)
+	}
+	failed := store.LastRun()
+	if failed.Status != domain.RunFailed || failed.Error == nil || failed.Error.Code != "RUN_EVENT_BUDGET_EXCEEDED" {
+		t.Fatalf("failed run=%+v", failed)
 	}
 }
 

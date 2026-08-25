@@ -23,7 +23,9 @@ type fakeStore struct {
 	currentID   string
 	runs        []domain.Run
 	nodeRuns    map[string]domain.NodeRun
-	failUpsert  error
+	runEvents   []domain.RunEvent
+	eventBudget domain.RunEventBudget
+	failPersist error
 	sequence    int
 	createCalls int
 }
@@ -105,12 +107,48 @@ func (store *fakeStore) CreateRun(_ context.Context, run domain.Run) error {
 	return nil
 }
 
-func (store *fakeStore) UpsertNodeRun(_ context.Context, nodeRun domain.NodeRun) error {
-	if store.failUpsert != nil {
-		return store.failUpsert
+func (store *fakeStore) PersistRunEvent(_ context.Context, event domain.RunEvent, nodeRun *domain.NodeRun, budget domain.RunEventBudget) error {
+	if store.failPersist != nil {
+		return store.failPersist
 	}
-	store.nodeRuns[nodeRun.NodeID] = nodeRun
+	count := 0
+	var total int64
+	var maxSequence int64
+	for _, stored := range store.runEvents {
+		if stored.RunID != event.RunID {
+			continue
+		}
+		count++
+		total += stored.DataBytes
+		if stored.Sequence > maxSequence {
+			maxSequence = stored.Sequence
+		}
+	}
+	if event.Sequence != maxSequence+1 {
+		return domain.ErrRunEventSequence
+	}
+	if count >= budget.MaxEvents || event.DataBytes > budget.MaxTotalDataBytes-total {
+		return domain.ErrRunEventBudgetExceeded
+	}
+	store.runEvents = append(store.runEvents, event)
+	store.eventBudget = budget
+	if nodeRun != nil {
+		store.nodeRuns[nodeRun.NodeID] = *nodeRun
+	}
 	return nil
+}
+
+func (store *fakeStore) ListRunEvents(_ context.Context, runID string, afterSequence int64, limit int) ([]domain.RunEvent, error) {
+	events := make([]domain.RunEvent, 0)
+	for _, event := range store.runEvents {
+		if event.RunID == runID && event.Sequence > afterSequence {
+			events = append(events, event)
+			if len(events) == limit {
+				break
+			}
+		}
+	}
+	return events, nil
 }
 
 func (store *fakeStore) FinishRun(ctx context.Context, runID string, status domain.RunStatus, output any, publicError *domain.PublicError, endedAt time.Time) error {
