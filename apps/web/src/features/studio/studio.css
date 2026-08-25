@@ -43,6 +43,7 @@
 .debug-page .workflow-canvas { padding-right: 430px; }
 .debug-toolbar { right: 446px; }
 .debug-run-status { padding: 7px 10px; border-radius: 999px; background: #eef2f8; font-size: 13px; font-weight: 750; }
+.debug-source-link { color: #2749b8; font-size: 12px; font-weight: 700; }
 .debug-run-status.status-completed { color: #067647; background: #ecfdf3; }
 .debug-run-status.status-failed { color: #b42318; background: #fef3f2; }
 .debug-run-status.status-running { color: #175cd3; background: #eff8ff; }

@@ -135,7 +135,7 @@ export function DebugPage() {
 	return (
 		<main className="studio-page debug-page">
 			<header className="studio-toolbar debug-toolbar">
-				<div className="studio-title"><Link to={`/workflows/${id}/runs`} aria-label="退出调试回放">←</Link><div><strong>只读回放</strong><small>{modeLabel(overview.run.mode)} · 来源运行 {overview.run.id}</small></div></div>
+				<div className="studio-title"><Link to={`/workflows/${id}/runs`} aria-label="退出调试回放">←</Link><div><strong>只读回放</strong><small>{modeLabel(overview.run.mode)} · 当前运行 {overview.run.id}</small>{overview.sourceChain.map((source) => <Link className="debug-source-link" key={source.runId} to={`/workflows/${id}/runs/${source.runId}/debug`}>来源运行 {source.runId}</Link>)}</div></div>
 				<span className={`debug-run-status status-${overview.run.status}`}>{runStatusLabel(overview.run.status)}</span>
 			</header>
 			<WorkflowCanvas readOnly currentNodeID={selectedNodeID} nodes={displayNodes} edges={edges} onNodesChange={ignoreNodes} onEdgesChange={ignoreEdges} onConnect={ignoreConnect} isValidConnection={() => false} onNodeClick={(node) => setSelectedNodeID(node.id)} />

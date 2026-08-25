@@ -62,6 +62,15 @@ describe('DebugPage', () => {
 		expect(screen.getByTestId('node-start')).toHaveClass('debug-current')
 	})
 
+	it('显示当前运行并链接每个来源运行', async () => {
+		const loaded = overview()
+		loaded.sourceChain = [{ runId: 'source-r1', sourceNodeId: 'start', mode: 'test', status: 'completed' }]
+		vi.mocked(api.getDebugOverview).mockResolvedValue(loaded)
+		renderDebugPage()
+		expect(await screen.findByText('草稿测试 · 当前运行 r1')).toBeInTheDocument()
+		expect(screen.getByRole('link', { name: '来源运行 source-r1' })).toHaveAttribute('href', '/workflows/w1/runs/source-r1/debug')
+	})
+
 	it('legacy 只显示摘要且不请求精确事件', async () => {
 		vi.mocked(api.getDebugOverview).mockResolvedValue(overview(false))
 		renderDebugPage()

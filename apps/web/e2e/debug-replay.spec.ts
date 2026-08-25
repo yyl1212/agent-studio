@@ -43,6 +43,9 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	await expect(page.getByText('只读回放')).toBeVisible()
 
 	const originalURL = page.url()
+	const workflowID = originalURL.match(/\/workflows\/([^/]+)/)?.[1]
+	const originalRunID = originalURL.match(/\/runs\/([^/]+)\/debug$/)?.[1]
+	if (!workflowID || !originalRunID) throw new Error(`无法从 URL 读取工作流或源运行 ID: ${originalURL}`)
 	const timelineButtons = page.locator('.run-timeline li button')
 	await expect(timelineButtons.first()).toBeVisible()
 	const labels = await timelineButtons.evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label') ?? ''))
@@ -58,6 +61,7 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	await expect(page).toHaveURL(new RegExp(`/workflows/[^/]+/runs/[^/]+/debug$`))
 	await expect(page).not.toHaveURL(originalURL)
 
+	await expect(page.getByRole('link', { name: `来源运行 ${originalRunID}` })).toHaveAttribute('href', `/workflows/${workflowID}/runs/${originalRunID}/debug`)
 	await page.getByRole('button', { name: '关闭局部重跑' }).click()
 	await page.getByRole('button', { name: new RegExp(`node.completed ${escapeRegExp(joinID)}$`) }).click()
 	await expect(page.getByRole('region', { name: `节点详情 ${joinID}` })).toContainText('L-B+R-A')
