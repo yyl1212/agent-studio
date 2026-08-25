@@ -41,6 +41,13 @@ type RunReader interface {
 	ListRuns(context.Context, string, int) ([]domain.Run, error)
 }
 
+type Debugger interface {
+	Overview(context.Context, string) (workflow.DebugOverview, error)
+	Events(context.Context, string, int64) (workflow.RunEventPage, error)
+	PreviewRerun(context.Context, string, string) (workflow.RerunPreview, error)
+	PrepareRerun(context.Context, string, string, workflow.RerunRequest) (*workflow.PreparedRun, error)
+}
+
 type Readiness interface {
 	Ready(context.Context) error
 }
@@ -56,6 +63,7 @@ type Dependencies struct {
 	Workflows    WorkflowService
 	Runner       Runner
 	Runs         RunReader
+	Debugger     Debugger
 	Readiness    Readiness
 	NodePackages NodePackageCatalog
 	WebOrigin    string
@@ -99,6 +107,10 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Get("/agents/{slug}", handler.getAgentManifest)
 		api.Post("/agents/{slug}/runs", handler.runAgent)
 		api.Get("/runs/{id}", handler.getRun)
+		api.Get("/runs/{id}/debug", handler.getRunDebug)
+		api.Get("/runs/{id}/events", handler.listRunEvents)
+		api.Get("/runs/{id}/nodes/{nodeId}/rerun-preview", handler.previewNodeRerun)
+		api.Post("/runs/{id}/nodes/{nodeId}/reruns", handler.rerunFromNode)
 	})
 	return router
 }

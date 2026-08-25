@@ -31,14 +31,36 @@ func New(options Options) *Engine {
 }
 
 func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer) (RunResult, error) {
+	return engine.run(ctx, runID, plan, runInput, observer, nil)
+}
+
+func (engine *Engine) RunWithScope(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer, scope ExecutionScope) (RunResult, error) {
+	cloned := cloneExecutionScope(scope)
+	if err := cloned.Validate(plan); err != nil {
+		return RunResult{}, err
+	}
+	return engine.run(ctx, runID, plan, runInput, observer, &cloned)
+}
+
+func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer, scope *ExecutionScope) (RunResult, error) {
 	if observer == nil {
 		observer = discardObserver{}
 	}
 	runContext, cancel := context.WithTimeout(ctx, engine.timeout)
 	defer cancel()
 	startedAt := time.Now().UTC()
-	statuses := make(map[string]domain.NodeStatus, len(plan.Nodes))
-	for nodeID := range plan.Nodes {
+	activeNodeIDs := make(map[string]struct{}, len(plan.Nodes))
+	if scope == nil {
+		for nodeID := range plan.Nodes {
+			activeNodeIDs[nodeID] = struct{}{}
+		}
+	} else {
+		for nodeID := range scope.ActiveNodeIDs {
+			activeNodeIDs[nodeID] = struct{}{}
+		}
+	}
+	statuses := make(map[string]domain.NodeStatus, len(activeNodeIDs))
+	for nodeID := range activeNodeIDs {
 		statuses[nodeID] = domain.NodePending
 	}
 	result := RunResult{RunID: runID, NodeStatuses: statuses, StartedAt: startedAt}
@@ -48,6 +70,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 		event.Sequence = sequence
 		event.RunID = runID
 		event.Timestamp = time.Now().UTC()
+		normalizeEventSlices(&event)
 		return observer.Observe(runContext, event)
 	}
 	if err := emit(Event{Type: "run.started"}); err != nil {
@@ -56,18 +79,35 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 
 	edgeStates := make(map[string]edgeActivation, len(plan.Graph.Edges))
 	edgeValues := make(map[string]any, len(plan.Graph.Edges))
-	workerResults := make(chan workerResult, len(plan.Nodes))
+	if scope != nil {
+		for edgeID, frozen := range scope.FrozenEdges {
+			if frozen.Active {
+				edgeStates[edgeID] = edgeActive
+				edgeValues[edgeID] = frozen.Value
+			} else {
+				edgeStates[edgeID] = edgeInactive
+			}
+		}
+	}
+	workerResults := make(chan workerResult, len(activeNodeIDs))
 	running := 0
 	terminal := 0
 	var executionErr error
 
-	for terminal < len(plan.Nodes) {
+	for terminal < len(activeNodeIDs) {
 		madeProgress := false
 		for _, nodeID := range plan.TopologicalOrder {
+			if _, active := activeNodeIDs[nodeID]; !active {
+				continue
+			}
 			if statuses[nodeID] != domain.NodePending {
 				continue
 			}
 			decision, inputs := nodeReadiness(plan, nodeID, edgeStates, edgeValues)
+			if scope != nil && nodeID == scope.EntryNodeID {
+				decision = nodeReady
+				inputs = cloneNodeInputs(scope.EntryNodeInputs)
+			}
 			switch decision {
 			case nodeWaiting:
 				continue
@@ -88,18 +128,22 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 				running++
 				madeProgress = true
 				eventInput := any(inputs)
+				effectiveRunInput := runInput
+				if scope != nil && nodeID == scope.EntryNodeID && nodeID == plan.StartNodeID {
+					effectiveRunInput = scope.EntryRunInput
+				}
 				if nodeID == plan.StartNodeID {
-					eventInput = runInput
+					eventInput = effectiveRunInput
 				}
 				if err := emit(Event{Type: "node.started", NodeID: nodeID, Status: domain.NodeRunning, Input: eventInput}); err != nil {
 					cancel()
 					return finishResult(result), err
 				}
-				go executeNode(runContext, plan, nodeID, runInput, inputs, eventInput, workerResults)
+				go executeNode(runContext, plan, nodeID, effectiveRunInput, inputs, eventInput, workerResults)
 			}
 		}
 
-		if terminal == len(plan.Nodes) {
+		if terminal == len(activeNodeIDs) {
 			break
 		}
 		if running == 0 {
@@ -156,7 +200,7 @@ func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInpu
 			statuses[worker.nodeID] = domain.NodeCompleted
 			terminal++
 			applyNodeResult(plan, worker.nodeID, worker.result, edgeStates, edgeValues)
-			if err := emit(Event{Type: "node.completed", NodeID: worker.nodeID, Status: domain.NodeCompleted, Input: worker.input, Output: worker.result.Outputs}); err != nil {
+			if err := emit(Event{Type: "node.completed", NodeID: worker.nodeID, Status: domain.NodeCompleted, Input: worker.input, Output: worker.result.Outputs, ActivePorts: append([]string(nil), worker.result.ActivePorts...)}); err != nil {
 				cancel()
 				return finishResult(result), err
 			}
@@ -193,6 +237,7 @@ func emitWithContext(ctx context.Context, observer Observer, sequence *int64, ru
 	event.Sequence = *sequence
 	event.RunID = runID
 	event.Timestamp = time.Now().UTC()
+	normalizeEventSlices(&event)
 	observed := make(chan error, 1)
 	go func() {
 		observed <- observer.Observe(ctx, event)
@@ -203,4 +248,24 @@ func emitWithContext(ctx context.Context, observer Observer, sequence *int64, ru
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func normalizeEventSlices(event *Event) {
+	if event.ActivePorts == nil {
+		event.ActivePorts = []string{}
+	}
+	if event.InputRedactedPaths == nil {
+		event.InputRedactedPaths = []string{}
+	}
+	if event.OutputRedactedPaths == nil {
+		event.OutputRedactedPaths = []string{}
+	}
+}
+
+func cloneNodeInputs(inputs map[string][]any) map[string][]any {
+	cloned := make(map[string][]any, len(inputs))
+	for key, values := range inputs {
+		cloned[key] = append([]any(nil), values...)
+	}
+	return cloned
 }

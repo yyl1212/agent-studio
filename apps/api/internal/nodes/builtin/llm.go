@@ -34,11 +34,12 @@ func NewLLM(provider modelprovider.Provider, defaultModel string) *llmNode {
 
 func (*llmNode) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "llm",
-		Version:     "1",
-		Title:       "LLM",
-		Description: "调用已配置的模型服务生成文本",
-		Category:    "AI",
+		Type:            "llm",
+		Version:         "1",
+		Title:           "LLM",
+		Description:     "调用已配置的模型服务生成文本",
+		Category:        "AI",
+		ExecutionSafety: agentnode.ExecutionSafetyReadOnly,
 		ConfigSchema: json.RawMessage(`{
           "type":"object",
           "properties":{

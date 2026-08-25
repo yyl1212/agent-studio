@@ -82,11 +82,13 @@ func run(logger *slog.Logger) error {
 	runtime := engine.New(engine.Options{MaxParallel: cfg.MaxParallelNodes, Timeout: cfg.WorkflowTimeout})
 	workflowService := workflow.NewService(store, compiler, registry)
 	runService := workflow.NewRunService(store, compiler, runtime, workflow.WithLogger(logger))
+	debugService := workflow.NewDebugService(store, compiler)
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		Registry:     registry,
 		Workflows:    workflowService,
 		Runner:       runService,
 		Runs:         store,
+		Debugger:     debugService,
 		Readiness:    store,
 		NodePackages: indexCatalog,
 		WebOrigin:    cfg.WebOrigin,

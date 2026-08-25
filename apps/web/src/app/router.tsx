@@ -5,6 +5,7 @@ import { StudioPage } from '../features/studio/StudioPage'
 import { AgentPage } from '../features/agent/AgentPage'
 import { RunHistoryPage } from '../features/runs/RunHistoryPage'
 import { NodePackageDirectoryPage } from '../features/node-packages/NodePackageDirectoryPage'
+import { DebugPage } from '../features/studio/DebugPage'
 
 function AppLayout() {
   return (
@@ -24,6 +25,7 @@ function AppLayout() {
         <Route path="/workflows" element={<WorkflowListPage />} />
         <Route path="/workflows/:id" element={<StudioPage />} />
         <Route path="/workflows/:id/runs" element={<RunHistoryPage />} />
+		<Route path="/workflows/:id/runs/:runId/debug" element={<DebugPage />} />
 		<Route path="/node-packages" element={<NodePackageDirectoryPage />} />
         <Route path="/agents/:slug" element={<AgentPage />} />
         <Route path="*" element={<Placeholder title="页面不存在" />} />

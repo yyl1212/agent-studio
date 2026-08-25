@@ -103,6 +103,7 @@ const rawDefinitions = [
 const definitions = rawDefinitions.map((definition) => ({
   ...definition,
   capabilities: 'capabilities' in definition ? (definition.capabilities ?? []) : [],
+  executionSafety: definition.type === 'extension.webhook' ? 'side_effect' as const : 'pure' as const,
   package: definition.type.startsWith('extension.')
     ? { name: 'github.com/yyl1212/agent-studio', displayName: 'Agent Studio 官方扩展节点', license: 'Apache-2.0', repository: 'https://github.com/yyl1212/agent-studio', source: 'development' as const }
     : { name: 'agent-studio.dev/core', displayName: 'Agent Studio Core', version: 'v0.3.0', license: 'Apache-2.0', repository: 'https://github.com/yyl1212/agent-studio', source: 'builtin' as const },

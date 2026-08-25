@@ -15,6 +15,12 @@
 .node-category { color: #3157d5; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .generic-node small { color: #768195; }
 .node-error { margin-top: 5px; color: #b42318; font-size: 12px; }
+.node-debug-status { margin-top: 5px; font-size: 12px; font-weight: 750; }
+.generic-node.debug-current { border-color: #3157d5; box-shadow: 0 0 0 4px rgb(49 87 213 / 20%), 0 9px 24px rgb(23 32 51 / 12%); }
+.generic-node.debug-completed .node-debug-status { color: #067647; }
+.generic-node.debug-failed .node-debug-status { color: #b42318; }
+.generic-node.debug-skipped .node-debug-status, .generic-node.debug-cancelled .node-debug-status { color: #667085; }
+.generic-node.debug-running .node-debug-status { color: #175cd3; }
 .react-flow__handle { width: 10px; height: 10px; border: 2px solid white; background: #3157d5; }
 .studio-drawer { position: absolute; z-index: 12; top: 90px; bottom: 16px; width: min(380px, calc(100% - 32px)); padding: 22px; overflow: auto; border: 1px solid #dce3ee; background: white; box-shadow: 0 20px 60px rgb(23 32 51 / 18%); }
 .studio-drawer.left { left: 16px; border-radius: 16px; }
@@ -33,6 +39,60 @@
 .run-output { max-height: 220px; padding: 14px; overflow: auto; border-radius: 10px; color: #d9e2f1; background: #172033; white-space: pre-wrap; }
 .primary-button.inline { display: inline-block; }
 .schema-object { margin: 12px 0; border: 1px solid #e2e7f0; border-radius: 10px; }
+
+.debug-page .workflow-canvas { padding-right: 430px; }
+.debug-toolbar { right: 446px; }
+.debug-run-status { padding: 7px 10px; border-radius: 999px; background: #eef2f8; font-size: 13px; font-weight: 750; }
+.debug-source-link { color: #2749b8; font-size: 12px; font-weight: 700; }
+.debug-run-status.status-completed { color: #067647; background: #ecfdf3; }
+.debug-run-status.status-failed { color: #b42318; background: #fef3f2; }
+.debug-run-status.status-running { color: #175cd3; background: #eff8ff; }
+.debug-workbench { position: absolute; z-index: 11; top: 16px; right: 16px; bottom: 16px; display: grid; width: 414px; grid-template-rows: auto minmax(220px, 1fr) minmax(220px, 1fr); gap: 14px; padding: 18px; overflow: hidden; border: 1px solid #dce3ee; border-radius: 16px; background: rgb(255 255 255 / 97%); box-shadow: 0 18px 50px rgb(23 32 51 / 16%); }
+.sr-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.run-timeline, .node-run-detail, .debug-detail-stack { min-height: 0; overflow: auto; }
+.run-timeline header, .node-run-detail header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.run-timeline h2, .node-run-detail h2 { margin: 0; font-size: 18px; }
+.run-timeline header span { color: #667085; font-size: 13px; }
+.timeline-navigation { display: flex; gap: 8px; margin: 12px 0; }
+.timeline-navigation button { padding: 7px 10px; border: 1px solid #ccd5e3; border-radius: 8px; background: white; }
+.timeline-navigation button:disabled { cursor: default; opacity: .45; }
+.run-timeline ol { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.run-timeline li button { display: grid; width: 100%; gap: 3px; padding: 9px 11px; border: 1px solid #e0e6ef; border-radius: 9px; text-align: left; background: #f8fafc; }
+.run-timeline li button.current { border-color: #3157d5; background: #eef3ff; }
+.run-timeline li span { color: #667085; font-size: 12px; }
+.node-run-detail { padding-top: 14px; border-top: 1px solid #e3e8f0; }
+.node-run-detail > p { color: #5e687b; }
+.debug-warning { padding: 10px; border: 1px solid #fedf89; border-radius: 8px; color: #7a2e0e !important; background: #fffaeb; }
+.debug-value h3 { margin: 14px 0 6px; color: #475467; font-size: 12px; text-transform: uppercase; }
+.debug-value pre { max-height: 190px; margin: 0; padding: 11px; overflow: auto; border-radius: 9px; color: #d9e2f1; background: #172033; white-space: pre-wrap; word-break: break-word; }
+.debug-unavailable { grid-template-rows: auto auto 1fr; }
+.rerun-workbench { display: block; overflow: auto; }
+.partial-rerun { display: grid; gap: 14px; }
+.partial-rerun > header { position: sticky; top: -18px; z-index: 2; display: flex; align-items: start; justify-content: space-between; gap: 12px; margin: -18px -18px 0; padding: 18px; border-bottom: 1px solid #e3e8f0; background: white; }
+.partial-rerun h2 { margin: 0; font-size: 19px; }
+.partial-rerun h3 { margin: 0 0 7px; font-size: 13px; }
+.partial-rerun > header button { width: 32px; height: 32px; border: 0; border-radius: 8px; background: #f0f3f8; font-size: 20px; }
+.partial-rerun ul { margin: 0; padding-left: 20px; }
+.safety-notice { margin: 0; padding: 10px 12px; border-radius: 9px; font-weight: 650; }
+.safety-pure { color: #067647; background: #ecfdf3; }
+.safety-read_only { color: #175cd3; background: #eff8ff; }
+.safety-side_effect { color: #9c2a10; background: #fff4ed; }
+.partial-rerun form { display: grid; gap: 12px; }
+.partial-rerun form > label:first-child { display: grid; gap: 7px; font-weight: 700; }
+.partial-rerun textarea { width: 100%; min-height: 180px; padding: 11px; border: 1px solid #cbd5e1; border-radius: 9px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.side-effect-confirmation { display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid #fdb022; border-radius: 9px; background: #fffaeb; font-weight: 700; }
+.side-effect-confirmation input { width: 18px; height: 18px; }
+.rerun-actions { position: sticky; bottom: -18px; display: flex; flex-wrap: wrap; gap: 8px; margin: 0 -18px -18px; padding: 14px 18px; border-top: 1px solid #e3e8f0; background: white; }
+.rerun-actions button:not(.primary-button) { padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 9px; background: white; }
+.rerun-progress { padding-top: 14px; border-top: 1px solid #e3e8f0; }
+.rerun-progress ol { padding-left: 22px; }
+.rerun-progress a { color: #2749b8; font-weight: 750; }
+
+@media (max-width: 860px) {
+  .debug-page .workflow-canvas { padding-right: 0; }
+  .debug-toolbar { right: 16px; }
+  .debug-workbench { position: fixed; top: 150px; right: 12px; bottom: 12px; left: 12px; width: auto; }
+}
 
 @media (max-width: 760px) {
   .studio-toolbar { align-items: stretch; flex-direction: column; }

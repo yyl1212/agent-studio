@@ -42,11 +42,12 @@ func Register(registrar agentnode.Registrar) error {
 
 func (Node) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "extension.retriever",
-		Version:     "1.0.0",
-		Title:       "Retriever",
-		Description: "使用本地 Jaccard 相似度检索配置文档",
-		Category:    "扩展",
+		Type:            "extension.retriever",
+		Version:         "1.0.0",
+		Title:           "Retriever",
+		Description:     "使用本地 Jaccard 相似度检索配置文档",
+		Category:        "扩展",
+		ExecutionSafety: agentnode.ExecutionSafetyPure,
 		ConfigSchema: agentnode.MustSchema(`{
           "$schema":"https://json-schema.org/draft/2020-12/schema",
           "type":"object",

@@ -11,7 +11,7 @@ export function GenericNode({ data, selected, id }: NodeProps<StudioNode>) {
   ])
   useEffect(() => updateNodeInternals(id), [id, portKey, updateNodeInternals])
   return (
-    <div className={`generic-node${selected ? ' selected' : ''}${data.issues.length ? ' invalid' : ''}`} data-testid={`node-${data.nodeType}`}>
+    <div className={`generic-node${selected ? ' selected' : ''}${data.issues.length ? ' invalid' : ''}${data.debugCurrent ? ' debug-current' : ''}${data.debugStatus ? ` debug-${data.debugStatus}` : ''}`} data-testid={`node-${data.nodeType}`} data-node-id={id}>
       {(data.ports.inputs ?? []).map((port, index) => (
         <Handle
           key={`input-${port.key}`}
@@ -27,6 +27,7 @@ export function GenericNode({ data, selected, id }: NodeProps<StudioNode>) {
       <strong>{data.definition?.title ?? data.nodeType}</strong>
       <small>{data.nodeType}@{data.typeVersion}</small>
       {data.issues.length > 0 && <span className="node-error">{data.issues.length} 个问题</span>}
+	  {data.debugStatus && <span className="node-debug-status">{debugStatusLabel(data.debugStatus)}</span>}
       {(data.ports.outputs ?? []).map((port, index) => (
         <Handle
           key={`output-${port.key}`}
@@ -40,4 +41,8 @@ export function GenericNode({ data, selected, id }: NodeProps<StudioNode>) {
       ))}
     </div>
   )
+}
+
+function debugStatusLabel(status: string) {
+	return { pending: '○ 待执行', running: '◌ 运行中', completed: '✓ 已完成', failed: '× 失败', skipped: '↷ 已跳过', cancelled: '— 已取消' }[status] ?? status
 }

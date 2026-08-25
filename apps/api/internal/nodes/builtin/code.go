@@ -58,11 +58,12 @@ func NewCode(options CodeOptions) *codeNode {
 
 func (*codeNode) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "code",
-		Version:     "1",
-		Title:       "代码",
-		Description: "执行受限 Starlark main(input)",
-		Category:    "数据",
+		Type:            "code",
+		Version:         "1",
+		Title:           "代码",
+		Description:     "执行受限 Starlark main(input)",
+		Category:        "数据",
+		ExecutionSafety: agentnode.ExecutionSafetyPure,
 		ConfigSchema: json.RawMessage(`{
           "type":"object",
           "properties":{"source":{"type":"string","maxLength":65536,"title":"Starlark 源码","x-ui-widget":"code"}},

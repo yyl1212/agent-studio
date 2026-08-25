@@ -7,7 +7,7 @@ import { NodeLibraryDrawer } from './NodeLibraryDrawer'
 
 const definition = (packageVersion?: string, overrides: Partial<NodeDefinition> = {}): NodeDefinition => ({
   type: 'example.search', version: '1.0.0', title: 'Search', description: '搜索文档', category: '扩展',
-  configSchema: {}, inputs: [], outputs: [], capabilities: [],
+  configSchema: {}, inputs: [], outputs: [], capabilities: [], executionSafety: 'pure',
   package: {
     name: 'github.com/example/nodes', displayName: 'Example Nodes', version: packageVersion,
     license: 'Apache-2.0', repository: 'https://github.com/example/nodes', source: packageVersion ? 'module' : 'development',

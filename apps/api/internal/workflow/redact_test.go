@@ -1,10 +1,25 @@
 package workflow
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestRedactWithReportReturnsEscapedJSONPointers(t *testing.T) {
+	report := RedactWithReport(map[string]any{
+		"safe": map[string]any{"api/token": "secret", "tilde~password": "secret"},
+	})
+	want := []string{"/safe/api~1token", "/safe/tilde~0password"}
+	if !reflect.DeepEqual(report.Paths, want) {
+		t.Fatalf("paths=%v", report.Paths)
+	}
+	if strings.Contains(fmt.Sprint(report.Value), "secret") {
+		t.Fatal("secret leaked")
+	}
+}
 
 func TestRedactRecursivelyCopiesSensitiveFields(t *testing.T) {
 	input := map[string]any{

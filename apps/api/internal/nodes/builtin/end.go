@@ -16,12 +16,13 @@ func NewEnd() *endNode {
 
 func (*endNode) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:         "end",
-		Version:      "1",
-		Title:        "结束",
-		Description:  "返回 Agent 最终结果",
-		Category:     "流程",
-		ConfigSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Type:            "end",
+		Version:         "1",
+		Title:           "结束",
+		Description:     "返回 Agent 最终结果",
+		Category:        "流程",
+		ExecutionSafety: agentnode.ExecutionSafetyPure,
+		ConfigSchema:    json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 		Inputs: []agentnode.Port{{
 			Key:         "result",
 			Title:       "结果",

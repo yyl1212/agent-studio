@@ -123,6 +123,39 @@ func (fixtureRunReader) ListRuns(context.Context, string, int) ([]domain.Run, er
 	return []domain.Run{}, nil
 }
 
+type fixtureDebugger struct {
+	overviewErr error
+	eventsErr   error
+	previewErr  error
+	prepareErr  error
+	lastAfter   int64
+	lastRunID   string
+	lastNodeID  string
+	lastRequest workflow.RerunRequest
+}
+
+func (debugger *fixtureDebugger) Overview(context.Context, string) (workflow.DebugOverview, error) {
+	return workflow.DebugOverview{NodeRuns: []domain.NodeRun{}, SourceChain: []workflow.DebugSource{}}, debugger.overviewErr
+}
+
+func (debugger *fixtureDebugger) Events(_ context.Context, _ string, after int64) (workflow.RunEventPage, error) {
+	debugger.lastAfter = after
+	return workflow.RunEventPage{Events: []domain.RunEvent{}, NextAfterSequence: after}, debugger.eventsErr
+}
+
+func (debugger *fixtureDebugger) PreviewRerun(_ context.Context, runID, nodeID string) (workflow.RerunPreview, error) {
+	debugger.lastRunID, debugger.lastNodeID = runID, nodeID
+	return workflow.RerunPreview{SourceRunID: runID, SourceNodeID: nodeID, EntryInput: map[string]any{}, EntryInputRedactedPaths: []string{}, ActiveNodes: []workflow.RerunNode{}, FrozenEdges: []workflow.FrozenEdgePreview{}, EffectiveSafety: agentnode.ExecutionSafetyPure}, debugger.previewErr
+}
+
+func (debugger *fixtureDebugger) PrepareRerun(_ context.Context, runID, nodeID string, request workflow.RerunRequest) (*workflow.PreparedRun, error) {
+	debugger.lastRunID, debugger.lastNodeID, debugger.lastRequest = runID, nodeID, request
+	if debugger.prepareErr != nil {
+		return nil, debugger.prepareErr
+	}
+	return &workflow.PreparedRun{RunID: "debug-run"}, nil
+}
+
 type fixtureReady struct{ err error }
 
 func (ready fixtureReady) Ready(context.Context) error { return ready.err }
@@ -152,6 +185,90 @@ func TestRouterRejectsUnknownJSONAndAppliesCORS(t *testing.T) {
 func TestRouterRejectsTrailingJSON(t *testing.T) {
 	recorder := performRequest(NewRouter(fixtureDeps()), http.MethodPost, "/api/workflows", `{"name":"Demo","slug":"demo"}{}`)
 	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+}
+
+func TestDebugRoutesExposeOverviewEventsAndPreview(t *testing.T) {
+	dependencies := fixtureDeps()
+	debugger := dependencies.Debugger.(*fixtureDebugger)
+	router := NewRouter(dependencies)
+
+	overview := performRequest(router, http.MethodGet, "/api/runs/run-1/debug", "")
+	if overview.Code != http.StatusOK || !strings.Contains(overview.Body.String(), `"nodeRuns":[]`) || !strings.Contains(overview.Body.String(), `"sourceChain":[]`) {
+		t.Fatalf("overview status=%d body=%s", overview.Code, overview.Body.String())
+	}
+	events := performRequest(router, http.MethodGet, "/api/runs/run-1/events?afterSequence=7", "")
+	if events.Code != http.StatusOK || debugger.lastAfter != 7 || !strings.Contains(events.Body.String(), `"events":[]`) {
+		t.Fatalf("events status=%d after=%d body=%s", events.Code, debugger.lastAfter, events.Body.String())
+	}
+	preview := performRequest(router, http.MethodGet, "/api/runs/run%201/nodes/node%201/rerun-preview", "")
+	if preview.Code != http.StatusOK || debugger.lastRunID != "run 1" || debugger.lastNodeID != "node 1" || !strings.Contains(preview.Body.String(), `"activeNodes":[]`) {
+		t.Fatalf("preview status=%d run=%q node=%q body=%s", preview.Code, debugger.lastRunID, debugger.lastNodeID, preview.Body.String())
+	}
+}
+
+func TestDebugEventsRejectsNegativeCursor(t *testing.T) {
+	for _, raw := range []string{"-1", "invalid"} {
+		recorder := performRequest(NewRouter(fixtureDeps()), http.MethodGet, "/api/runs/run-1/events?afterSequence="+raw, "")
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+	}
+}
+
+func TestDebugRoutesMapStableErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		method string
+		err    error
+		set    func(*fixtureDebugger, error)
+		status int
+		code   string
+	}{
+		{name: "legacy replay", path: "/api/runs/run-1/events", method: http.MethodGet, err: workflow.ErrRunReplayUnavailable, set: func(debugger *fixtureDebugger, err error) { debugger.eventsErr = err }, status: http.StatusConflict, code: "RUN_REPLAY_UNAVAILABLE"},
+		{name: "snapshot", path: "/api/runs/run-1/debug", method: http.MethodGet, err: workflow.ErrRunSnapshotUnsupported, set: func(debugger *fixtureDebugger, err error) { debugger.overviewErr = err }, status: http.StatusUnprocessableEntity, code: "RUN_SNAPSHOT_UNSUPPORTED"},
+		{name: "frozen", path: "/api/runs/run-1/nodes/node-1/rerun-preview", method: http.MethodGet, err: workflow.ErrRunFrozenEdgeUnavailable, set: func(debugger *fixtureDebugger, err error) { debugger.previewErr = err }, status: http.StatusUnprocessableEntity, code: "RUN_FROZEN_EDGE_UNAVAILABLE"},
+		{name: "side effect", path: "/api/runs/run-1/nodes/node-1/reruns", method: http.MethodPost, err: workflow.ErrRunSideEffectConfirmationRequired, set: func(debugger *fixtureDebugger, err error) { debugger.prepareErr = err }, status: http.StatusConflict, code: "RUN_SIDE_EFFECT_CONFIRMATION_REQUIRED"},
+		{name: "entry input", path: "/api/runs/run-1/nodes/node-1/reruns", method: http.MethodPost, err: workflow.ErrRunEntryInputInvalid, set: func(debugger *fixtureDebugger, err error) { debugger.prepareErr = err }, status: http.StatusBadRequest, code: "RUN_ENTRY_INPUT_INVALID"},
+		{name: "budget", path: "/api/runs/run-1/nodes/node-1/reruns", method: http.MethodPost, err: domain.ErrRunEventBudgetExceeded, set: func(debugger *fixtureDebugger, err error) { debugger.prepareErr = err }, status: http.StatusRequestEntityTooLarge, code: "RUN_EVENT_BUDGET_EXCEEDED"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dependencies := fixtureDeps()
+			debugger := dependencies.Debugger.(*fixtureDebugger)
+			test.set(debugger, test.err)
+			body := ""
+			if test.method == http.MethodPost {
+				body = `{"entryInput":{},"confirmSideEffects":false}`
+			}
+			recorder := performRequest(NewRouter(dependencies), test.method, test.path, body)
+			assertJSONError(t, recorder, test.status, test.code)
+			if strings.Contains(recorder.Body.String(), test.err.Error()) {
+				t.Fatalf("internal cause leaked: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRerunRejectsUnknownAndTrailingJSON(t *testing.T) {
+	path := "/api/runs/run-1/nodes/node-1/reruns"
+	for _, body := range []string{
+		`{"entryInput":{},"confirmSideEffects":false,"unknown":true}`,
+		`{"entryInput":{},"confirmSideEffects":false}{}`,
+	} {
+		recorder := performRequest(NewRouter(fixtureDeps()), http.MethodPost, path, body)
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+	}
+}
+
+func TestRerunStreamsPreparedDebugRun(t *testing.T) {
+	dependencies := fixtureDeps()
+	debugger := dependencies.Debugger.(*fixtureDebugger)
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/runs/run%201/nodes/node%201/reruns", `{"entryInput":{"in":["edited"]},"confirmSideEffects":true}`)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "application/x-ndjson" || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("status=%d headers=%v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+	if debugger.lastRunID != "run 1" || debugger.lastNodeID != "node 1" || !debugger.lastRequest.ConfirmSideEffects || !strings.Contains(recorder.Body.String(), `"type":"run.started"`) || !strings.Contains(recorder.Body.String(), `"runId":"debug-run"`) {
+		t.Fatalf("debugger=%+v body=%s", debugger, recorder.Body.String())
+	}
 }
 
 func TestWorkflowTemplateRoutesUseStableShapes(t *testing.T) {
@@ -384,6 +501,54 @@ func TestNodeAPIDiscoversBothLLMVersionsAndResolvesV2Fields(t *testing.T) {
 	}
 }
 
+func TestNodeAPIExposesExactOfficialExecutionSafetyMatrix(t *testing.T) {
+	dependencies := fixtureDeps()
+	record := builtin.RuntimeRecord(buildinfo.Info{Version: "v0.3.0"})
+	if err := dependencies.Registry.RegisterPackage(record, func(registrar agentnode.Registrar) error {
+		if err := builtin.RegisterCore(registrar); err != nil {
+			return err
+		}
+		if err := builtin.RegisterLLM(registrar, modelprovider.NewMock(), "mock"); err != nil {
+			return err
+		}
+		return builtin.RegisterIntegrationNodes(registrar, builtin.HTTPOptions{})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := generated.RegisterNodes(dependencies.Registry); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/node-types", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var definitions []nodeTypeResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &definitions); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]agentnode.ExecutionSafety{
+		"start@1":                   agentnode.ExecutionSafetyPure,
+		"template@1":                agentnode.ExecutionSafetyPure,
+		"condition@1":               agentnode.ExecutionSafetyPure,
+		"end@1":                     agentnode.ExecutionSafetyPure,
+		"code@1":                    agentnode.ExecutionSafetyPure,
+		"llm@1":                     agentnode.ExecutionSafetyReadOnly,
+		"llm@2":                     agentnode.ExecutionSafetyReadOnly,
+		"http@1":                    agentnode.ExecutionSafetySideEffect,
+		"extension.echo@1.0.0":      agentnode.ExecutionSafetyPure,
+		"extension.retriever@1.0.0": agentnode.ExecutionSafetyPure,
+		"extension.webhook@1.0.0":   agentnode.ExecutionSafetySideEffect,
+	}
+	got := make(map[string]agentnode.ExecutionSafety, len(definitions))
+	for _, definition := range definitions {
+		got[definition.Type+"@"+definition.Version] = definition.ExecutionSafety
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("execution safeties=%v, want %v", got, want)
+	}
+}
+
 func TestNodeAPIIncludesGeneratedOfficialExtensions(t *testing.T) {
 	dependencies := fixtureDeps()
 	if err := generated.RegisterNodes(dependencies.Registry); err != nil {
@@ -507,6 +672,7 @@ func fixtureDeps() Dependencies {
 		},
 		Runner:    &fixtureRunner{},
 		Runs:      fixtureRunReader{},
+		Debugger:  &fixtureDebugger{},
 		Readiness: fixtureReady{},
 		WebOrigin: "http://localhost:5173",
 	}

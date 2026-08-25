@@ -28,6 +28,7 @@ type PreparedRun struct {
 	WorkflowID        string
 	WorkflowVersionID *string
 	DraftRevision     *int64
+	Scope             *engine.ExecutionScope
 }
 
 type RunService struct {
@@ -156,7 +157,13 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 		downstream: observer,
 		started:    make(map[string]time.Time),
 	}
-	result, runErr := service.engine.Run(ctx, prepared.RunID, prepared.Plan, prepared.Input, persistence)
+	var result engine.RunResult
+	var runErr error
+	if prepared.Scope == nil {
+		result, runErr = service.engine.Run(ctx, prepared.RunID, prepared.Plan, prepared.Input, persistence)
+	} else {
+		result, runErr = service.engine.RunWithScope(ctx, prepared.RunID, prepared.Plan, prepared.Input, persistence, *prepared.Scope)
+	}
 	if runErr != nil {
 		service.logRunError(prepared.RunID, runErr)
 	}
@@ -274,12 +281,66 @@ type persistenceObserver struct {
 
 func (observer *persistenceObserver) Observe(ctx context.Context, event engine.Event) error {
 	safeEvent := event
-	safeEvent.Input = Redact(event.Input)
-	safeEvent.Output = Redact(event.Output)
+	inputReport := RedactWithReport(event.Input)
+	outputReport := RedactWithReport(event.Output)
+	safeEvent.Input = inputReport.Value
+	safeEvent.Output = outputReport.Value
+	safeEvent.InputRedactedPaths = append([]string(nil), inputReport.Paths...)
+	safeEvent.OutputRedactedPaths = append([]string(nil), outputReport.Paths...)
+	if safeEvent.ActivePorts == nil {
+		safeEvent.ActivePorts = []string{}
+	}
+	if safeEvent.InputRedactedPaths == nil {
+		safeEvent.InputRedactedPaths = []string{}
+	}
+	if safeEvent.OutputRedactedPaths == nil {
+		safeEvent.OutputRedactedPaths = []string{}
+	}
+	inputJSON, err := marshalEventValue(safeEvent.Input)
+	if err != nil {
+		return err
+	}
+	outputJSON, err := marshalEventValue(safeEvent.Output)
+	if err != nil {
+		return err
+	}
+	errorJSON, err := marshalEventValue(safeEvent.Error)
+	if err != nil {
+		return err
+	}
+	activePortsJSON, err := json.Marshal(safeEvent.ActivePorts)
+	if err != nil {
+		return fmt.Errorf("encode active ports: %w", err)
+	}
+	inputPathsJSON, err := json.Marshal(safeEvent.InputRedactedPaths)
+	if err != nil {
+		return fmt.Errorf("encode input redaction paths: %w", err)
+	}
+	outputPathsJSON, err := json.Marshal(safeEvent.OutputRedactedPaths)
+	if err != nil {
+		return fmt.Errorf("encode output redaction paths: %w", err)
+	}
+	if len(inputJSON) > 1<<20 || len(outputJSON) > 1<<20 || len(errorJSON) > 64<<10 {
+		return domain.ErrRunEventBudgetExceeded
+	}
+	runEvent := domain.RunEvent{
+		RunID: safeEvent.RunID, Sequence: safeEvent.Sequence, Type: safeEvent.Type, NodeID: safeEvent.NodeID,
+		Status: safeEvent.Status, Input: inputJSON, Output: outputJSON, ActivePorts: append([]string(nil), safeEvent.ActivePorts...),
+		Error: safeEvent.Error, InputRedactedPaths: append([]string(nil), safeEvent.InputRedactedPaths...),
+		OutputRedactedPaths: append([]string(nil), safeEvent.OutputRedactedPaths...), Timestamp: safeEvent.Timestamp,
+		DataBytes: int64(len(inputJSON) + len(outputJSON) + len(errorJSON) + len(activePortsJSON) + len(inputPathsJSON) + len(outputPathsJSON)),
+	}
+	var nodeRun *domain.NodeRun
 	if event.NodeID != "" {
-		if err := observer.persistNodeEvent(ctx, safeEvent); err != nil {
+		built, err := observer.nodeRunForEvent(safeEvent, inputJSON, outputJSON)
+		if err != nil {
 			return err
 		}
+		nodeRun = &built
+	}
+	budget := domain.RunEventBudget{MaxEvents: 2*len(observer.prepared.Plan.Nodes) + 2, MaxTotalDataBytes: 16 << 20}
+	if err := observer.store.PersistRunEvent(ctx, runEvent, nodeRun, budget); err != nil {
+		return err
 	}
 	if observer.downstream != nil {
 		return observer.downstream.Observe(ctx, safeEvent)
@@ -287,18 +348,10 @@ func (observer *persistenceObserver) Observe(ctx context.Context, event engine.E
 	return nil
 }
 
-func (observer *persistenceObserver) persistNodeEvent(ctx context.Context, event engine.Event) error {
+func (observer *persistenceObserver) nodeRunForEvent(event engine.Event, inputJSON, outputJSON json.RawMessage) (domain.NodeRun, error) {
 	compiled, exists := observer.prepared.Plan.Nodes[event.NodeID]
 	if !exists {
-		return fmt.Errorf("event references unknown node %s", event.NodeID)
-	}
-	inputJSON, err := marshalEventValue(event.Input)
-	if err != nil {
-		return err
-	}
-	outputJSON, err := marshalEventValue(event.Output)
-	if err != nil {
-		return err
+		return domain.NodeRun{}, fmt.Errorf("event references unknown node %s", event.NodeID)
 	}
 	var startedAt, endedAt *time.Time
 	if event.Status == domain.NodeRunning {
@@ -313,7 +366,7 @@ func (observer *persistenceObserver) persistNodeEvent(ctx context.Context, event
 		ended := event.Timestamp
 		endedAt = &ended
 	}
-	return observer.store.UpsertNodeRun(ctx, domain.NodeRun{
+	return domain.NodeRun{
 		ID:        uuid.NewString(),
 		RunID:     observer.prepared.RunID,
 		NodeID:    event.NodeID,
@@ -324,7 +377,7 @@ func (observer *persistenceObserver) persistNodeEvent(ctx context.Context, event
 		Error:     event.Error,
 		StartedAt: startedAt,
 		EndedAt:   endedAt,
-	})
+	}, nil
 }
 
 func marshalEventValue(value any) (json.RawMessage, error) {

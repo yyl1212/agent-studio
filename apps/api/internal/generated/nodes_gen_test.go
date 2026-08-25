@@ -12,12 +12,18 @@ import (
 )
 
 type recordingRegistrar struct {
-	types []string
+	types    []string
+	safeties map[string]agentnode.ExecutionSafety
 }
 
 func (registrar *recordingRegistrar) Register(node agentnode.Node) error {
 	definition := node.Definition()
-	registrar.types = append(registrar.types, definition.Type+"@"+definition.Version)
+	key := definition.Type + "@" + definition.Version
+	registrar.types = append(registrar.types, key)
+	if registrar.safeties == nil {
+		registrar.safeties = make(map[string]agentnode.ExecutionSafety)
+	}
+	registrar.safeties[key] = definition.ExecutionSafety
 	return nil
 }
 
@@ -33,6 +39,21 @@ func TestRegisterNodesUsesGeneratedOrder(t *testing.T) {
 	want := []string{"extension.echo@1.0.0", "extension.retriever@1.0.0", "extension.webhook@1.0.0"}
 	if !reflect.DeepEqual(registrar.types, want) {
 		t.Fatalf("types=%v want=%v", registrar.types, want)
+	}
+}
+
+func TestRegisterNodesDeclaresExactExecutionSafety(t *testing.T) {
+	registrar := &recordingRegistrar{}
+	if err := RegisterNodes(registrar); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]agentnode.ExecutionSafety{
+		"extension.echo@1.0.0":      agentnode.ExecutionSafetyPure,
+		"extension.retriever@1.0.0": agentnode.ExecutionSafetyPure,
+		"extension.webhook@1.0.0":   agentnode.ExecutionSafetySideEffect,
+	}
+	if !reflect.DeepEqual(registrar.safeties, want) {
+		t.Fatalf("execution safeties=%v, want %v", registrar.safeties, want)
 	}
 }
 

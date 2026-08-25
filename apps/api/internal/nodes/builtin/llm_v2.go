@@ -237,12 +237,13 @@ func NewLLMV2(provider modelprovider.Provider, defaultModel string) agentnode.No
 
 func (*llmV2Node) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:         "llm",
-		Version:      "2",
-		Title:        "LLM · 结构化输出",
-		Description:  "调用已配置的模型服务生成文本或严格结构化结果",
-		Category:     "AI",
-		ConfigSchema: append(json.RawMessage(nil), llmV2ConfigSchema...),
+		Type:            "llm",
+		Version:         "2",
+		Title:           "LLM · 结构化输出",
+		Description:     "调用已配置的模型服务生成文本或严格结构化结果",
+		Category:        "AI",
+		ExecutionSafety: agentnode.ExecutionSafetyReadOnly,
+		ConfigSchema:    append(json.RawMessage(nil), llmV2ConfigSchema...),
 		Inputs: []agentnode.Port{{
 			Key:         "prompt",
 			Title:       "提示词",

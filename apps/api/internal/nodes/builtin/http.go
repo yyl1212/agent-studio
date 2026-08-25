@@ -71,11 +71,12 @@ func NewHTTP(options HTTPOptions) *httpNode {
 
 func (*httpNode) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "http",
-		Version:     "1",
-		Title:       "HTTP",
-		Description: "调用受网络策略保护的 HTTP 接口",
-		Category:    "集成",
+		Type:            "http",
+		Version:         "1",
+		Title:           "HTTP",
+		Description:     "调用受网络策略保护的 HTTP 接口",
+		Category:        "集成",
+		ExecutionSafety: agentnode.ExecutionSafetySideEffect,
 		ConfigSchema: json.RawMessage(`{
           "type":"object",
           "properties":{

@@ -8,9 +8,11 @@ import (
 )
 
 var (
-	ErrNotFound         = errors.New("record not found")
-	ErrRevisionConflict = errors.New("workflow revision conflict")
-	ErrSlugConflict     = errors.New("workflow slug conflict")
+	ErrNotFound               = errors.New("record not found")
+	ErrRevisionConflict       = errors.New("workflow revision conflict")
+	ErrSlugConflict           = errors.New("workflow slug conflict")
+	ErrRunEventSequence       = errors.New("run event sequence invalid")
+	ErrRunEventBudgetExceeded = errors.New("run event budget exceeded")
 )
 
 type PublicError struct {
@@ -54,6 +56,9 @@ func publicLLMV2Error(code string) (string, string, bool) {
 }
 
 func NewPublicRunError(err error) *PublicError {
+	if errors.Is(err, ErrRunEventBudgetExceeded) {
+		return &PublicError{Code: "RUN_EVENT_BUDGET_EXCEEDED", Message: "运行事件超过大小限制"}
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return &PublicError{Code: "RUN_CANCELLED", Kind: agentnode.ErrorKindCanceled, Message: "运行已取消"}
 	}

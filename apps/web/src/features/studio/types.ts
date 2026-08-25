@@ -9,6 +9,8 @@ export interface StudioNodeData extends Record<string, unknown> {
   definition?: NodeDefinition
   ports: ResolvedPorts
   issues: ValidationIssue[]
+  debugStatus?: string
+  debugCurrent?: boolean
 }
 
 export type StudioNode = Node<StudioNodeData, 'studio'>

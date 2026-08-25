@@ -19,6 +19,23 @@ const (
 	CardinalitySingleActive Cardinality = "single-active"
 )
 
+type ExecutionSafety string
+
+const (
+	ExecutionSafetyPure       ExecutionSafety = "pure"
+	ExecutionSafetyReadOnly   ExecutionSafety = "read_only"
+	ExecutionSafetySideEffect ExecutionSafety = "side_effect"
+)
+
+func EffectiveExecutionSafety(value ExecutionSafety) ExecutionSafety {
+	switch value {
+	case ExecutionSafetyPure, ExecutionSafetyReadOnly, ExecutionSafetySideEffect:
+		return value
+	default:
+		return ExecutionSafetySideEffect
+	}
+}
+
 type Port struct {
 	Key         string      `json:"key"`
 	Title       string      `json:"title"`
@@ -33,13 +50,14 @@ type ResolvedPorts struct {
 }
 
 type Definition struct {
-	Type         string          `json:"type"`
-	Version      string          `json:"version"`
-	Title        string          `json:"title"`
-	Description  string          `json:"description"`
-	Category     string          `json:"category"`
-	ConfigSchema json.RawMessage `json:"configSchema"`
-	Inputs       []Port          `json:"inputs"`
-	Outputs      []Port          `json:"outputs"`
-	Capabilities []Capability    `json:"capabilities,omitempty"`
+	Type            string          `json:"type"`
+	Version         string          `json:"version"`
+	Title           string          `json:"title"`
+	Description     string          `json:"description"`
+	Category        string          `json:"category"`
+	ConfigSchema    json.RawMessage `json:"configSchema"`
+	Inputs          []Port          `json:"inputs"`
+	Outputs         []Port          `json:"outputs"`
+	Capabilities    []Capability    `json:"capabilities,omitempty"`
+	ExecutionSafety ExecutionSafety `json:"executionSafety,omitempty"`
 }

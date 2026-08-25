@@ -22,19 +22,24 @@ interface WorkflowCanvasProps {
   onConnect: (connection: Connection) => void
   isValidConnection: (connection: Connection | StudioEdge) => boolean
   onNodeClick: (node: StudioNode) => void
+  readOnly?: boolean
+  currentNodeID?: string
 }
 
 export function WorkflowCanvas(props: WorkflowCanvasProps) {
+	const canvasNodes = props.currentNodeID === undefined
+		? props.nodes
+		: props.nodes.map((node) => ({ ...node, selected: props.currentNodeID === node.id }))
   return (
     <div className="workflow-canvas" aria-label="工作流画布">
       <ReactFlowProvider>
         <ReactFlow
-          nodes={props.nodes}
+		  nodes={canvasNodes}
           edges={props.edges}
           nodeTypes={nodeTypes}
-          onNodesChange={props.onNodesChange}
-          onEdgesChange={props.onEdgesChange}
-          onConnect={props.onConnect}
+          onNodesChange={(changes) => { if (!props.readOnly) props.onNodesChange(changes) }}
+          onEdgesChange={(changes) => { if (!props.readOnly) props.onEdgesChange(changes) }}
+          onConnect={(connection) => { if (!props.readOnly) props.onConnect(connection) }}
           isValidConnection={props.isValidConnection}
           onNodeClick={(event, node) => {
             if ((event.target as HTMLElement).closest('.react-flow__handle')) return
@@ -42,7 +47,9 @@ export function WorkflowCanvas(props: WorkflowCanvasProps) {
           }}
           fitView
           fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
-          deleteKeyCode={['Backspace', 'Delete']}
+		  nodesDraggable={!props.readOnly}
+		  nodesConnectable={!props.readOnly}
+		  deleteKeyCode={props.readOnly ? null : ['Backspace', 'Delete']}
         >
           <Background gap={22} size={1.2} />
           <Controls />

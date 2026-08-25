@@ -43,6 +43,18 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 		status, response.Code, response.Message = http.StatusConflict, "WORKFLOW_REVISION_CONFLICT", "草稿版本已变化，请刷新后重试"
 	case errors.Is(err, domain.ErrSlugConflict):
 		status, response.Code, response.Message = http.StatusConflict, "WORKFLOW_SLUG_CONFLICT", "Agent 地址标识已存在"
+	case errors.Is(err, workflow.ErrRunReplayUnavailable):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_REPLAY_UNAVAILABLE", "当前运行无法精确回放"
+	case errors.Is(err, workflow.ErrRunSnapshotUnsupported):
+		status, response.Code, response.Message = http.StatusUnprocessableEntity, "RUN_SNAPSHOT_UNSUPPORTED", "当前运行快照不受支持"
+	case errors.Is(err, workflow.ErrRunFrozenEdgeUnavailable):
+		status, response.Code, response.Message = http.StatusUnprocessableEntity, "RUN_FROZEN_EDGE_UNAVAILABLE", "历史分支输入无法重建"
+	case errors.Is(err, workflow.ErrRunSideEffectConfirmationRequired):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_SIDE_EFFECT_CONFIRMATION_REQUIRED", "请确认可能产生的外部副作用"
+	case errors.Is(err, workflow.ErrRunEntryInputInvalid):
+		status, response.Code, response.Message = http.StatusBadRequest, "RUN_ENTRY_INPUT_INVALID", "重跑入口输入无效"
+	case errors.Is(err, domain.ErrRunEventBudgetExceeded):
+		status, response.Code, response.Message = http.StatusRequestEntityTooLarge, "RUN_EVENT_BUDGET_EXCEEDED", "运行事件超过大小限制"
 	case errors.As(err, &templateValidationError):
 		status, response.Code, response.Message = http.StatusUnprocessableEntity, "WORKFLOW_TEMPLATE_INVALID", "工作流模板校验失败"
 		response.Issues = templateValidationError.Issues

@@ -466,6 +466,128 @@ paths:
                       $ref: "#/components/schemas/NodeRun"
         "404":
           $ref: "#/components/responses/Error"
+  /api/runs/{id}/debug:
+    get:
+      operationId: getRunDebug
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 运行回放概览
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugOverview"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+  /api/runs/{id}/events:
+    get:
+      operationId: listRunEvents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: afterSequence
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: 运行事件页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunEventPage"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/runs/{id}/nodes/{nodeId}/rerun-preview:
+    get:
+      operationId: previewNodeRerun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: nodeId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 局部重跑预览
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RerunPreview"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+  /api/runs/{id}/nodes/{nodeId}/reruns:
+    post:
+      operationId: rerunFromNode
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: nodeId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RerunRequest"
+      responses:
+        "200":
+          description: 每行一个新 Debug RunEvent 的 NDJSON 流
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: 每行符合 RunEvent Schema。
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
 components:
   parameters:
     WorkflowID:
@@ -594,7 +716,7 @@ components:
             $ref: "#/components/schemas/PortDefinition"
     NodeDefinition:
       type: object
-      required: [type, version, title, description, category, configSchema, inputs, outputs, capabilities, package]
+      required: [type, version, title, description, category, configSchema, inputs, outputs, capabilities, executionSafety, package]
       properties:
         type:
           type: string
@@ -622,6 +744,9 @@ components:
           items:
             type: string
             enum: [network, secrets, filesystem-read, filesystem-write]
+        executionSafety:
+          type: string
+          enum: [pure, read_only, side_effect]
         package:
           $ref: "#/components/schemas/NodePackageSummary"
     NodePackageSource:
@@ -1286,13 +1411,18 @@ components:
         draftRevision:
           type: [integer, "null"]
           format: int64
+        sourceRunId:
+          type: [string, "null"]
+          format: uuid
+        sourceNodeId:
+          type: [string, "null"]
         graphSnapshot:
           oneOf:
             - $ref: "#/components/schemas/Graph"
             - type: "null"
         mode:
           type: string
-          enum: [test, published]
+          enum: [test, published, debug]
         status:
           type: string
           enum: [running, completed, failed, cancelled]
@@ -1338,7 +1468,7 @@ components:
           format: date-time
     RunEvent:
       type: object
-      required: [sequence, type, runId, timestamp]
+      required: [sequence, type, runId, activePorts, inputRedactedPaths, outputRedactedPaths, timestamp]
       properties:
         sequence:
           type: integer
@@ -1355,6 +1485,18 @@ components:
           type: string
         input: {}
         output: {}
+        activePorts:
+          type: array
+          items:
+            type: string
+        inputRedactedPaths:
+          type: array
+          items:
+            type: string
+        outputRedactedPaths:
+          type: array
+          items:
+            type: string
         error:
           oneOf:
             - $ref: "#/components/schemas/PublicError"
@@ -1362,6 +1504,126 @@ components:
         timestamp:
           type: string
           format: date-time
+    DebugSource:
+      type: object
+      required: [runId, mode, status]
+      properties:
+        runId:
+          type: string
+          format: uuid
+        sourceNodeId:
+          type: string
+        mode:
+          type: string
+          enum: [test, published, debug]
+        status:
+          type: string
+          enum: [running, completed, failed, cancelled]
+    DebugOverview:
+      type: object
+      required: [run, graph, nodeRuns, sourceChain, replayAvailable, rerunAvailable]
+      properties:
+        run:
+          $ref: "#/components/schemas/Run"
+        graph:
+          $ref: "#/components/schemas/Graph"
+        nodeRuns:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeRun"
+        sourceChain:
+          type: array
+          items:
+            $ref: "#/components/schemas/DebugSource"
+        replayAvailable:
+          type: boolean
+        rerunAvailable:
+          type: boolean
+        unavailableReason:
+          type: string
+    RunEventPage:
+      type: object
+      required: [events, nextAfterSequence]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunEvent"
+        nextAfterSequence:
+          type: integer
+          format: int64
+    ExecutionSafety:
+      type: string
+      enum: [pure, read_only, side_effect]
+    RerunNode:
+      type: object
+      required: [id, type, version, title, safety]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        version:
+          type: string
+        title:
+          type: string
+        safety:
+          $ref: "#/components/schemas/ExecutionSafety"
+    FrozenEdgePreview:
+      type: object
+      required: [edgeId, source, sourcePort, target, targetPort, active]
+      properties:
+        edgeId:
+          type: string
+        source:
+          type: string
+        sourcePort:
+          type: string
+        target:
+          type: string
+        targetPort:
+          type: string
+        active:
+          type: boolean
+        value: {}
+    RerunPreview:
+      type: object
+      required: [sourceRunId, sourceNodeId, entryInput, entryInputRedactedPaths, activeNodes, frozenEdges, effectiveSafety, requiresConfirmation]
+      properties:
+        sourceRunId:
+          type: string
+          format: uuid
+        sourceNodeId:
+          type: string
+        entryInput:
+          type: object
+          additionalProperties: true
+        entryInputRedactedPaths:
+          type: array
+          items:
+            type: string
+        activeNodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RerunNode"
+        frozenEdges:
+          type: array
+          items:
+            $ref: "#/components/schemas/FrozenEdgePreview"
+        effectiveSafety:
+          $ref: "#/components/schemas/ExecutionSafety"
+        requiresConfirmation:
+          type: boolean
+    RerunRequest:
+      type: object
+      additionalProperties: false
+      required: [entryInput, confirmSideEffects]
+      properties:
+        entryInput:
+          type: object
+          additionalProperties: true
+        confirmSideEffects:
+          type: boolean
     PublicError:
       type: object
       required: [code, message]

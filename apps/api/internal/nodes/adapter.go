@@ -78,6 +78,7 @@ func NormalizeDefinition(definition agentnode.Definition) (agentnode.Definition,
 	definition.Outputs = outputs
 	definition.ConfigSchema = append(json.RawMessage(nil), definition.ConfigSchema...)
 	definition.Capabilities = append([]agentnode.Capability(nil), definition.Capabilities...)
+	definition.ExecutionSafety = agentnode.EffectiveExecutionSafety(definition.ExecutionSafety)
 	return definition, nil
 }
 
