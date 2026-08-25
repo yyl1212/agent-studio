@@ -373,6 +373,9 @@ func TestRouterRejectsUnknownJSONAndAppliesCORS(t *testing.T) {
 	if recorder.Header().Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
 		t.Fatalf("CORS headers=%v", recorder.Header())
 	}
+	if !strings.Contains(recorder.Header().Get("Access-Control-Allow-Methods"), http.MethodPatch) {
+		t.Fatalf("CORS does not allow workflow metadata PATCH: %v", recorder.Header())
+	}
 }
 
 func TestRouterRejectsTrailingJSON(t *testing.T) {

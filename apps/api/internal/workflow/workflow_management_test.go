@@ -141,6 +141,18 @@ func TestWorkflowManagementUpdateValidatesAndNormalizesMetadata(t *testing.T) {
 	}
 }
 
+func TestWorkflowManagementUpdateRejectsArchivedWorkflowBeforeWrite(t *testing.T) {
+	archivedAt := time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC)
+	store := &fakeWorkflowManagementStore{workflow: domain.Workflow{ID: "workflow-1", ArchivedAt: &archivedAt}}
+	_, err := NewWorkflowManagementService(store).Update(context.Background(), store.workflow.ID, UpdateWorkflowInput{Name: "禁止修改"})
+	if !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("error=%v", err)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("archived workflow reached metadata write: calls=%d", store.updateCalls)
+	}
+}
+
 func TestWorkflowManagementCopyClonesOnlyArchivedSourceDraft(t *testing.T) {
 	archivedAt := time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC)
 	publishedID := "version-1"

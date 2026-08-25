@@ -1492,6 +1492,7 @@ export interface operations {
                     };
                 };
             };
+            409: components["responses"]["Error"];
         };
     };
     runWorkflowDraft: {
@@ -1657,6 +1658,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
         };
     };
     runAgent: {
@@ -1685,6 +1687,7 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             422: components["responses"]["Error"];
         };
     };

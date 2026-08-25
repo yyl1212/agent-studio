@@ -89,6 +89,13 @@ func (service *WorkflowManagementService) Update(ctx context.Context, id string,
 	if err != nil {
 		return domain.Workflow{}, err
 	}
+	loaded, err := service.store.GetWorkflow(ctx, id)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	if err := ensureWorkflowActive(loaded); err != nil {
+		return domain.Workflow{}, err
+	}
 	return service.store.UpdateWorkflowMetadata(ctx, id, name, description)
 }
 

@@ -196,6 +196,8 @@ paths:
           schema:
             type: string
             maxLength: 100
+            description: UTF-8 编码最多 100 字节。
+            x-agent-studio-max-bytes: 100
         - name: state
           in: query
           schema:
@@ -405,6 +407,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/ValidationIssue"
+        "409":
+          $ref: "#/components/responses/Error"
   /api/workflows/{id}/test-runs:
     parameters:
       - $ref: "#/components/parameters/WorkflowID"
@@ -545,6 +549,8 @@ paths:
                 $ref: "#/components/schemas/AgentManifest"
         "404":
           $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
   /api/agents/{slug}/runs:
     parameters:
       - $ref: "#/components/parameters/AgentSlug"
@@ -567,6 +573,8 @@ paths:
         "400":
           $ref: "#/components/responses/Error"
         "404":
+          $ref: "#/components/responses/Error"
+        "409":
           $ref: "#/components/responses/Error"
         "422":
           $ref: "#/components/responses/Error"
