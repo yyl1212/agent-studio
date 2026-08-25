@@ -74,4 +74,20 @@ describe('AgentPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: '取消运行' }))
     await vi.waitFor(() => expect(screen.queryByRole('button', { name: '取消运行' })).not.toBeInTheDocument())
   })
+
+  it('Agent 已归档时显示安全提示', async () => {
+    vi.mocked(api.getAgentManifest).mockRejectedValueOnce(new APIError(409, 'WORKFLOW_ARCHIVED', '内部归档错误', 'req-archive'))
+    renderPage()
+    expect(await screen.findByRole('alert')).toHaveTextContent('该 Agent 已归档，暂时不能运行')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('内部归档错误')
+  })
+
+  it('运行期间发现 Agent 已归档时显示安全提示', async () => {
+    vi.spyOn(api, 'runAgent').mockRejectedValue(new APIError(409, 'WORKFLOW_ARCHIVED', '内部归档错误', 'req-archive'))
+    renderPage()
+    fireEvent.change(await screen.findByLabelText('主题'), { target: { value: 'Agent' } })
+    await userEvent.click(screen.getByRole('button', { name: '运行 Agent' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('该 Agent 已归档，暂时不能运行')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('内部归档错误')
+  })
 })

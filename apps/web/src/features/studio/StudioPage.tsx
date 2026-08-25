@@ -72,7 +72,7 @@ export function StudioPage() {
         setDefinitions(loadedDefinitions)
         setNodes(flow.nodes)
         setEdges(flow.edges)
-        saveQueue.current = new SaveQueue(
+        saveQueue.current = loadedWorkflow.archivedAt ? undefined : new SaveQueue(
           loadedWorkflow.draftRevision,
           async (request) => {
             const saved = await api.saveWorkflow(id, request)
@@ -91,11 +91,15 @@ export function StudioPage() {
 
   const selectedID = workbench.mode.kind === 'config' ? workbench.mode.nodeId : undefined
   const selectedNode = nodes.find((node) => node.id === selectedID)
+  const archived = Boolean(workflow?.archivedAt)
   const resolveNodePorts = useCallback((type: string, version: string, config: Record<string, unknown>, signal: AbortSignal) => api.resolveNodeType(type, version, config, signal), [])
   const configDraft = useNodeConfigDraft({ node: selectedNode, edges, resolve: resolveNodePorts })
 
-  const commit = (nextNodes: StudioNode[], nextEdges: StudioEdge[]) => saveQueue.current?.enqueue(fromFlowGraph(nextNodes, nextEdges))
+  const commit = (nextNodes: StudioNode[], nextEdges: StudioEdge[]) => {
+    if (!archived) saveQueue.current?.enqueue(fromFlowGraph(nextNodes, nextEdges))
+  }
   const handleNodesChange = (changes: NodeChange<StudioNode>[]) => {
+    if (archived) return
     setNodes((current) => {
       const next = applyNodeChanges(changes, current)
       commit(next, edges)
@@ -103,6 +107,7 @@ export function StudioPage() {
     })
   }
   const handleEdgesChange = (changes: EdgeChange<StudioEdge>[]) => {
+    if (archived) return
     setEdges((current) => {
       const next = applyEdgeChanges(changes, current)
       commit(nodes, next)
@@ -111,7 +116,7 @@ export function StudioPage() {
   }
   const isValidConnection = (connection: Connection | StudioEdge) => validateConnection(connection, nodes, edges)
   const handleConnect = (connection: Connection) => {
-    if (!isValidConnection(connection)) return
+    if (archived || !isValidConnection(connection)) return
     setEdges((current) => {
       const next = addEdge({ ...connection, id: createID('edge'), data: {} }, current)
       commit(nodes, next)
@@ -120,6 +125,7 @@ export function StudioPage() {
   }
 
   const addNode = (definition: NodeDefinition) => {
+    if (archived) return
     const addedCount = nodes.filter((existing) => existing.data.nodeType !== 'start' && existing.data.nodeType !== 'end').length
     const node: StudioNode = {
       id: createID(definition.type), type: 'studio',
@@ -141,7 +147,7 @@ export function StudioPage() {
   }
 
   const applySelectedConfig = (config: Record<string, unknown>, ports: Parameters<typeof applyNodeConfig>[4]) => {
-    if (!selectedID) return
+    if (archived || !selectedID) return
     const applied = applyNodeConfig(nodes, edges, selectedID, config, ports)
     setNodes(applied.nodes)
     setEdges(applied.edges)
@@ -151,7 +157,7 @@ export function StudioPage() {
 
   const startSchema = useMemo(() => deriveStartSchema(nodes), [nodes])
   const runDraft = async (input: Record<string, unknown>) => {
-    if (!workflow) return
+    if (!workflow || archived) return
     runController.current?.abort()
     const controller = new AbortController()
     runController.current = controller
@@ -173,7 +179,7 @@ export function StudioPage() {
   }
 
   const publish = async () => {
-    if (!workflow) return
+    if (!workflow || archived) return
     setPublishing(true)
     setPublishError('')
     try {
@@ -206,8 +212,8 @@ export function StudioPage() {
     setExporting(true)
     setExportError('')
     try {
-      await saveQueue.current?.flush()
-      const revision = saveQueue.current?.getRevision() ?? workflow.draftRevision
+      if (!archived) await saveQueue.current?.flush()
+      const revision = archived ? workflow.draftRevision : (saveQueue.current?.getRevision() ?? workflow.draftRevision)
       const blob = await api.exportWorkflowTemplate(workflow.id, revision, controller.signal)
       const url = URL.createObjectURL(blob)
       try {
@@ -254,6 +260,7 @@ export function StudioPage() {
   }
 
   const requestIntent = (intent: WorkbenchIntent) => {
+    if (archived && intent.kind !== 'export' && intent.kind !== 'close') return
     if (intent.kind === 'config' && workbench.mode.kind === 'config' && intent.nodeId === workbench.mode.nodeId) return
     if (configDraft.dirty && workbench.mode.kind === 'config') workbench.request(intent, true)
     else executeIntent(intent)
@@ -278,15 +285,16 @@ export function StudioPage() {
       <header className="studio-toolbar">
         <div className="studio-title"><Link to="/workflows" aria-label="返回工作流列表">←</Link><div><strong>{workflow.name}</strong><small>{saveLabel(saveState)}</small></div></div>
         <div className="studio-actions">
-          <Link to={`/workflows/${workflow.id}/runs`}>运行记录</Link>
-          <button type="button" onClick={() => requestIntent({ kind: 'open-library' })}>添加节点</button>
-          <button type="button" onClick={() => requestIntent({ kind: 'test' })}>测试运行</button>
+          <Link to={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}>运行记录</Link>
+          <button type="button" onClick={() => requestIntent({ kind: 'open-library' })} disabled={archived}>添加节点</button>
+          <button type="button" onClick={() => requestIntent({ kind: 'test' })} disabled={archived}>测试运行</button>
           <button type="button" onClick={() => requestIntent({ kind: 'export' })} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
-          <button className="primary-button" type="button" onClick={() => requestIntent({ kind: 'publish' })}>发布</button>
+          <button className="primary-button" type="button" onClick={() => requestIntent({ kind: 'publish' })} disabled={archived}>发布</button>
           {exportError && <span className="studio-toolbar-error" role="alert">{exportError}</span>}
         </div>
       </header>
-      <WorkflowCanvas nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => requestIntent({ kind: 'config', nodeId: node.id })} />
+      {archived && <div className="studio-archive-banner" role="status">已归档，只读模式。恢复后才能保存、测试或发布。</div>}
+      <WorkflowCanvas readOnly={archived} nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => { if (!archived) requestIntent({ kind: 'config', nodeId: node.id }) }} />
       {libraryOpen && <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} />}
       {workbench.mode.kind !== 'closed' && <WorkbenchPanel titleId="studio-workbench-title" onRequestClose={() => requestIntent({ kind: 'close' })}>
         {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={applySelectedConfig} />}

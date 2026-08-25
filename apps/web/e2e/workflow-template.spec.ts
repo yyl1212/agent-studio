@@ -47,8 +47,8 @@ test('导出草稿模板并导入为未发布新工作流', async ({ page }) => 
   await expect(page.getByLabel('字段标识')).toHaveValue('topic')
 
   await page.getByRole('link', { name: '返回工作流列表' }).click()
-  const card = page.getByRole('link', { name: new RegExp(`模板副本 ${suffix}`) })
-  await expect(card).toContainText('未发布')
+  const row = page.getByRole('row').filter({ hasText: `模板副本 ${suffix}` })
+  await expect(row).toContainText('未发布')
 })
 
 test('缺失节点包只显示提示且不会自动安装', async ({ page }) => {

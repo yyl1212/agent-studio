@@ -68,5 +68,6 @@ function formatOutput(value: unknown) {
 
 function formatError(error: unknown, fallback: string) {
   if (!(error instanceof APIError)) return fallback
+  if (error.code === 'WORKFLOW_ARCHIVED') return '该 Agent 已归档，暂时不能运行'
   return error.requestId ? `${error.message}（请求 ID：${error.requestId}）` : error.message
 }

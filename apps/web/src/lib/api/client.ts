@@ -25,6 +25,30 @@ export type NodeIndexStatus = components['schemas']['NodeIndexStatus']
 export type NodePackageSearchResult = components['schemas']['NodePackageSearchResult']
 export type IndexedNodePackageSummary = components['schemas']['IndexedNodePackageSummary']
 export type NodePackageDetail = components['schemas']['NodePackageDetail']
+export type WorkflowSummary = components['schemas']['WorkflowSummary']
+export type WorkflowSummaryPage = components['schemas']['WorkflowSummaryPage']
+export type RunSummary = components['schemas']['RunSummary']
+export type RunSummaryPage = components['schemas']['RunSummaryPage']
+export type UpdateWorkflowRequest = components['schemas']['UpdateWorkflowRequest']
+export type CopyWorkflowRequest = components['schemas']['CopyWorkflowRequest']
+
+export type WorkflowSummaryQuery = {
+  q: string
+  state: 'active' | 'archived' | 'all'
+  cursor?: string
+  limit: number
+}
+
+export type RunSummaryQuery = {
+  workflowId?: string
+  statuses: Run['status'][]
+  modes: Run['mode'][]
+  startedAfter?: string
+  startedBefore?: string
+  runId?: string
+  cursor?: string
+  limit: number
+}
 
 export type NodePackageQuery = {
   q: string
@@ -121,6 +145,14 @@ export const api = {
     return request<NodePackageDetail>(`/api/node-package?${params}`, { signal })
   },
   listWorkflows: (signal?: AbortSignal) => request<Workflow[]>('/api/workflows', { signal }),
+  listWorkflowSummaries: (query: WorkflowSummaryQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams()
+    if (query.q) params.set('q', query.q)
+    params.set('state', query.state)
+    if (query.cursor) params.set('cursor', query.cursor)
+    params.set('limit', String(query.limit))
+    return request<WorkflowSummaryPage>(appendSearch('/api/workflow-summaries', params), { signal })
+  },
   createWorkflow: (body: CreateWorkflowRequest) => request<Workflow>('/api/workflows', { method: 'POST', body: jsonBody(body) }),
   previewWorkflowTemplate: (template: WorkflowTemplate, signal?: AbortSignal) =>
     request<WorkflowTemplatePreview>('/api/workflow-templates/preview', { method: 'POST', body: serializePreviewWorkflowTemplateRequest(template), signal }),
@@ -129,6 +161,14 @@ export const api = {
   exportWorkflowTemplate: (id: string, draftRevision: number, signal?: AbortSignal) =>
     requestBlob(`/api/workflows/${encodeURIComponent(id)}/template?draftRevision=${encodeURIComponent(String(draftRevision))}`, signal),
   getWorkflow: (id: string, signal?: AbortSignal) => request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { signal }),
+  updateWorkflow: (id: string, body: UpdateWorkflowRequest, signal?: AbortSignal) =>
+    request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { method: 'PATCH', body: jsonBody(body), signal }),
+  copyWorkflow: (id: string, body: CopyWorkflowRequest, signal?: AbortSignal) =>
+    request<Workflow>(`/api/workflows/${encodeURIComponent(id)}/copies`, { method: 'POST', body: jsonBody(body), signal }),
+  archiveWorkflow: (id: string, signal?: AbortSignal) =>
+    request<Workflow>(`/api/workflows/${encodeURIComponent(id)}/archive`, { method: 'POST', signal }),
+  restoreWorkflow: (id: string, signal?: AbortSignal) =>
+    request<Workflow>(`/api/workflows/${encodeURIComponent(id)}/restore`, { method: 'POST', signal }),
   saveWorkflow: (id: string, body: SaveDraftRequest, signal?: AbortSignal) =>
     request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { method: 'PUT', body: jsonBody(body), signal }),
   validateWorkflow: (id: string) =>
@@ -141,6 +181,18 @@ export const api = {
     request<Run[]>(`/api/workflows/${encodeURIComponent(id)}/runs?limit=${limit}`, { signal }),
   getRun: (id: string, signal?: AbortSignal) =>
     request<{ run: Run; nodeRuns: NodeRun[] }>(`/api/runs/${encodeURIComponent(id)}`, { signal }),
+  listRunSummaries: (query: RunSummaryQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams()
+    if (query.workflowId) params.set('workflowId', query.workflowId)
+    for (const status of query.statuses) params.append('status', status)
+    for (const mode of query.modes) params.append('mode', mode)
+    if (query.startedAfter) params.set('startedAfter', query.startedAfter)
+    if (query.startedBefore) params.set('startedBefore', query.startedBefore)
+    if (query.runId) params.set('runId', query.runId)
+    if (query.cursor) params.set('cursor', query.cursor)
+    params.set('limit', String(query.limit))
+    return request<RunSummaryPage>(appendSearch('/api/runs', params), { signal })
+  },
   getDebugOverview: (id: string, signal?: AbortSignal) =>
     request<DebugOverview>(`/api/runs/${encodeURIComponent(id)}/debug`, { signal }),
   listRunEvents: (id: string, afterSequence = 0, signal?: AbortSignal) =>
@@ -155,4 +207,9 @@ export const api = {
     request<AgentManifest>(`/api/agents/${encodeURIComponent(slug)}`, { signal }),
   runAgent: (slug: string, body: AgentRunRequest, signal?: AbortSignal) =>
     streamRequest(`/api/agents/${encodeURIComponent(slug)}/runs`, { method: 'POST', body: jsonBody(body), signal }),
+}
+
+function appendSearch(path: string, params: URLSearchParams): string {
+  const search = params.toString()
+  return search ? `${path}?${search}` : path
 }

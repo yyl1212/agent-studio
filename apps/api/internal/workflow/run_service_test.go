@@ -198,6 +198,29 @@ func TestPrepareAgentUsesRequestedVersionAfterNewPublish(t *testing.T) {
 	}
 }
 
+func TestArchivedWorkflowRejectsDraftAndAgentRunPreparation(t *testing.T) {
+	service, store := newRunServiceFixture(t)
+	versionGraph := graphReturning(t, "v1")
+	schema, err := inputSchemaForGraph(versionGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := store.AddVersion(versionGraph, schema)
+	store.SetCurrentVersion(version)
+	archivedAt := time.Date(2026, 8, 25, 8, 0, 0, 0, time.UTC)
+	store.workflow.ArchivedAt = &archivedAt
+
+	if _, err := service.PrepareDraft(context.Background(), store.workflow.ID, store.workflow.DraftRevision, map[string]any{"topic": "Agent"}); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("draft error=%v", err)
+	}
+	if _, err := service.PrepareAgent(context.Background(), store.workflow.Slug, version.ID, map[string]any{"topic": "Agent"}); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("agent error=%v", err)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("archived preparations created runs=%+v", store.runs)
+	}
+}
+
 func TestTestRunStoresGraphSnapshotBeforeExecution(t *testing.T) {
 	service, store := newRunServiceFixture(t)
 	workflow := store.workflow

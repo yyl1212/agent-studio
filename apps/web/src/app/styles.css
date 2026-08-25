@@ -123,7 +123,7 @@ a {
 }
 
 .page-heading h2 { margin: 0; font-size: 34px; }
-.page-heading p:not(.eyebrow), .state-card p, .workflow-card p { color: #667085; }
+.page-heading p:not(.eyebrow), .state-card p, .workflow-card p { color: var(--as-text-muted); }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 
@@ -159,9 +159,9 @@ button { cursor: pointer; }
 .primary-button {
   padding: 10px 16px;
   border: 0;
-  border-radius: 10px;
-  color: white;
-  background: #3157d5;
+  border-radius: var(--as-radius-sm);
+  color: var(--as-surface);
+  background: var(--as-primary);
   font-weight: 700;
 }
 
@@ -174,18 +174,19 @@ button { cursor: pointer; }
 
 .page-actions > button:not(.primary-button) {
   padding: 9px 14px;
-  border: 1px solid #cbd3e1;
-  border-radius: 9px;
-  background: white;
+  border: 1px solid var(--as-border);
+  border-radius: var(--as-radius-sm);
+  color: var(--as-text);
+  background: var(--as-surface);
   font-weight: 650;
 }
 
 .state-card {
   padding: 48px;
-  border: 1px dashed #cbd3e1;
-  border-radius: 18px;
+  border: 1px dashed var(--as-border);
+  border-radius: var(--as-radius-md);
   text-align: center;
-  background: white;
+  background: var(--as-surface);
 }
 
 .workflow-grid {

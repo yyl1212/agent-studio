@@ -22,7 +22,7 @@ type WorkflowService interface {
 	Get(context.Context, string) (domain.Workflow, error)
 	Create(context.Context, workflow.CreateWorkflowInput) (domain.Workflow, error)
 	SaveDraft(context.Context, string, int64, domain.Graph) (domain.Workflow, error)
-	Validate(context.Context, string) []domain.ValidationIssue
+	Validate(context.Context, string) ([]domain.ValidationIssue, error)
 	Publish(context.Context, string, int64) (domain.WorkflowVersion, error)
 	AgentManifest(context.Context, string) (workflow.AgentManifest, error)
 	ExportTemplate(context.Context, string, int64) (workflow.TemplateExport, error)
@@ -39,6 +39,18 @@ type Runner interface {
 type RunReader interface {
 	GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error)
 	ListRuns(context.Context, string, int) ([]domain.Run, error)
+}
+
+type WorkflowManager interface {
+	List(context.Context, workflow.WorkflowSummaryRequest) (workflow.WorkflowSummaryPage, error)
+	Update(context.Context, string, workflow.UpdateWorkflowInput) (domain.Workflow, error)
+	Copy(context.Context, string, workflow.CopyWorkflowInput) (domain.Workflow, error)
+	Archive(context.Context, string) (domain.Workflow, error)
+	Restore(context.Context, string) (domain.Workflow, error)
+}
+
+type RunManager interface {
+	List(context.Context, workflow.RunSummaryRequest) (workflow.RunSummaryPage, error)
 }
 
 type Debugger interface {
@@ -59,15 +71,17 @@ type NodePackageCatalog interface {
 }
 
 type Dependencies struct {
-	Registry     *nodes.Registry
-	Workflows    WorkflowService
-	Runner       Runner
-	Runs         RunReader
-	Debugger     Debugger
-	Readiness    Readiness
-	NodePackages NodePackageCatalog
-	WebOrigin    string
-	Logger       *slog.Logger
+	Registry           *nodes.Registry
+	Workflows          WorkflowService
+	WorkflowManagement WorkflowManager
+	Runner             Runner
+	Runs               RunReader
+	RunManagement      RunManager
+	Debugger           Debugger
+	Readiness          Readiness
+	NodePackages       NodePackageCatalog
+	WebOrigin          string
+	Logger             *slog.Logger
 }
 
 type handler struct {
@@ -94,8 +108,13 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Get("/node-packages", handler.listNodePackages)
 		api.Get("/node-package", handler.getNodePackage)
 		api.Get("/workflows", handler.listWorkflows)
+		api.Get("/workflow-summaries", handler.listWorkflowSummaries)
 		api.Post("/workflows", handler.createWorkflow)
 		api.Get("/workflows/{id}", handler.getWorkflow)
+		api.Patch("/workflows/{id}", handler.updateWorkflow)
+		api.Post("/workflows/{id}/copies", handler.copyWorkflow)
+		api.Post("/workflows/{id}/archive", handler.archiveWorkflow)
+		api.Post("/workflows/{id}/restore", handler.restoreWorkflow)
 		api.Get("/workflows/{id}/template", handler.exportWorkflowTemplate)
 		api.Put("/workflows/{id}", handler.saveWorkflow)
 		api.Post("/workflows/{id}/validate", handler.validateWorkflow)
@@ -107,6 +126,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Get("/agents/{slug}", handler.getAgentManifest)
 		api.Post("/agents/{slug}/runs", handler.runAgent)
 		api.Get("/runs/{id}", handler.getRun)
+		api.Get("/runs", handler.listRunSummaries)
 		api.Get("/runs/{id}/debug", handler.getRunDebug)
 		api.Get("/runs/{id}/events", handler.listRunEvents)
 		api.Get("/runs/{id}/nodes/{nodeId}/rerun-preview", handler.previewNodeRerun)

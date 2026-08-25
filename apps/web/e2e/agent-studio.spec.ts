@@ -91,11 +91,11 @@ test('LLM v2 结构化输出完成草稿、发布、Agent 与运行记录闭环'
 
   await page.goto(workflowURL)
   await page.getByRole('link', { name: '运行记录' }).click()
-  const publishedRun = page.getByRole('button', { name: /查看运行/ }).filter({ hasText: '已发布' }).first()
+  const publishedRun = page.getByRole('row').filter({ hasText: '已发布' }).getByRole('button', { name: /查看运行/ }).first()
   await expect(publishedRun).toBeVisible()
   await publishedRun.click()
   await expect(page.getByText('llm · completed')).toBeVisible()
-  await expect(page.locator('.run-detail')).toContainText('Mock 回复：回答：发布')
+  await expect(page.locator('.run-detail-content')).toContainText('Mock 回复：回答：发布')
 })
 
 test('脏节点配置在切换工作台前支持继续编辑和放弃', async ({ page }) => {

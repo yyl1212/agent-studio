@@ -84,6 +84,31 @@ describe('API client', () => {
 		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/node-packages?compatible=true&limit=50&offset=0', expect.objectContaining({ signal: controller.signal }))
 	})
 
+	it('管理接口使用稳定查询、编码路径并透传 AbortSignal', async () => {
+		const controller = new AbortController()
+		const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ items: [], nextCursor: null })))
+		vi.stubGlobal('fetch', fetchMock)
+
+		await api.listWorkflowSummaries({ q: 'Agent', state: 'all', limit: 50, cursor: 'next' }, controller.signal)
+		await api.updateWorkflow('w/1', { name: '新名称', description: '说明' }, controller.signal)
+		await api.copyWorkflow('w/1', { name: '副本', slug: 'copy' }, controller.signal)
+		await api.archiveWorkflow('w/1', controller.signal)
+		await api.restoreWorkflow('w/1', controller.signal)
+		await api.listRunSummaries({
+			workflowId: 'w1', statuses: ['failed', 'running'], modes: ['test'],
+			startedAfter: '2026-08-01T00:00:00Z', startedBefore: '2026-08-25T00:00:00Z', limit: 50,
+		}, controller.signal)
+
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/workflow-summaries?q=Agent&state=all&cursor=next&limit=50', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/workflows/w%2F1', expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ name: '新名称', description: '说明' }), signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/workflows/w%2F1/copies', expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: '副本', slug: 'copy' }), signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/workflows/w%2F1/archive', expect.objectContaining({ method: 'POST', signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/workflows/w%2F1/restore', expect.objectContaining({ method: 'POST', signal: controller.signal }))
+		expect(String(fetchMock.mock.calls[5]?.[0])).toBe('/api/runs?workflowId=w1&status=failed&status=running&mode=test&startedAfter=2026-08-01T00%3A00%3A00Z&startedBefore=2026-08-25T00%3A00%3A00Z&limit=50')
+		expect(fetchMock.mock.calls[5]?.[1]).toEqual(expect.objectContaining({ signal: controller.signal }))
+		for (const [path] of fetchMock.mock.calls) expect(String(path)).not.toMatch(/\?$/)
+	})
+
 	 it('预览并导入工作流模板', async () => {
 		const template = templateFixture()
 		const fetchMock = vi.fn()

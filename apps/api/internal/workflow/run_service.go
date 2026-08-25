@@ -66,6 +66,9 @@ func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, 
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureWorkflowActive(workflow); err != nil {
+		return nil, err
+	}
 	if workflow.DraftRevision != revision {
 		return nil, domain.ErrRevisionConflict
 	}
@@ -112,6 +115,9 @@ func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, 
 func (service *RunService) PrepareAgent(ctx context.Context, slug, workflowVersionID string, input map[string]any) (*PreparedRun, error) {
 	workflow, version, err := service.store.GetAgentVersion(ctx, slug, workflowVersionID)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureWorkflowActive(workflow); err != nil {
 		return nil, err
 	}
 	_, plan, err := compileRunGraph(service.compiler, version.Graph)

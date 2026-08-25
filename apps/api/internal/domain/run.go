@@ -50,6 +50,22 @@ type Run struct {
 	EndedAt           *time.Time      `json:"endedAt,omitempty"`
 }
 
+type RunSummary struct {
+	ID                string     `json:"id"`
+	WorkflowID        string     `json:"workflowId"`
+	WorkflowName      string     `json:"workflowName"`
+	WorkflowSlug      string     `json:"workflowSlug"`
+	WorkflowVersionID *string    `json:"workflowVersionId,omitempty"`
+	WorkflowVersion   *int       `json:"workflowVersion,omitempty"`
+	DraftRevision     *int64     `json:"draftRevision,omitempty"`
+	SourceRunID       *string    `json:"sourceRunId,omitempty"`
+	SourceNodeID      *string    `json:"sourceNodeId,omitempty"`
+	Mode              RunMode    `json:"mode"`
+	Status            RunStatus  `json:"status"`
+	StartedAt         time.Time  `json:"startedAt"`
+	EndedAt           *time.Time `json:"endedAt,omitempty"`
+}
+
 type RunEvent struct {
 	RunID               string          `json:"runId"`
 	Sequence            int64           `json:"sequence"`

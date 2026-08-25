@@ -40,7 +40,8 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	await expect(page.locator('.run-output')).toContainText('L-A+R-A')
 	await page.getByRole('button', { name: '关闭工作台' }).click()
 	await page.getByRole('link', { name: '运行记录' }).click()
-	await page.getByRole('link', { name: '调试回放' }).first().click()
+	await page.getByRole('button', { name: /查看运行/ }).first().click()
+	await page.getByRole('link', { name: '调试回放' }).click()
 	await expect(page.getByText('只读回放')).toBeVisible()
 
 	const originalURL = page.url()

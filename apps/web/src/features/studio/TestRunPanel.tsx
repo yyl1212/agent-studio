@@ -1,5 +1,7 @@
+import { useState } from 'react'
+
 import { SchemaForm } from '../../components/schema-form/SchemaForm'
-import type { JSONSchema } from '../../components/schema-form/types'
+import type { FormValue, JSONSchema } from '../../components/schema-form/types'
 import type { RunEvent } from '../../lib/api/ndjson'
 
 interface TestRunPanelProps {
@@ -12,6 +14,7 @@ interface TestRunPanelProps {
 }
 
 export function TestRunPanel({ schema, events, running, error, onRun, onCancel }: TestRunPanelProps) {
+  const [input, setInput] = useState<FormValue>({})
   const completed = [...events].reverse().find((event) => event.type === 'run.completed')
   const failed = [...events].reverse().find((event) => event.type === 'node.failed' && event.error)
 
@@ -20,8 +23,8 @@ export function TestRunPanel({ schema, events, running, error, onRun, onCancel }
       <div className="test-columns">
         <SchemaForm
           schema={schema}
-          value={{}}
-          onChange={() => undefined}
+          value={input}
+          onChange={setInput}
           onSubmit={onRun}
           submitLabel={running ? '运行中…' : '运行'}
           disabled={running}

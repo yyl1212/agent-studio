@@ -81,18 +81,22 @@ func run(logger *slog.Logger) error {
 	compiler := engine.NewCompiler(registry)
 	runtime := engine.New(engine.Options{MaxParallel: cfg.MaxParallelNodes, Timeout: cfg.WorkflowTimeout})
 	workflowService := workflow.NewService(store, compiler, registry)
+	workflowManagement := workflow.NewWorkflowManagementService(store)
 	runService := workflow.NewRunService(store, compiler, runtime, workflow.WithLogger(logger))
+	runManagement := workflow.NewRunManagementService(store)
 	debugService := workflow.NewDebugService(store, compiler)
 	router := httpapi.NewRouter(httpapi.Dependencies{
-		Registry:     registry,
-		Workflows:    workflowService,
-		Runner:       runService,
-		Runs:         store,
-		Debugger:     debugService,
-		Readiness:    store,
-		NodePackages: indexCatalog,
-		WebOrigin:    cfg.WebOrigin,
-		Logger:       logger,
+		Registry:           registry,
+		Workflows:          workflowService,
+		WorkflowManagement: workflowManagement,
+		Runner:             runService,
+		Runs:               store,
+		RunManagement:      runManagement,
+		Debugger:           debugService,
+		Readiness:          store,
+		NodePackages:       indexCatalog,
+		WebOrigin:          cfg.WebOrigin,
+		Logger:             logger,
 	})
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
