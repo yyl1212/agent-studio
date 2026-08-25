@@ -6,6 +6,7 @@ export async function createWorkflow(page: Page, slug: string, name = `SDK Echo 
   await page.getByLabel('名称').fill(name)
   await page.getByLabel('Agent 地址标识').fill(slug)
   await page.getByRole('button', { name: '创建' }).click()
+  await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]+$/)
   await expect(page.getByText(name)).toBeVisible()
   return page.url()
 }

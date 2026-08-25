@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 
 import { WorkflowManagementView } from './WorkflowManagementView'
 import { RunManagementView } from './RunManagementView'
+import './management.css'
 
 export function ManagementPage({ section }: { section: 'workflows' | 'runs' }) {
   return <main className="page-container management-page">

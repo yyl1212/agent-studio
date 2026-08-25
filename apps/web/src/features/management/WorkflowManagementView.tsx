@@ -97,7 +97,7 @@ export function WorkflowManagementView() {
     {loading && page === null && <div className="state-card" aria-live="polite">正在加载工作流…</div>}
     {!loading && page?.items.length === 0 && <div className="state-card"><h3>还没有工作流</h3><p>新建一个工作流，从开始节点配置 Agent 输入。</p></div>}
     {page && page.items.length > 0 && <>
-      <table className="management-table"><thead><tr><th>名称</th><th>状态</th><th>草稿</th><th>发布</th><th>更新</th><th>操作</th></tr></thead><tbody>
+      <div className="management-table-scroll" tabIndex={0} aria-label="工作流列表，可横向滚动"><table className="management-table"><thead><tr><th>名称</th><th>状态</th><th>草稿</th><th>发布</th><th>更新</th><th>操作</th></tr></thead><tbody>
         {page.items.map((workflow) => <tr key={workflow.id}>
           <td><Link to={`/workflows/${workflow.id}`}>{workflow.name}</Link><small>{workflow.description || workflow.slug}</small></td>
           <td><StatusBadge tone={workflow.archivedAt ? 'warning' : 'success'}>{workflow.archivedAt ? '已归档' : '活跃'}</StatusBadge></td>
@@ -106,7 +106,7 @@ export function WorkflowManagementView() {
             {menuID === workflow.id && <div className="row-actions"><button type="button" onClick={() => { setMutation({ mode: 'rename', workflow }); setMenuID(null) }}>重命名</button><button type="button" onClick={() => { setMutation({ mode: 'copy', workflow }); setMenuID(null) }}>复制</button>{workflow.archivedAt ? <button type="button" onClick={() => restore(workflow)}>恢复</button> : <button type="button" onClick={() => { setArchiveTarget(workflow); setMenuID(null) }}>归档</button>}</div>}
           </td>
         </tr>)}
-      </tbody></table>
+      </tbody></table></div>
       {page.nextCursor && <button type="button" disabled={loading} onClick={() => setSearchParams(writeWorkflowSearch({ ...parsed.query, cursor: page.nextCursor ?? undefined }))}>下一页</button>}
     </>}
     {mutation && <WorkflowMutationDialog {...mutation} onClose={() => setMutation(null)} onSuccess={mutationSuccess} onStateChanged={stateChanged} />}

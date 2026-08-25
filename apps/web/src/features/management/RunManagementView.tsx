@@ -69,9 +69,9 @@ export function RunManagementView() {
     {error && <div className="state-card" role="alert">{error}<button type="button" onClick={reload}>重试</button></div>}
     {loading && page === null && <div className="state-card" aria-live="polite">正在加载运行记录…</div>}
     {!loading && page?.items.length === 0 && <div className="state-card">还没有运行记录</div>}
-    {page && page.items.length > 0 && <><table className="management-table"><thead><tr><th>工作流</th><th>模式</th><th>状态</th><th>开始时间</th><th>耗时</th><th>操作</th></tr></thead><tbody>{page.items.map((summary) => <tr key={summary.id}>
+    {page && page.items.length > 0 && <><div className="management-table-scroll" tabIndex={0} aria-label="运行列表，可横向滚动"><table className="management-table"><thead><tr><th>工作流</th><th>模式</th><th>状态</th><th>开始时间</th><th>耗时</th><th>操作</th></tr></thead><tbody>{page.items.map((summary) => <tr key={summary.id}>
       <td>{summary.workflowName}<small>{summary.workflowSlug}</small></td><td>{modeLabel(summary.mode)}</td><td><StatusBadge tone={statusTone(summary.status)}>{statusLabel(summary.status)}</StatusBadge></td><td>{formatDate(summary.startedAt)}</td><td>{duration(summary)}</td><td><button type="button" aria-label={`查看运行 ${summary.id}`} onClick={(event) => selectRun(summary, event)}>查看</button></td>
-    </tr>)}</tbody></table>{page.nextCursor && <button type="button" disabled={loading} onClick={() => setSearchParams(writeRunSearch({ ...parsed.query, cursor: page.nextCursor ?? undefined }))}>下一页</button>}</>}
+    </tr>)}</tbody></table></div>{page.nextCursor && <button type="button" disabled={loading} onClick={() => setSearchParams(writeRunSearch({ ...parsed.query, cursor: page.nextCursor ?? undefined }))}>下一页</button>}</>}
     {selected && <RunDetailPanel summary={selected} onRequestClose={closeDetail} />}
   </section>
 }
