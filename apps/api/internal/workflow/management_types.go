@@ -92,6 +92,15 @@ type RunFinalization struct {
 	Budget        domain.RunEventBudget
 }
 
+type RunCoordinationStore interface {
+	HeartbeatRuns(context.Context, []string) ([]string, error)
+	FinalizeInterruptedRuns(context.Context, int, int) (int, error)
+}
+
+type RunExecutionCoordinator interface {
+	Register(context.Context, string) (context.Context, func())
+}
+
 type RunManagementStore interface {
 	ListRunSummaries(context.Context, RunSummaryStoreQuery) ([]domain.RunSummary, error)
 }

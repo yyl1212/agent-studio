@@ -208,6 +208,17 @@ func (store *Store) FinalizeRun(ctx context.Context, finalization workflowservic
 		return domain.RunEvent{}, fmt.Errorf("begin finalize run: %w", err)
 	}
 	defer transaction.Rollback(ctx)
+	event, err := store.finalizeRunTx(ctx, transaction, finalization)
+	if err != nil {
+		return domain.RunEvent{}, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("commit run finalization: %w", err)
+	}
+	return event, nil
+}
+
+func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, finalization workflowservice.RunFinalization) (domain.RunEvent, error) {
 	var status domain.RunStatus
 	var cancelRequestedAt *time.Time
 	if err := transaction.QueryRow(ctx, "SELECT status,cancel_requested_at FROM runs WHERE id=$1 FOR UPDATE", finalization.RunID).Scan(&status, &cancelRequestedAt); err != nil {
@@ -218,9 +229,6 @@ func (store *Store) FinalizeRun(ctx context.Context, finalization workflowservic
 		if err != nil {
 			return domain.RunEvent{}, err
 		}
-		if err := transaction.Commit(ctx); err != nil {
-			return domain.RunEvent{}, fmt.Errorf("commit existing run finalization: %w", err)
-		}
 		return event, nil
 	}
 	if status != domain.RunRunning && status != domain.RunCancelling {
@@ -230,12 +238,18 @@ func (store *Store) FinalizeRun(ctx context.Context, finalization workflowservic
 	chosenStatus := finalization.Status
 	output := finalization.Output
 	publicError := finalization.Error
-	if status == domain.RunCancelling || cancelRequestedAt != nil {
+	cancellationWins := status == domain.RunCancelling || cancelRequestedAt != nil
+	if cancellationWins {
 		chosenStatus = domain.RunCancelled
+		if publicError == nil || publicError.Code != "RUN_INTERRUPTED" {
+			publicError = domain.NewPublicRunError(context.Canceled)
+		}
 	}
 	if chosenStatus == domain.RunCancelled {
 		output = nil
-		publicError = domain.NewPublicRunError(context.Canceled)
+		if publicError == nil {
+			publicError = domain.NewPublicRunError(context.Canceled)
+		}
 		terminal.Type = "run.cancelled"
 		terminal.Output = nil
 		terminal.Error = publicError
@@ -294,9 +308,6 @@ func (store *Store) FinalizeRun(ctx context.Context, finalization workflowservic
 		terminal.InputRedactedPaths, terminal.OutputRedactedPaths, terminal.DataBytes, terminal.Timestamp,
 	); err != nil {
 		return domain.RunEvent{}, fmt.Errorf("insert terminal run event: %w", err)
-	}
-	if err := transaction.Commit(ctx); err != nil {
-		return domain.RunEvent{}, fmt.Errorf("commit run finalization: %w", err)
 	}
 	return terminal, nil
 }

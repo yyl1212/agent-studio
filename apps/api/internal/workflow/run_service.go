@@ -34,10 +34,11 @@ type PreparedRun struct {
 }
 
 type RunService struct {
-	store    Store
-	compiler Compiler
-	engine   Engine
-	logger   *slog.Logger
+	store       Store
+	compiler    Compiler
+	engine      Engine
+	logger      *slog.Logger
+	coordinator RunExecutionCoordinator
 }
 
 type RunOption func(*RunService)
@@ -47,6 +48,12 @@ func WithLogger(logger *slog.Logger) RunOption {
 		if logger != nil {
 			service.logger = logger
 		}
+	}
+}
+
+func WithRunCoordinator(coordinator RunExecutionCoordinator) RunOption {
+	return func(service *RunService) {
+		service.coordinator = coordinator
 	}
 }
 
@@ -173,6 +180,12 @@ func persistedRunInput(input map[string]any) (json.RawMessage, []string, *Secret
 }
 
 func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, observer engine.Observer) (engine.RunResult, error) {
+	executionContext := ctx
+	release := func() {}
+	if service.coordinator != nil {
+		executionContext, release = service.coordinator.Register(ctx, prepared.RunID)
+	}
+	defer release()
 	persistence := &persistenceObserver{
 		store:      service.store,
 		prepared:   prepared,
@@ -182,9 +195,9 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	var result engine.RunResult
 	var runErr error
 	if prepared.Scope == nil {
-		result, runErr = service.engine.Run(ctx, prepared.RunID, prepared.Plan, prepared.Input, persistence)
+		result, runErr = service.engine.Run(executionContext, prepared.RunID, prepared.Plan, prepared.Input, persistence)
 	} else {
-		result, runErr = service.engine.RunWithScope(ctx, prepared.RunID, prepared.Plan, prepared.Input, persistence, *prepared.Scope)
+		result, runErr = service.engine.RunWithScope(executionContext, prepared.RunID, prepared.Plan, prepared.Input, persistence, *prepared.Scope)
 	}
 	if result.EndedAt.IsZero() {
 		result.EndedAt = time.Now().UTC()
@@ -214,7 +227,7 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 			publicError = domain.NewPublicRunError(runErr)
 		}
 	}
-	finishContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	finishContext, cancel := context.WithTimeout(context.WithoutCancel(executionContext), 5*time.Second)
 	defer cancel()
 	if persistence.terminal == nil {
 		terminalType := "run.completed"
