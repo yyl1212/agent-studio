@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	workflowservice "github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 )
 
 var (
@@ -60,6 +62,115 @@ func TestListWorkflowsHidesArchivedButGetPreservesState(t *testing.T) {
 	}
 	if loaded.ArchivedAt == nil || !loaded.ArchivedAt.Equal(archivedAt) {
 		t.Fatalf("archived workflow=%+v", loaded)
+	}
+}
+
+func TestWorkflowSummaryFiltersStateAndLiteralSearch(t *testing.T) {
+	store := migratedTestStore(t)
+	active := createWorkflowFixture(t, store, "summary-active")
+	activeVersion := publishFixture(t, store, active)
+	archived := createWorkflowFixture(t, store, "summary-archived")
+	literal := createWorkflowFixture(t, store, "summary-literal")
+	literalName := `Literal %_\ Agent`
+	archivedAt := time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 8, 25, 5, 0, 0, 0, time.UTC)
+	if _, err := store.pool.Exec(context.Background(),
+		`UPDATE workflows SET archived_at=CASE WHEN id=$1 THEN $4::timestamptz ELSE NULL::timestamptz END,
+		 name=CASE WHEN id=$2 THEN $3 ELSE name END,updated_at=$5 WHERE id=ANY($6::uuid[])`,
+		archived.ID,
+		literal.ID,
+		literalName,
+		archivedAt,
+		updatedAt,
+		[]string{active.ID, archived.ID, literal.ID},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	activeRows, err := store.ListWorkflowSummaries(context.Background(), workflowservice.WorkflowSummaryStoreQuery{
+		State: workflowservice.WorkflowStateActive, Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activeRows) != 2 || activeRows[0].ID != literal.ID || activeRows[1].ID != active.ID {
+		t.Fatalf("active rows=%+v", activeRows)
+	}
+	if activeRows[1].PublishedVersionID == nil || *activeRows[1].PublishedVersionID != activeVersion.ID || activeRows[1].PublishedVersion == nil || *activeRows[1].PublishedVersion != 1 {
+		t.Fatalf("active published summary=%+v", activeRows[1])
+	}
+	if activeRows[1].CreatedAt.Location() != time.UTC || activeRows[1].UpdatedAt.Location() != time.UTC {
+		t.Fatalf("active summary timestamps must be UTC: %+v", activeRows[1])
+	}
+	archivedRows, err := store.ListWorkflowSummaries(context.Background(), workflowservice.WorkflowSummaryStoreQuery{
+		State: workflowservice.WorkflowStateArchived, Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archivedRows) != 1 || archivedRows[0].ID != archived.ID || archivedRows[0].ArchivedAt == nil || !archivedRows[0].ArchivedAt.Equal(archivedAt) {
+		t.Fatalf("archived rows=%+v", archivedRows)
+	}
+	if archivedRows[0].ArchivedAt.Location() != time.UTC {
+		t.Fatalf("archived timestamp must be UTC: %+v", archivedRows[0])
+	}
+	allRows, err := store.ListWorkflowSummaries(context.Background(), workflowservice.WorkflowSummaryStoreQuery{
+		State: workflowservice.WorkflowStateAll, Limit: 10,
+	})
+	if err != nil || len(allRows) != 3 {
+		t.Fatalf("all rows=%+v error=%v", allRows, err)
+	}
+	literalRows, err := store.ListWorkflowSummaries(context.Background(), workflowservice.WorkflowSummaryStoreQuery{
+		Text: `%_\`, State: workflowservice.WorkflowStateAll, Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(literalRows) != 1 || literalRows[0].ID != literal.ID || literalRows[0].Name != literalName {
+		t.Fatalf("literal rows=%+v", literalRows)
+	}
+	slugRows, err := store.ListWorkflowSummaries(context.Background(), workflowservice.WorkflowSummaryStoreQuery{
+		Text: strings.ToUpper(active.Slug), State: workflowservice.WorkflowStateAll, Limit: 10,
+	})
+	if err != nil || len(slugRows) != 1 || slugRows[0].ID != active.ID {
+		t.Fatalf("slug rows=%+v error=%v", slugRows, err)
+	}
+}
+
+func TestWorkflowSummaryUsesStableDescendingCursor(t *testing.T) {
+	store := migratedTestStore(t)
+	first := createWorkflowFixture(t, store, "summary-page-first")
+	second := createWorkflowFixture(t, store, "summary-page-second")
+	third := createWorkflowFixture(t, store, "summary-page-third")
+	sameTime := time.Date(2026, 8, 25, 6, 0, 0, 0, time.UTC)
+	if _, err := store.pool.Exec(context.Background(),
+		"UPDATE workflows SET updated_at=$1 WHERE id=ANY($2::uuid[])",
+		sameTime,
+		[]string{first.ID, second.ID, third.ID},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	firstPage, err := store.ListWorkflowSummaries(context.Background(), workflowservice.WorkflowSummaryStoreQuery{
+		State: workflowservice.WorkflowStateAll, Limit: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstPage) != 2 || firstPage[0].ID != third.ID || firstPage[1].ID != second.ID {
+		t.Fatalf("first page=%+v", firstPage)
+	}
+	secondPage, err := store.ListWorkflowSummaries(context.Background(), workflowservice.WorkflowSummaryStoreQuery{
+		State:        workflowservice.WorkflowStateAll,
+		AfterUpdated: &sameTime,
+		AfterID:      second.ID,
+		Limit:        2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondPage) != 1 || secondPage[0].ID != first.ID {
+		t.Fatalf("second page=%+v", secondPage)
 	}
 }
 
