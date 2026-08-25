@@ -99,6 +99,8 @@ make dev-web
 
 打开 `http://localhost:5173/workflows`。默认 `MODEL_PROVIDER=mock`，无需密钥：创建工作流，配置开始节点，添加“提示词模板”和“LLM”，连接到结束节点后即可测试、发布并运行 Agent。
 
+Studio 使用画布旁的单一上下文工作台。节点输入先保存在本地草稿中，端口解析完成后需显式点击“应用配置”；切换节点、测试、发布或导出时会保护未应用草稿。完整操作与响应式边界见 [Studio 聚焦工作台使用指南](docs/frontend-workbench.md)。
+
 顶部“节点包”导航提供只读的本地索引目录；使用与安全边界见[官方节点包索引](docs/node-index.md)。
 
 健康检查：`GET http://localhost:8080/healthz`；就绪检查还会验证 PostgreSQL 与最新 migration：`GET http://localhost:8080/readyz`。
@@ -242,6 +244,7 @@ corepack pnpm@10.34.5 build
 - `sdk/go/agentnode`：公开节点协议；`sdk/go/agenttest`：第三方节点契约测试工具。
 - `contracts/openapi.yaml`：前后端唯一 HTTP 契约来源。
 - [工作流模板导入导出](docs/workflow-templates.md)：本地 JSON 模板的使用方法与安全边界。
+- [Studio 聚焦工作台](docs/frontend-workbench.md)：节点草稿、动态端口、测试调试、快捷键和响应式行为。
 - [节点包开发与兼容检查](docs/node-packages.md)：节点包清单、离线检查、手工安装和模板依赖提示。
 - [官方节点包索引](docs/node-index.md)：离线搜索、显式刷新、缓存恢复和人工源码审核流程。
 - `docs/node-development.md`：无需修改前端的节点扩展示例。

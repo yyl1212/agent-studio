@@ -17,13 +17,26 @@ export async function configureStartField(page: Page, key: string, label: string
   await page.getByLabel('字段标题').fill(label)
   await page.getByLabel('字段类型').selectOption(type)
   await page.getByRole('checkbox', { name: '必填' }).check()
+  await applyNodeConfig(page)
 }
 
 export async function configureStartTextField(page: Page, key: string, label: string) {
   await configureStartField(page, key, label, 'text')
 }
 
+export async function applyNodeConfig(page: Page) {
+  const apply = page.getByRole('button', { name: '应用配置' })
+  await expect(apply).toBeEnabled()
+  await apply.click()
+}
+
+export async function openOptionalConfig(page: Page) {
+  const summary = page.getByText('可选配置')
+  if (await summary.count()) await summary.click()
+}
+
 export async function connectPorts(page: Page, connections: Array<[string, string, string, string]>) {
+  await page.getByRole('button', { name: 'Fit View' }).click()
   for (const [sourceType, sourcePort, targetType, targetPort] of connections) {
     const edgeCount = await page.locator('.react-flow__edge').count()
     const sourceNode = page.getByTestId(`node-${sourceType}`).locator('..')

@@ -2,24 +2,30 @@ import { SchemaForm } from '../../components/schema-form/SchemaForm'
 import type { JSONSchema } from '../../components/schema-form/types'
 import type { RunEvent } from '../../lib/api/ndjson'
 
-interface TestRunDrawerProps {
+interface TestRunPanelProps {
   schema: JSONSchema
   events: RunEvent[]
   running: boolean
   error: string
   onRun: (input: Record<string, unknown>) => void
   onCancel: () => void
-  onClose: () => void
 }
 
-export function TestRunDrawer({ schema, events, running, error, onRun, onCancel, onClose }: TestRunDrawerProps) {
+export function TestRunPanel({ schema, events, running, error, onRun, onCancel }: TestRunPanelProps) {
   const completed = [...events].reverse().find((event) => event.type === 'run.completed')
   const failed = [...events].reverse().find((event) => event.type === 'node.failed' && event.error)
+
   return (
-    <aside className="test-run-drawer" role="dialog" aria-label="测试运行">
-      <div className="drawer-heading"><h2>测试运行</h2><button type="button" aria-label="关闭测试运行" onClick={onClose}>×</button></div>
+    <div className="test-run-panel">
       <div className="test-columns">
-        <SchemaForm schema={schema} value={{}} onChange={() => undefined} onSubmit={onRun} submitLabel={running ? '运行中…' : '运行'} disabled={running} />
+        <SchemaForm
+          schema={schema}
+          value={{}}
+          onChange={() => undefined}
+          onSubmit={onRun}
+          submitLabel={running ? '运行中…' : '运行'}
+          disabled={running}
+        />
         <section aria-live="polite">
           <h3>运行进度</h3>
           {events.length === 0 && <p>填写参数后开始运行。</p>}
@@ -30,7 +36,7 @@ export function TestRunDrawer({ schema, events, running, error, onRun, onCancel,
           {running && <button type="button" onClick={onCancel}>取消运行</button>}
         </section>
       </div>
-    </aside>
+    </div>
   )
 }
 

@@ -124,9 +124,59 @@ describe('StudioPage', () => {
     expect(await screen.findByText('演示助手')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
-    expect(screen.getByRole('dialog', { name: '节点配置' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
     await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
+  })
+
+  it('配置输入只更新草稿，端口就绪并显式应用后才保存一次', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalled(), { timeout: 2000 })
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    vi.mocked(api.saveWorkflow).mockClear()
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
+    await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(1), { timeout: 2000 })
+    expect(vi.mocked(api.saveWorkflow).mock.calls[0][1].graph.nodes.find((node) => node.type === 'template')?.config).toEqual({ template: '回答：{{topic}}' })
+  })
+
+  it('脏配置进入测试前要求确认并在应用后运行最新草稿', async () => {
+    vi.spyOn(api, 'runDraft').mockResolvedValue(new Response('{"type":"run.completed","sequence":1,"output":{}}\n', { headers: { 'content-type': 'application/x-ndjson' } }))
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    expect(screen.getByRole('dialog', { name: '保存节点配置更改？' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '应用并继续' }))
+    expect(await screen.findByRole('dialog', { name: '测试运行' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '运行' }))
+    await vi.waitFor(() => expect(api.runDraft).toHaveBeenCalledWith('w1', { draftRevision: 2, input: {} }, expect.any(AbortSignal)), { timeout: 2500 })
+  })
+
+  it('离开测试工作台会取消仍在进行的浏览器请求', async () => {
+    let signal: AbortSignal | undefined
+    vi.spyOn(api, 'runDraft').mockImplementation((_workflowID, _request, requestSignal) => {
+      signal = requestSignal
+      return new Promise((_resolve, reject) => requestSignal?.addEventListener('abort', () => reject(new DOMException('操作已取消', 'AbortError')), { once: true }))
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    await userEvent.click(screen.getByRole('button', { name: '运行' }))
+    await vi.waitFor(() => expect(signal).toBeDefined())
+    await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
+    expect(signal?.aborted).toBe(true)
   })
 
   it('发布前等待保存队列完成并使用新 revision', async () => {
@@ -159,14 +209,19 @@ describe('StudioPage', () => {
     await userEvent.type(screen.getByLabelText('文档内容'), 'Agent Studio')
     await userEvent.clear(screen.getByLabelText('返回数量'))
     await userEvent.type(screen.getByLabelText('返回数量'), '1')
-    await userEvent.click(screen.getByRole('button', { name: '关闭节点配置' }))
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
+    await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
 
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^Webhook/ }))
     await userEvent.type(screen.getByLabelText('相对路径'), 'hooks/run')
+    await userEvent.click(screen.getByText('可选配置'))
     await userEvent.clear(screen.getByLabelText('超时毫秒'))
     await userEvent.type(screen.getByLabelText('超时毫秒'), '2500')
-    await userEvent.click(screen.getByRole('button', { name: '关闭节点配置' }))
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
+    await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
 
     let request: Parameters<typeof api.saveWorkflow>[1] | undefined
     await vi.waitFor(() => {
@@ -201,6 +256,7 @@ describe('StudioPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^LLM · 结构化输出/ }))
+    await userEvent.click(screen.getByText('可选配置'))
     await userEvent.selectOptions(screen.getByLabelText('输出模式'), 'structured')
     await userEvent.click(screen.getByRole('button', { name: '添加一项' }))
     await userEvent.click(screen.getByRole('button', { name: '添加一项' }))
@@ -216,6 +272,9 @@ describe('StudioPage', () => {
     await userEvent.type(labels[1], '分数')
     await userEvent.selectOptions(types[1], 'number')
     await userEvent.click(required[1])
+
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
 
     let request: Parameters<typeof api.saveWorkflow>[1] | undefined
     await vi.waitFor(() => {
@@ -292,6 +351,7 @@ describe('StudioPage', () => {
 
     fireEvent.click(screen.getByTestId('node-extension.webhook'))
     expect(screen.getByLabelText('相对路径')).toHaveValue('hooks/run')
+    await userEvent.click(screen.getByText('可选配置'))
     expect(screen.getByLabelText('超时毫秒')).toHaveValue(2500)
   })
 

@@ -1,6 +1,6 @@
 :root {
-  color: #172033;
-  background: #f4f6fb;
+  color: var(--as-text);
+  background: var(--as-canvas);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -127,8 +127,32 @@ a {
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 
+.ui-button {
+  padding: 9px 14px;
+  border: 1px solid var(--as-border);
+  border-radius: var(--as-radius-sm);
+  color: var(--as-text);
+  background: var(--as-surface);
+  font-weight: 700;
+}
+.ui-button-primary { border-color: var(--as-primary); color: white; background: var(--as-primary); }
+.ui-button-primary:hover { background: var(--as-primary-hover); }
+.ui-button-ghost { border-color: transparent; background: transparent; }
+.ui-button-danger { border-color: var(--as-danger); color: var(--as-danger); }
+.ui-button:disabled { cursor: not-allowed; opacity: .55; }
+.status-badge { display: inline-flex; padding: 3px 8px; border-radius: 999px; background: var(--as-surface-muted); font-size: 12px; font-weight: 700; }
+.status-badge[data-tone="success"] { color: var(--as-success); }
+.status-badge[data-tone="warning"] { color: var(--as-warning); }
+.status-badge[data-tone="danger"] { color: var(--as-danger); }
+.status-badge[data-tone="info"] { color: var(--as-info); }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.form-error-summary { width: 100%; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--as-danger) 28%, var(--as-border)); border-radius: var(--as-radius-sm); color: var(--as-danger); background: color-mix(in srgb, var(--as-danger) 7%, var(--as-surface)); text-align: left; font-weight: 700; }
+.schema-section > h3 { margin: 20px 0 4px; font-size: 13px; }
+.schema-optional { margin: 18px 0; border-block: 1px solid var(--as-border); }
+.schema-optional > summary { padding: 12px 0; color: var(--as-primary); font-weight: 700; cursor: pointer; }
+
 :where(a, button, input):focus-visible {
-	outline: 3px solid rgb(49 87 213 / 35%);
+	outline: 3px solid color-mix(in srgb, var(--as-focus) 35%, transparent);
 	outline-offset: 3px;
 }
 

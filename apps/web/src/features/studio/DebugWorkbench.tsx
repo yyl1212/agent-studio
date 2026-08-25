@@ -25,9 +25,9 @@ export interface DebugWorkbenchProps {
 export function DebugWorkbench(props: DebugWorkbenchProps) {
 	if (props.rerunPreview && props.onSubmitRerun && props.onCancelRerun && props.onCloseRerun) {
 		return (
-			<aside className="debug-workbench rerun-workbench" aria-label="调试工作台">
+			<div className="debug-workbench rerun-workbench">
 				<PartialRerunForm preview={props.rerunPreview} events={props.rerunEvents ?? []} running={props.rerunRunning ?? false} error={props.rerunError ?? ''} debugRunPath={props.debugRunPath} onSubmit={props.onSubmitRerun} onCancel={props.onCancelRerun} onClose={props.onCloseRerun} />
-			</aside>
+			</div>
 		)
 	}
 	const currentEvent = props.events.find((event) => event.sequence === props.selectedSequence)
@@ -38,7 +38,7 @@ export function DebugWorkbench(props: DebugWorkbenchProps) {
 		if (event.nodeId) props.onSelectNode(event.nodeId)
 	}
 	return (
-		<aside className="debug-workbench" aria-label="调试工作台">
+		<div className="debug-workbench">
 			<p className="sr-status" aria-live="polite">
 				{currentEvent ? `已定位事件 ${currentEvent.sequence}：${currentEvent.type}` : '未选择事件'}
 			</p>
@@ -47,6 +47,6 @@ export function DebugWorkbench(props: DebugWorkbenchProps) {
 				{props.rerunError && <p className="form-error" role="alert">{props.rerunError}</p>}
 				<NodeRunDetail nodeID={props.selectedNodeID} node={selectedNode} nodeRun={selectedNodeRun} events={props.events} onRerun={props.overview.rerunAvailable ? props.onStartRerun : undefined} />
 			</div>
-		</aside>
+		</div>
 	)
 }

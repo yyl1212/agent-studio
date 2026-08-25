@@ -7,7 +7,10 @@ import {
   type Connection,
   type EdgeChange,
   type NodeChange,
+  type ReactFlowInstance,
+  type Viewport,
 } from '@xyflow/react'
+import { useCallback, useRef } from 'react'
 
 import { GenericNode } from './GenericNode'
 import type { StudioEdge, StudioNode } from './types'
@@ -24,9 +27,16 @@ interface WorkflowCanvasProps {
   onNodeClick: (node: StudioNode) => void
   readOnly?: boolean
   currentNodeID?: string
+  onViewportChange?: (viewport: Viewport) => void
 }
 
 export function WorkflowCanvas(props: WorkflowCanvasProps) {
+	const fitted = useRef(false)
+	const handleInit = useCallback((instance: ReactFlowInstance<StudioNode, StudioEdge>) => {
+		if (fitted.current) return
+		fitted.current = true
+		void instance.fitView({ padding: 0.2, maxZoom: 1.2 })
+	}, [])
 	const canvasNodes = props.currentNodeID === undefined
 		? props.nodes
 		: props.nodes.map((node) => ({ ...node, selected: props.currentNodeID === node.id }))
@@ -45,8 +55,8 @@ export function WorkflowCanvas(props: WorkflowCanvasProps) {
             if ((event.target as HTMLElement).closest('.react-flow__handle')) return
             props.onNodeClick(node)
           }}
-          fitView
-          fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
+		  onInit={handleInit}
+		  onMoveEnd={(_event, viewport) => props.onViewportChange?.(viewport)}
 		  nodesDraggable={!props.readOnly}
 		  nodesConnectable={!props.readOnly}
 		  deleteKeyCode={props.readOnly ? null : ['Backspace', 'Delete']}

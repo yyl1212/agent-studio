@@ -9,33 +9,35 @@ interface FieldProps {
   required: boolean
   errors: Record<string, string>
   onChange: (value: unknown) => void
+  onBlur?: (path: string) => void
 }
 
-export function Field({ path, name, schema, value, required, errors, onChange }: FieldProps) {
+export function Field({ path, name, schema, value, required, errors, onChange, onBlur }: FieldProps) {
   const label = schema.title ?? name
   const id = `field-${path.replace(/[^a-zA-Z0-9_-]/g, '-')}`
   const error = errors[`/${path}`]
   const errorID = error ? `${id}-error` : undefined
+  const descriptionID = schema.description ? `${id}-description` : undefined
   const common = {
     id,
     required,
     'aria-invalid': Boolean(error),
-    'aria-describedby': errorID,
+    'aria-describedby': [descriptionID, errorID].filter(Boolean).join(' ') || undefined,
   }
 
   let control
   if (schema.type === 'boolean') {
-    control = <input {...common} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.currentTarget.checked)} />
+    control = <input {...common} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.currentTarget.checked)} onBlur={() => onBlur?.(path)} />
   } else if (schema.type === 'array') {
-    return <ArrayField id={path} label={label} schema={schema} value={Array.isArray(value) ? value : []} onChange={onChange} errors={errors} />
+    return <ArrayField id={path} label={label} description={schema.description} schema={schema} value={Array.isArray(value) ? value : []} onChange={onChange} onBlur={onBlur} errors={errors} />
   } else if (schema.type === 'object' && schema['x-ui-widget'] !== 'json') {
     const objectValue = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
     const properties = schema.properties ?? {}
     const order = [...(schema['x-ui-order'] ?? []), ...Object.keys(properties).filter((key) => !schema['x-ui-order']?.includes(key))]
     return (
-      <fieldset className="schema-object">
+      <fieldset className="schema-object" aria-describedby={descriptionID}>
         <legend>{label}</legend>
-        {schema.description && <small>{schema.description}</small>}
+        {schema.description && <small id={descriptionID}>{schema.description}</small>}
         {order.map((childName) => properties[childName] && (
           <Field
             key={childName}
@@ -46,13 +48,14 @@ export function Field({ path, name, schema, value, required, errors, onChange }:
             required={schema.required?.includes(childName) ?? false}
             errors={errors}
             onChange={(childValue) => onChange({ ...objectValue, [childName]: childValue })}
+            onBlur={onBlur}
           />
         ))}
       </fieldset>
     )
   } else if (schema.enum || schema['x-ui-widget'] === 'select') {
     control = (
-      <select {...common} value={String(value ?? '')} onChange={(event) => onChange(schema.enum?.find((option) => String(option) === event.currentTarget.value) ?? event.currentTarget.value)}>
+      <select {...common} value={String(value ?? '')} onChange={(event) => onChange(schema.enum?.find((option) => String(option) === event.currentTarget.value) ?? event.currentTarget.value)} onBlur={() => onBlur?.(path)}>
         <option value="">请选择</option>
         {(schema.enum ?? []).map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
       </select>
@@ -67,8 +70,10 @@ export function Field({ path, name, schema, value, required, errors, onChange }:
         placeholder={schema['x-ui-placeholder']}
         onChange={(event) => onChange(event.currentTarget.value)}
         onBlur={(event) => {
-          if (schema['x-ui-widget'] !== 'json') return
-          try { onChange(JSON.parse(event.currentTarget.value) as unknown) } catch { /* submit displays the validation message */ }
+          if (schema['x-ui-widget'] === 'json') {
+            try { onChange(JSON.parse(event.currentTarget.value) as unknown) } catch { /* validation reports the retained text */ }
+          }
+          onBlur?.(path)
         }}
       />
     )
@@ -87,6 +92,7 @@ export function Field({ path, name, schema, value, required, errors, onChange }:
         pattern={schema.pattern}
         step={schema.type === 'integer' ? 1 : numeric ? 'any' : undefined}
         onChange={(event) => onChange(numeric ? (event.currentTarget.value === '' ? undefined : event.currentTarget.valueAsNumber) : event.currentTarget.value)}
+        onBlur={() => onBlur?.(path)}
       />
     )
   }
@@ -94,7 +100,7 @@ export function Field({ path, name, schema, value, required, errors, onChange }:
   return (
     <div className="schema-field">
       <label htmlFor={id}>{label}</label>
-      {schema.description && <small>{schema.description}</small>}
+      {schema.description && <small id={descriptionID}>{schema.description}</small>}
       {control}
       {error && <span className="field-error" id={errorID}>{error}</span>}
     </div>
