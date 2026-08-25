@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -81,10 +82,26 @@ func (store *Store) GetWorkflow(ctx context.Context, workflowID string) (domain.
 }
 
 func (store *Store) UpdateDraft(ctx context.Context, workflowID string, expectedRevision int64, graph json.RawMessage) (domain.Workflow, error) {
-	row := store.pool.QueryRow(ctx, `WITH updated AS (
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return domain.Workflow{}, fmt.Errorf("begin workflow draft update: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+	var actualRevision int64
+	var archivedAt *time.Time
+	if err := transaction.QueryRow(ctx, "SELECT draft_revision,archived_at FROM workflows WHERE id=$1 FOR UPDATE", workflowID).Scan(&actualRevision, &archivedAt); err != nil {
+		return domain.Workflow{}, mapNotFound(err)
+	}
+	if archivedAt != nil {
+		return domain.Workflow{}, domain.ErrWorkflowArchived
+	}
+	if actualRevision != expectedRevision {
+		return domain.Workflow{}, ErrRevisionConflict
+	}
+	row := transaction.QueryRow(ctx, `WITH updated AS (
         UPDATE workflows
         SET draft_graph=$3,draft_revision=draft_revision+1,updated_at=now()
-        WHERE id=$1 AND draft_revision=$2
+        WHERE id=$1 AND draft_revision=$2 AND archived_at IS NULL
         RETURNING *
     )
     SELECT u.id::text,u.name,u.slug,u.description,u.draft_graph,u.draft_revision,
@@ -93,10 +110,10 @@ func (store *Store) UpdateDraft(ctx context.Context, workflowID string, expected
     LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`, workflowID, expectedRevision, graph)
 	workflow, err := scanWorkflow(row)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return domain.Workflow{}, ErrRevisionConflict
-		}
 		return domain.Workflow{}, fmt.Errorf("update workflow draft: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return domain.Workflow{}, fmt.Errorf("commit workflow draft update: %w", err)
 	}
 	return workflow, nil
 }

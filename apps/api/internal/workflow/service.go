@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
@@ -93,10 +94,9 @@ func (service *Service) Create(ctx context.Context, input CreateWorkflowInput) (
 }
 
 func (service *Service) createWithGraph(ctx context.Context, input CreateWorkflowInput, graph domain.Graph) (domain.Workflow, error) {
-	input.Name = strings.TrimSpace(input.Name)
-	input.Slug = strings.TrimSpace(input.Slug)
-	if input.Name == "" || !slugPattern.MatchString(input.Slug) {
-		return domain.Workflow{}, ErrInvalidWorkflowInput
+	input, err := normalizeWorkflowIdentity(input)
+	if err != nil {
+		return domain.Workflow{}, err
 	}
 	raw, err := json.Marshal(graph)
 	if err != nil {
@@ -114,6 +114,32 @@ func (service *Service) createWithGraph(ctx context.Context, input CreateWorkflo
 		return domain.Workflow{}, domain.ErrSlugConflict
 	}
 	return workflow, err
+}
+
+func normalizeWorkflowMetadata(name, description string) (string, string, error) {
+	name = strings.TrimSpace(name)
+	if !utf8.ValidString(name) || !utf8.ValidString(description) {
+		return "", "", ErrInvalidWorkflowInput
+	}
+	nameRunes := utf8.RuneCountInString(name)
+	if nameRunes < 1 || nameRunes > 128 || utf8.RuneCountInString(description) > 2048 {
+		return "", "", ErrInvalidWorkflowInput
+	}
+	return name, description, nil
+}
+
+func normalizeWorkflowIdentity(input CreateWorkflowInput) (CreateWorkflowInput, error) {
+	name, description, err := normalizeWorkflowMetadata(input.Name, input.Description)
+	if err != nil {
+		return CreateWorkflowInput{}, err
+	}
+	input.Name = name
+	input.Description = description
+	input.Slug = strings.TrimSpace(input.Slug)
+	if !slugPattern.MatchString(input.Slug) {
+		return CreateWorkflowInput{}, ErrInvalidWorkflowInput
+	}
+	return input, nil
 }
 
 func (service *Service) ExportTemplate(ctx context.Context, id string, revision int64) (TemplateExport, error) {
@@ -177,6 +203,13 @@ func decodeWorkflowTemplate(raw json.RawMessage) (workflowtemplate.Template, err
 }
 
 func (service *Service) SaveDraft(ctx context.Context, id string, revision int64, graph domain.Graph) (domain.Workflow, error) {
+	loaded, err := service.store.GetWorkflow(ctx, id)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	if err := ensureWorkflowActive(loaded); err != nil {
+		return domain.Workflow{}, err
+	}
 	if graph.SchemaVersion != 1 {
 		return domain.Workflow{}, ErrInvalidWorkflowInput
 	}
@@ -187,19 +220,25 @@ func (service *Service) SaveDraft(ctx context.Context, id string, revision int64
 	return service.store.UpdateDraft(ctx, id, revision, raw)
 }
 
-func (service *Service) Validate(ctx context.Context, id string) []domain.ValidationIssue {
-	workflow, err := service.store.GetWorkflow(ctx, id)
+func (service *Service) Validate(ctx context.Context, id string) ([]domain.ValidationIssue, error) {
+	loaded, err := service.store.GetWorkflow(ctx, id)
 	if err != nil {
-		return []domain.ValidationIssue{{Code: "WORKFLOW_LOAD_FAILED", Message: "无法加载工作流"}}
+		return nil, err
 	}
-	graph, issues := decodeAndCompile(service.compiler, workflow.DraftGraph)
+	if err := ensureWorkflowActive(loaded); err != nil {
+		return nil, err
+	}
+	graph, issues := decodeAndCompile(service.compiler, loaded.DraftGraph)
 	_ = graph
-	return issues
+	return issues, nil
 }
 
 func (service *Service) Publish(ctx context.Context, id string, revision int64) (domain.WorkflowVersion, error) {
 	workflow, err := service.store.GetWorkflow(ctx, id)
 	if err != nil {
+		return domain.WorkflowVersion{}, err
+	}
+	if err := ensureWorkflowActive(workflow); err != nil {
 		return domain.WorkflowVersion{}, err
 	}
 	if workflow.DraftRevision != revision {
@@ -225,6 +264,9 @@ func (service *Service) AgentManifest(ctx context.Context, slug string) (AgentMa
 	if err != nil {
 		return AgentManifest{}, err
 	}
+	if err := ensureWorkflowActive(workflow); err != nil {
+		return AgentManifest{}, err
+	}
 	return AgentManifest{
 		WorkflowVersionID: version.ID,
 		Version:           version.Version,
@@ -232,6 +274,13 @@ func (service *Service) AgentManifest(ctx context.Context, slug string) (AgentMa
 		Description:       workflow.Description,
 		InputSchema:       version.InputSchema,
 	}, nil
+}
+
+func ensureWorkflowActive(value domain.Workflow) error {
+	if value.ArchivedAt != nil {
+		return domain.ErrWorkflowArchived
+	}
+	return nil
 }
 
 func decodeAndCompile(compiler Compiler, raw json.RawMessage) (domain.Graph, []domain.ValidationIssue) {

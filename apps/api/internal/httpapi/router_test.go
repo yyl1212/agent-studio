@@ -32,6 +32,8 @@ type fixtureWorkflowService struct {
 	templatePreviewErr error
 	templateExportErr  error
 	templateImportErr  error
+	validateErr        error
+	manifestErr        error
 	lastExportRevision int64
 	lastImported       workflow.ImportWorkflowTemplateInput
 }
@@ -57,16 +59,16 @@ func (service *fixtureWorkflowService) SaveDraft(context.Context, string, int64,
 	return domain.Workflow{}, domain.ErrRevisionConflict
 }
 
-func (*fixtureWorkflowService) Validate(context.Context, string) []domain.ValidationIssue {
-	return nil
+func (service *fixtureWorkflowService) Validate(context.Context, string) ([]domain.ValidationIssue, error) {
+	return nil, service.validateErr
 }
 
 func (*fixtureWorkflowService) Publish(context.Context, string, int64) (domain.WorkflowVersion, error) {
 	return domain.WorkflowVersion{ID: "v1", Version: 1}, nil
 }
 
-func (*fixtureWorkflowService) AgentManifest(context.Context, string) (workflow.AgentManifest, error) {
-	return workflow.AgentManifest{WorkflowVersionID: "v1", Version: 1, Title: "Demo", InputSchema: json.RawMessage(`{"type":"object"}`)}, nil
+func (service *fixtureWorkflowService) AgentManifest(context.Context, string) (workflow.AgentManifest, error) {
+	return workflow.AgentManifest{WorkflowVersionID: "v1", Version: 1, Title: "Demo", InputSchema: json.RawMessage(`{"type":"object"}`)}, service.manifestErr
 }
 
 func (service *fixtureWorkflowService) ExportTemplate(_ context.Context, _ string, revision int64) (workflow.TemplateExport, error) {
@@ -164,6 +166,41 @@ func TestRevisionConflictUsesStableErrorShape(t *testing.T) {
 	dependencies := fixtureDeps()
 	recorder := performRequest(NewRouter(dependencies), http.MethodPut, "/api/workflows/w1", `{"draftRevision":1,"graph":{"schemaVersion":1,"nodes":[],"edges":[]}}`)
 	assertJSONError(t, recorder, http.StatusConflict, "WORKFLOW_REVISION_CONFLICT")
+}
+
+func TestArchivedWorkflowUsesStableErrorAcrossValidationAndRunEntrypoints(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		setup  func(Dependencies)
+	}{
+		{name: "validate", method: http.MethodPost, path: "/api/workflows/w1/validate", setup: func(dependencies Dependencies) {
+			dependencies.Workflows.(*fixtureWorkflowService).validateErr = domain.ErrWorkflowArchived
+		}},
+		{name: "manifest", method: http.MethodGet, path: "/api/agents/demo", setup: func(dependencies Dependencies) {
+			dependencies.Workflows.(*fixtureWorkflowService).manifestErr = domain.ErrWorkflowArchived
+		}},
+		{name: "draft run", method: http.MethodPost, path: "/api/workflows/w1/test-runs", body: `{"draftRevision":2,"input":{}}`, setup: func(dependencies Dependencies) {
+			dependencies.Runner.(*fixtureRunner).prepareErr = domain.ErrWorkflowArchived
+		}},
+		{name: "agent run", method: http.MethodPost, path: "/api/agents/demo/runs", body: `{"workflowVersionId":"v1","input":{}}`, setup: func(dependencies Dependencies) {
+			dependencies.Runner.(*fixtureRunner).prepareErr = domain.ErrWorkflowArchived
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dependencies := fixtureDeps()
+			test.setup(dependencies)
+			recorder := performRequest(NewRouter(dependencies), test.method, test.path, test.body)
+			assertJSONError(t, recorder, http.StatusConflict, "WORKFLOW_ARCHIVED")
+			if strings.Contains(recorder.Body.String(), domain.ErrWorkflowArchived.Error()) {
+				t.Fatalf("internal error leaked: %s", recorder.Body.String())
+			}
+		})
+	}
 }
 
 func TestRouterRejectsUnknownJSONAndAppliesCORS(t *testing.T) {

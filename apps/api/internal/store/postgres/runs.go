@@ -18,7 +18,19 @@ func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	if err != nil {
 		return fmt.Errorf("encode run error: %w", err)
 	}
-	_, err = store.pool.Exec(ctx, `INSERT INTO runs(
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin create run: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+	var archivedAt *time.Time
+	if err := transaction.QueryRow(ctx, "SELECT archived_at FROM workflows WHERE id=$1 FOR SHARE", run.WorkflowID).Scan(&archivedAt); err != nil {
+		return mapNotFound(err)
+	}
+	if archivedAt != nil {
+		return domain.ErrWorkflowArchived
+	}
+	_, err = transaction.Exec(ctx, `INSERT INTO runs(
         id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,mode,status,input,output,error,started_at,ended_at
     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		run.ID, run.WorkflowID, run.WorkflowVersionID, run.DraftRevision, nullableRaw(run.GraphSnapshot),
@@ -26,6 +38,9 @@ func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return fmt.Errorf("commit create run: %w", err)
 	}
 	return nil
 }

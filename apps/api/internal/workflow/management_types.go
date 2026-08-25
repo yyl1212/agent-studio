@@ -27,6 +27,16 @@ type WorkflowSummaryPage struct {
 	NextCursor *string                  `json:"nextCursor"`
 }
 
+type UpdateWorkflowInput struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type CopyWorkflowInput struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
 type WorkflowSummaryStoreQuery struct {
 	Text         string
 	State        WorkflowState
@@ -37,4 +47,9 @@ type WorkflowSummaryStoreQuery struct {
 
 type WorkflowManagementStore interface {
 	ListWorkflowSummaries(context.Context, WorkflowSummaryStoreQuery) ([]domain.WorkflowSummary, error)
+	GetWorkflow(context.Context, string) (domain.Workflow, error)
+	CreateWorkflow(context.Context, domain.Workflow) (domain.Workflow, error)
+	UpdateWorkflowMetadata(context.Context, string, string, string) (domain.Workflow, error)
+	ArchiveWorkflow(context.Context, string) (domain.Workflow, error)
+	RestoreWorkflow(context.Context, string) (domain.Workflow, error)
 }

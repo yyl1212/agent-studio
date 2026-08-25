@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -112,15 +113,151 @@ func TestWorkflowManagementListPropagatesStoreError(t *testing.T) {
 	}
 }
 
+func TestWorkflowManagementUpdateValidatesAndNormalizesMetadata(t *testing.T) {
+	store := &fakeWorkflowManagementStore{workflow: domain.Workflow{ID: "workflow-1", Name: "Old"}}
+	service := NewWorkflowManagementService(store)
+	updated, err := service.Update(context.Background(), store.workflow.ID, UpdateWorkflowInput{
+		Name: "  新名称  ", Description: strings.Repeat("界", 2048),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "新名称" || store.updatedName != "新名称" || len([]rune(store.updatedDescription)) != 2048 || store.updateCalls != 1 {
+		t.Fatalf("updated=%+v store=%+v", updated, store)
+	}
+
+	invalid := []UpdateWorkflowInput{
+		{Name: "   "},
+		{Name: strings.Repeat("界", 129)},
+		{Name: "valid", Description: strings.Repeat("界", 2049)},
+	}
+	for _, input := range invalid {
+		if _, err := service.Update(context.Background(), store.workflow.ID, input); !errors.Is(err, ErrInvalidWorkflowInput) {
+			t.Fatalf("input=%+v error=%v", input, err)
+		}
+	}
+	if store.updateCalls != 1 {
+		t.Fatalf("invalid inputs wrote metadata: calls=%d", store.updateCalls)
+	}
+}
+
+func TestWorkflowManagementCopyClonesOnlyArchivedSourceDraft(t *testing.T) {
+	archivedAt := time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC)
+	publishedID := "version-1"
+	publishedVersion := 7
+	store := &fakeWorkflowManagementStore{workflow: domain.Workflow{
+		ID: "workflow-1", Name: "Source", Slug: "source", Description: "源说明",
+		DraftGraph: json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[]}`), DraftRevision: 9,
+		PublishedVersionID: &publishedID, PublishedVersion: &publishedVersion, ArchivedAt: &archivedAt,
+	}}
+	service := NewWorkflowManagementService(store)
+	created, err := service.Copy(context.Background(), store.workflow.ID, CopyWorkflowInput{Name: "  副本  ", Slug: "copy-agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || created.ID == store.workflow.ID || created.Name != "副本" || created.Slug != "copy-agent" || created.Description != store.workflow.Description || created.DraftRevision != 1 {
+		t.Fatalf("created=%+v", created)
+	}
+	if created.PublishedVersionID != nil || created.PublishedVersion != nil || created.ArchivedAt != nil || store.createCalls != 1 {
+		t.Fatalf("created lifecycle=%+v calls=%d", created, store.createCalls)
+	}
+	created.DraftGraph[0] = 'x'
+	if store.workflow.DraftGraph[0] == 'x' {
+		t.Fatal("copied draft aliases source")
+	}
+
+	if _, err := service.Copy(context.Background(), store.workflow.ID, CopyWorkflowInput{Name: "Copy", Slug: "Bad Slug"}); !errors.Is(err, ErrInvalidWorkflowInput) {
+		t.Fatalf("invalid copy error=%v", err)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("invalid copy wrote workflow: calls=%d", store.createCalls)
+	}
+}
+
+func TestWorkflowManagementArchiveAndRestoreDelegateIdempotently(t *testing.T) {
+	store := &fakeWorkflowManagementStore{workflow: domain.Workflow{ID: "workflow-1"}}
+	service := NewWorkflowManagementService(store)
+	firstArchive, err := service.Archive(context.Background(), store.workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondArchive, err := service.Archive(context.Background(), store.workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstArchive.ArchivedAt == nil || secondArchive.ArchivedAt == nil || !firstArchive.ArchivedAt.Equal(*secondArchive.ArchivedAt) {
+		t.Fatalf("archives=%+v %+v", firstArchive, secondArchive)
+	}
+	firstRestore, err := service.Restore(context.Background(), store.workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRestore, err := service.Restore(context.Background(), store.workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstRestore.ArchivedAt != nil || secondRestore.ArchivedAt != nil || store.archiveTransitions != 1 || store.restoreTransitions != 1 {
+		t.Fatalf("restores=%+v %+v transitions=%d/%d", firstRestore, secondRestore, store.archiveTransitions, store.restoreTransitions)
+	}
+}
+
 type fakeWorkflowManagementStore struct {
-	summaries []domain.WorkflowSummary
-	query     WorkflowSummaryStoreQuery
-	err       error
-	calls     int
+	summaries          []domain.WorkflowSummary
+	workflow           domain.Workflow
+	query              WorkflowSummaryStoreQuery
+	err                error
+	calls              int
+	createCalls        int
+	updateCalls        int
+	updatedName        string
+	updatedDescription string
+	archiveTransitions int
+	restoreTransitions int
 }
 
 func (store *fakeWorkflowManagementStore) ListWorkflowSummaries(_ context.Context, query WorkflowSummaryStoreQuery) ([]domain.WorkflowSummary, error) {
 	store.calls++
 	store.query = query
 	return store.summaries, store.err
+}
+
+func (store *fakeWorkflowManagementStore) GetWorkflow(_ context.Context, id string) (domain.Workflow, error) {
+	if id != store.workflow.ID {
+		return domain.Workflow{}, domain.ErrNotFound
+	}
+	return store.workflow, nil
+}
+
+func (store *fakeWorkflowManagementStore) CreateWorkflow(_ context.Context, value domain.Workflow) (domain.Workflow, error) {
+	store.createCalls++
+	if store.err != nil {
+		return domain.Workflow{}, store.err
+	}
+	return value, nil
+}
+
+func (store *fakeWorkflowManagementStore) UpdateWorkflowMetadata(_ context.Context, id, name, description string) (domain.Workflow, error) {
+	store.updateCalls++
+	store.updatedName = name
+	store.updatedDescription = description
+	store.workflow.Name = name
+	store.workflow.Description = description
+	return store.workflow, nil
+}
+
+func (store *fakeWorkflowManagementStore) ArchiveWorkflow(_ context.Context, id string) (domain.Workflow, error) {
+	if store.workflow.ArchivedAt == nil {
+		archivedAt := time.Date(2026, 8, 25, 7, 0, 0, 0, time.UTC)
+		store.workflow.ArchivedAt = &archivedAt
+		store.archiveTransitions++
+	}
+	return store.workflow, nil
+}
+
+func (store *fakeWorkflowManagementStore) RestoreWorkflow(_ context.Context, id string) (domain.Workflow, error) {
+	if store.workflow.ArchivedAt != nil {
+		store.workflow.ArchivedAt = nil
+		store.restoreTransitions++
+	}
+	return store.workflow, nil
 }

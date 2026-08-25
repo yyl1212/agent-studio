@@ -174,6 +174,122 @@ func TestWorkflowSummaryUsesStableDescendingCursor(t *testing.T) {
 	}
 }
 
+func TestWorkflowManagementLifecyclePersistsAndIsIdempotent(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "lifecycle")
+	updated, err := store.UpdateWorkflowMetadata(context.Background(), workflow.ID, "新名称", "新说明")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "新名称" || updated.Description != "新说明" || updated.ArchivedAt != nil {
+		t.Fatalf("updated=%+v", updated)
+	}
+
+	firstArchive, err := store.ArchiveWorkflow(context.Background(), workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondArchive, err := store.ArchiveWorkflow(context.Background(), workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstArchive.ArchivedAt == nil || secondArchive.ArchivedAt == nil || !firstArchive.ArchivedAt.Equal(*secondArchive.ArchivedAt) || !firstArchive.UpdatedAt.Equal(secondArchive.UpdatedAt) {
+		t.Fatalf("archives=%+v %+v", firstArchive, secondArchive)
+	}
+	if _, err := store.UpdateWorkflowMetadata(context.Background(), workflow.ID, "禁止修改", "禁止修改"); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("archived update error=%v", err)
+	}
+	if _, err := store.CreateWorkflow(context.Background(), domain.Workflow{
+		ID: fixtureUUID(), Name: "重复 slug", Slug: workflow.Slug,
+		DraftGraph: json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[]}`), DraftRevision: 1,
+	}); !errors.Is(err, domain.ErrSlugConflict) {
+		t.Fatalf("archived slug error=%v", err)
+	}
+
+	firstRestore, err := store.RestoreWorkflow(context.Background(), workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRestore, err := store.RestoreWorkflow(context.Background(), workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstRestore.ArchivedAt != nil || secondRestore.ArchivedAt != nil || !firstRestore.UpdatedAt.Equal(secondRestore.UpdatedAt) {
+		t.Fatalf("restores=%+v %+v", firstRestore, secondRestore)
+	}
+	loaded, err := store.GetWorkflow(context.Background(), workflow.ID)
+	if err != nil || loaded.Name != "新名称" || loaded.Description != "新说明" {
+		t.Fatalf("loaded=%+v error=%v", loaded, err)
+	}
+}
+
+func TestArchivedWorkflowStoreRejectsDraftPublishAndRun(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "archived-writes")
+	if _, err := store.ArchiveWorkflow(context.Background(), workflow.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateDraft(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("update error=%v", err)
+	}
+	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`)); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("publish error=%v", err)
+	}
+	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), run); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("create run error=%v", err)
+	}
+	var versions, runs int
+	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM workflow_versions WHERE workflow_id=$1", workflow.ID).Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM runs WHERE workflow_id=$1", workflow.ID).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if versions != 0 || runs != 0 {
+		t.Fatalf("versions=%d runs=%d", versions, runs)
+	}
+}
+
+func TestCreateRunWaitsForConcurrentArchiveDecision(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "archive-run-race")
+	transaction, err := store.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transaction.Rollback(context.Background())
+	if _, err := transaction.Exec(context.Background(), "UPDATE workflows SET archived_at=now() WHERE id=$1", workflow.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan error, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		result <- store.CreateRun(ctx, newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph))
+	}()
+	<-started
+	select {
+	case err := <-result:
+		t.Fatalf("create run returned before archive committed: %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+	if err := transaction.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, domain.ErrWorkflowArchived) {
+			t.Fatalf("create run error=%v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("create run did not finish after archive commit")
+	}
+}
+
 func TestPublishPreservesVersionAndTestSnapshot(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "publish")

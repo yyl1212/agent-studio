@@ -22,7 +22,7 @@ type WorkflowService interface {
 	Get(context.Context, string) (domain.Workflow, error)
 	Create(context.Context, workflow.CreateWorkflowInput) (domain.Workflow, error)
 	SaveDraft(context.Context, string, int64, domain.Graph) (domain.Workflow, error)
-	Validate(context.Context, string) []domain.ValidationIssue
+	Validate(context.Context, string) ([]domain.ValidationIssue, error)
 	Publish(context.Context, string, int64) (domain.WorkflowVersion, error)
 	AgentManifest(context.Context, string) (workflow.AgentManifest, error)
 	ExportTemplate(context.Context, string, int64) (workflow.TemplateExport, error)

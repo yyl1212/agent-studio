@@ -43,6 +43,8 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 		status, response.Code, response.Message = http.StatusConflict, "WORKFLOW_REVISION_CONFLICT", "草稿版本已变化，请刷新后重试"
 	case errors.Is(err, domain.ErrSlugConflict):
 		status, response.Code, response.Message = http.StatusConflict, "WORKFLOW_SLUG_CONFLICT", "Agent 地址标识已存在"
+	case errors.Is(err, domain.ErrWorkflowArchived):
+		status, response.Code, response.Message = http.StatusConflict, "WORKFLOW_ARCHIVED", "工作流已归档，请先恢复后再操作"
 	case errors.Is(err, workflow.ErrRunReplayUnavailable):
 		status, response.Code, response.Message = http.StatusConflict, "RUN_REPLAY_UNAVAILABLE", "当前运行无法精确回放"
 	case errors.Is(err, workflow.ErrRunSnapshotUnsupported):

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
@@ -81,6 +82,43 @@ func (service *WorkflowManagementService) List(ctx context.Context, request Work
 		page.NextCursor = &nextCursor
 	}
 	return page, nil
+}
+
+func (service *WorkflowManagementService) Update(ctx context.Context, id string, input UpdateWorkflowInput) (domain.Workflow, error) {
+	name, description, err := normalizeWorkflowMetadata(input.Name, input.Description)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	return service.store.UpdateWorkflowMetadata(ctx, id, name, description)
+}
+
+func (service *WorkflowManagementService) Copy(ctx context.Context, id string, input CopyWorkflowInput) (domain.Workflow, error) {
+	source, err := service.store.GetWorkflow(ctx, id)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	identity, err := normalizeWorkflowIdentity(CreateWorkflowInput{
+		Name: input.Name, Slug: input.Slug, Description: source.Description,
+	})
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	return service.store.CreateWorkflow(ctx, domain.Workflow{
+		ID:            uuid.NewString(),
+		Name:          identity.Name,
+		Slug:          identity.Slug,
+		Description:   identity.Description,
+		DraftGraph:    append([]byte(nil), source.DraftGraph...),
+		DraftRevision: 1,
+	})
+}
+
+func (service *WorkflowManagementService) Archive(ctx context.Context, id string) (domain.Workflow, error) {
+	return service.store.ArchiveWorkflow(ctx, id)
+}
+
+func (service *WorkflowManagementService) Restore(ctx context.Context, id string) (domain.Workflow, error) {
+	return service.store.RestoreWorkflow(ctx, id)
 }
 
 func cloneWorkflowSummary(value domain.WorkflowSummary) domain.WorkflowSummary {

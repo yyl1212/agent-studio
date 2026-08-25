@@ -11,6 +11,7 @@ var (
 	ErrNotFound               = errors.New("record not found")
 	ErrRevisionConflict       = errors.New("workflow revision conflict")
 	ErrSlugConflict           = errors.New("workflow slug conflict")
+	ErrWorkflowArchived       = errors.New("workflow archived")
 	ErrRunEventSequence       = errors.New("run event sequence invalid")
 	ErrRunEventBudgetExceeded = errors.New("run event budget exceeded")
 )

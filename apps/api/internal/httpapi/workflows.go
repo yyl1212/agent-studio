@@ -111,7 +111,11 @@ func (handler *handler) saveWorkflow(writer http.ResponseWriter, request *http.R
 }
 
 func (handler *handler) validateWorkflow(writer http.ResponseWriter, request *http.Request) {
-	issues := handler.dependencies.Workflows.Validate(request.Context(), chi.URLParam(request, "id"))
+	issues, err := handler.dependencies.Workflows.Validate(request.Context(), chi.URLParam(request, "id"))
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{"valid": len(issues) == 0, "issues": issues})
 }
 

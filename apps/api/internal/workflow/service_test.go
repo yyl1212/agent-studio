@@ -18,16 +18,18 @@ import (
 )
 
 type fakeStore struct {
-	workflow    domain.Workflow
-	versions    map[string]domain.WorkflowVersion
-	currentID   string
-	runs        []domain.Run
-	nodeRuns    map[string]domain.NodeRun
-	runEvents   []domain.RunEvent
-	eventBudget domain.RunEventBudget
-	failPersist error
-	sequence    int
-	createCalls int
+	workflow         domain.Workflow
+	versions         map[string]domain.WorkflowVersion
+	currentID        string
+	runs             []domain.Run
+	nodeRuns         map[string]domain.NodeRun
+	runEvents        []domain.RunEvent
+	eventBudget      domain.RunEventBudget
+	failPersist      error
+	sequence         int
+	createCalls      int
+	updateDraftCalls int
+	publishCalls     int
 }
 
 func newFakeStore(t *testing.T) *fakeStore {
@@ -67,6 +69,7 @@ func (store *fakeStore) GetWorkflow(_ context.Context, id string) (domain.Workfl
 }
 
 func (store *fakeStore) UpdateDraft(_ context.Context, id string, revision int64, graph json.RawMessage) (domain.Workflow, error) {
+	store.updateDraftCalls++
 	if id != store.workflow.ID {
 		return domain.Workflow{}, domain.ErrNotFound
 	}
@@ -79,6 +82,7 @@ func (store *fakeStore) UpdateDraft(_ context.Context, id string, revision int64
 }
 
 func (store *fakeStore) Publish(_ context.Context, id string, revision int64, graph, inputSchema json.RawMessage) (domain.WorkflowVersion, error) {
+	store.publishCalls++
 	if id != store.workflow.ID || revision != store.workflow.DraftRevision {
 		return domain.WorkflowVersion{}, domain.ErrRevisionConflict
 	}
@@ -216,6 +220,56 @@ func TestPublishRequiresExactRevision(t *testing.T) {
 	if !errors.Is(err, domain.ErrRevisionConflict) {
 		t.Fatalf("error=%v", err)
 	}
+}
+
+func TestArchivedWorkflowRejectsServiceWritesButAllowsExport(t *testing.T) {
+	archivedAt := time.Date(2026, 8, 25, 8, 0, 0, 0, time.UTC)
+
+	t.Run("save draft", func(t *testing.T) {
+		service, store := newServiceFixture(t)
+		store.workflow.ArchivedAt = &archivedAt
+		_, err := service.SaveDraft(context.Background(), store.workflow.ID, store.workflow.DraftRevision, domain.Graph{SchemaVersion: 1})
+		if !errors.Is(err, domain.ErrWorkflowArchived) || store.updateDraftCalls != 0 {
+			t.Fatalf("error=%v update calls=%d", err, store.updateDraftCalls)
+		}
+	})
+
+	t.Run("validate", func(t *testing.T) {
+		service, store := newServiceFixture(t)
+		store.workflow.ArchivedAt = &archivedAt
+		issues, err := service.Validate(context.Background(), store.workflow.ID)
+		if !errors.Is(err, domain.ErrWorkflowArchived) || issues != nil {
+			t.Fatalf("issues=%+v error=%v", issues, err)
+		}
+	})
+
+	t.Run("publish", func(t *testing.T) {
+		service, store := newServiceFixture(t)
+		store.workflow.ArchivedAt = &archivedAt
+		_, err := service.Publish(context.Background(), store.workflow.ID, store.workflow.DraftRevision)
+		if !errors.Is(err, domain.ErrWorkflowArchived) || store.publishCalls != 0 {
+			t.Fatalf("error=%v publish calls=%d", err, store.publishCalls)
+		}
+	})
+
+	t.Run("agent manifest", func(t *testing.T) {
+		service, store := newServiceFixture(t)
+		version := store.AddVersion(store.workflow.DraftGraph, json.RawMessage(`{"type":"object"}`))
+		store.SetCurrentVersion(version)
+		store.workflow.ArchivedAt = &archivedAt
+		_, err := service.AgentManifest(context.Background(), store.workflow.Slug)
+		if !errors.Is(err, domain.ErrWorkflowArchived) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+
+	t.Run("export", func(t *testing.T) {
+		service, store := newServiceFixture(t)
+		store.workflow.ArchivedAt = &archivedAt
+		if _, err := service.ExportTemplate(context.Background(), store.workflow.ID, store.workflow.DraftRevision); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestCreateValidatesIdentityAndAllowsIncompleteInitialDraft(t *testing.T) {

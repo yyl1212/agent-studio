@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
@@ -101,4 +102,71 @@ WHERE true`)
 
 func escapeLikePattern(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(value)
+}
+
+func (store *Store) UpdateWorkflowMetadata(ctx context.Context, id, name, description string) (domain.Workflow, error) {
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return domain.Workflow{}, fmt.Errorf("begin workflow metadata update: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+	var archivedAt *time.Time
+	if err := transaction.QueryRow(ctx, "SELECT archived_at FROM workflows WHERE id=$1 FOR UPDATE", id).Scan(&archivedAt); err != nil {
+		return domain.Workflow{}, mapNotFound(err)
+	}
+	if archivedAt != nil {
+		return domain.Workflow{}, domain.ErrWorkflowArchived
+	}
+	row := transaction.QueryRow(ctx, `WITH updated AS (
+    UPDATE workflows SET name=$2,description=$3,updated_at=now()
+    WHERE id=$1 AND archived_at IS NULL RETURNING *
+)
+SELECT u.id::text,u.name,u.slug,u.description,u.draft_graph,u.draft_revision,
+       u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
+FROM updated u
+LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`, id, name, description)
+	updated, err := scanWorkflow(row)
+	if err != nil {
+		return domain.Workflow{}, fmt.Errorf("update workflow metadata: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return domain.Workflow{}, fmt.Errorf("commit workflow metadata update: %w", err)
+	}
+	return updated, nil
+}
+
+func (store *Store) ArchiveWorkflow(ctx context.Context, id string) (domain.Workflow, error) {
+	row := store.pool.QueryRow(ctx, `WITH updated AS (
+    UPDATE workflows SET
+      archived_at=COALESCE(archived_at,now()),
+      updated_at=CASE WHEN archived_at IS NULL THEN now() ELSE updated_at END
+    WHERE id=$1 RETURNING *
+)
+SELECT u.id::text,u.name,u.slug,u.description,u.draft_graph,u.draft_revision,
+       u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
+FROM updated u
+LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`, id)
+	archived, err := scanWorkflow(row)
+	if err != nil {
+		return domain.Workflow{}, mapNotFound(err)
+	}
+	return archived, nil
+}
+
+func (store *Store) RestoreWorkflow(ctx context.Context, id string) (domain.Workflow, error) {
+	row := store.pool.QueryRow(ctx, `WITH updated AS (
+    UPDATE workflows SET
+      archived_at=NULL,
+      updated_at=CASE WHEN archived_at IS NOT NULL THEN now() ELSE updated_at END
+    WHERE id=$1 RETURNING *
+)
+SELECT u.id::text,u.name,u.slug,u.description,u.draft_graph,u.draft_revision,
+       u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
+FROM updated u
+LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`, id)
+	restored, err := scanWorkflow(row)
+	if err != nil {
+		return domain.Workflow{}, mapNotFound(err)
+	}
+	return restored, nil
 }

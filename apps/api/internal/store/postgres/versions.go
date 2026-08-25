@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,8 +18,12 @@ func (store *Store) Publish(ctx context.Context, workflowID string, expectedRevi
 	}
 	defer transaction.Rollback(ctx)
 	var actualRevision int64
-	if err := transaction.QueryRow(ctx, "SELECT draft_revision FROM workflows WHERE id=$1 FOR UPDATE", workflowID).Scan(&actualRevision); err != nil {
+	var archivedAt *time.Time
+	if err := transaction.QueryRow(ctx, "SELECT draft_revision,archived_at FROM workflows WHERE id=$1 FOR UPDATE", workflowID).Scan(&actualRevision, &archivedAt); err != nil {
 		return domain.WorkflowVersion{}, mapNotFound(err)
+	}
+	if archivedAt != nil {
+		return domain.WorkflowVersion{}, domain.ErrWorkflowArchived
 	}
 	if actualRevision != expectedRevision {
 		return domain.WorkflowVersion{}, ErrRevisionConflict
