@@ -426,6 +426,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/retry-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["previewRunRetry"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/debug": {
         parameters: {
             query?: never;
@@ -894,6 +910,18 @@ export interface components {
         RunSummaryPage: {
             items: components["schemas"]["RunSummary"][];
             nextCursor: string | null;
+        };
+        RunRetryPreview: {
+            source: components["schemas"]["RunSummary"];
+            /** Format: uuid */
+            retryOfRunId: string;
+            input: {
+                [key: string]: unknown;
+            };
+            inputRedactedPaths: string[];
+            inputSchema: {
+                [key: string]: unknown;
+            };
         };
         NodeRun: {
             /** Format: uuid */
@@ -1798,6 +1826,33 @@ export interface operations {
             400: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    previewRunRetry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 完整重试的安全预览 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRetryPreview"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
             500: components["responses"]["Error"];
         };
     };

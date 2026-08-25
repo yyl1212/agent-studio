@@ -49,6 +49,8 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 		status, response.Code, response.Message = http.StatusBadRequest, "CURSOR_INVALID", "分页游标无效，请刷新后重试"
 	case errors.Is(err, workflow.ErrRunNotCancellable):
 		status, response.Code, response.Message = http.StatusConflict, "RUN_NOT_CANCELLABLE", "运行已结束，不能取消"
+	case errors.Is(err, workflow.ErrRunNotRetryable):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_NOT_RETRYABLE", "当前运行不能完整重试"
 	case errors.Is(err, workflow.ErrRunReplayUnavailable):
 		status, response.Code, response.Message = http.StatusConflict, "RUN_REPLAY_UNAVAILABLE", "当前运行无法精确回放"
 	case errors.Is(err, workflow.ErrRunSnapshotUnsupported):

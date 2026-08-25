@@ -162,10 +162,12 @@ func (manager *fixtureWorkflowManager) Restore(_ context.Context, id string) (do
 }
 
 type fixtureRunManager struct {
-	request  workflow.RunSummaryRequest
-	cancelID string
-	summary  domain.RunSummary
-	err      error
+	request   workflow.RunSummaryRequest
+	cancelID  string
+	previewID string
+	summary   domain.RunSummary
+	preview   workflow.RunRetryPreview
+	err       error
 }
 
 func (manager *fixtureRunManager) List(_ context.Context, request workflow.RunSummaryRequest) (workflow.RunSummaryPage, error) {
@@ -176,6 +178,11 @@ func (manager *fixtureRunManager) List(_ context.Context, request workflow.RunSu
 func (manager *fixtureRunManager) Cancel(_ context.Context, runID string) (domain.RunSummary, error) {
 	manager.cancelID = runID
 	return manager.summary, manager.err
+}
+
+func (manager *fixtureRunManager) RetryPreview(_ context.Context, runID string) (workflow.RunRetryPreview, error) {
+	manager.previewID = runID
+	return manager.preview, manager.err
 }
 
 type fixtureDebugger struct {
@@ -390,6 +397,34 @@ func TestCancelRunMapsTerminalConflictAndHidesInternalErrors(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), "database secret detail") {
 		t.Fatalf("internal error leaked: %s", recorder.Body.String())
 	}
+}
+
+func TestRetryPreviewUsesStrictUUIDAndMapsNotRetryable(t *testing.T) {
+	dependencies := fixtureDeps()
+	manager := dependencies.RunManagement.(*fixtureRunManager)
+	manager.preview = workflow.RunRetryPreview{
+		Source:       domain.RunSummary{ID: "11111111-1111-4111-8111-111111111111", Status: domain.RunFailed},
+		RetryOfRunID: "11111111-1111-4111-8111-111111111111",
+		Input:        map[string]any{"token": "[REDACTED]"}, InputRedactedPaths: []string{"/token"},
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/runs/11111111-1111-4111-8111-111111111111/retry-preview", "")
+	if recorder.Code != http.StatusOK || manager.previewID != manager.preview.RetryOfRunID || !strings.Contains(recorder.Body.String(), `"inputRedactedPaths":["/token"]`) {
+		t.Fatalf("status=%d previewID=%q body=%s", recorder.Code, manager.previewID, recorder.Body.String())
+	}
+
+	dependencies = fixtureDeps()
+	manager = dependencies.RunManagement.(*fixtureRunManager)
+	recorder = performRequest(NewRouter(dependencies), http.MethodGet, "/api/runs/not-a-uuid/retry-preview", "")
+	if manager.previewID != "" {
+		t.Fatalf("invalid ID reached manager: %q", manager.previewID)
+	}
+	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+
+	dependencies = fixtureDeps()
+	dependencies.RunManagement.(*fixtureRunManager).err = workflow.ErrRunNotRetryable
+	recorder = performRequest(NewRouter(dependencies), http.MethodGet, "/api/runs/11111111-1111-4111-8111-111111111111/retry-preview", "")
+	assertJSONError(t, recorder, http.StatusConflict, "RUN_NOT_RETRYABLE")
 }
 
 func TestManagementErrorsUseStableCodes(t *testing.T) {

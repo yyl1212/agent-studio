@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
@@ -80,6 +81,14 @@ type RunSummaryStoreQuery struct {
 type RunSummaryPage struct {
 	Items      []domain.RunSummary `json:"items"`
 	NextCursor *string             `json:"nextCursor"`
+}
+
+type RunRetryPreview struct {
+	Source             domain.RunSummary `json:"source"`
+	RetryOfRunID       string            `json:"retryOfRunId"`
+	Input              map[string]any    `json:"input"`
+	InputRedactedPaths []string          `json:"inputRedactedPaths"`
+	InputSchema        json.RawMessage   `json:"inputSchema"`
 }
 
 type RunFinalization struct {

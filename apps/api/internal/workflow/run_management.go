@@ -1,10 +1,14 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,7 +17,18 @@ import (
 
 const maxRunFilterSpan = 90 * 24 * time.Hour
 
-var ErrRunNotCancellable = errors.New("run is not cancellable")
+const (
+	maxRetryRedactedDepth = 128
+	maxRetryRedactedPaths = 256
+	maxRetryPointerBytes  = 1024
+	maxRetryPreviewBytes  = 1 << 20
+)
+
+var (
+	ErrRunNotCancellable      = errors.New("run is not cancellable")
+	ErrRunNotRetryable        = errors.New("run not retryable")
+	ErrRunRetrySecretRequired = errors.New("run retry secret required")
+)
 
 type runSummaryFilter struct {
 	WorkflowID    string             `json:"workflowId,omitempty"`
@@ -47,6 +62,102 @@ func (service *RunManagementService) Cancel(ctx context.Context, runID string) (
 		service.canceller.CancelLocal(normalized)
 	}
 	return cloneRunSummary(summary), nil
+}
+
+func (service *RunManagementService) RetryPreview(ctx context.Context, runID string) (RunRetryPreview, error) {
+	normalized, err := normalizeOptionalUUID(runID)
+	if err != nil || normalized == "" {
+		return RunRetryPreview{}, ErrInvalidWorkflowInput
+	}
+	run, _, err := service.store.GetRun(ctx, normalized)
+	if err != nil {
+		return RunRetryPreview{}, fmt.Errorf("load retry source run: %w", err)
+	}
+	workflowRecord, err := service.store.GetWorkflow(ctx, run.WorkflowID)
+	if err != nil {
+		return RunRetryPreview{}, fmt.Errorf("load retry source workflow: %w", err)
+	}
+	if workflowRecord.ArchivedAt != nil {
+		return RunRetryPreview{}, domain.ErrWorkflowArchived
+	}
+	if (run.Status != domain.RunFailed && run.Status != domain.RunCancelled) || (run.Mode != domain.RunModeTest && run.Mode != domain.RunModePublished) {
+		return RunRetryPreview{}, ErrRunNotRetryable
+	}
+	_, graph, _, err := loadRunGraphData(ctx, service.store, service.compiler, run)
+	if err != nil {
+		return RunRetryPreview{}, err
+	}
+	inputSchema, err := deriveInputSchema(graph)
+	if err != nil {
+		return RunRetryPreview{}, ErrRunNotRetryable
+	}
+	var input map[string]any
+	if err := decodeJSON(run.Input, &input); err != nil || input == nil {
+		return RunRetryPreview{}, ErrRunNotRetryable
+	}
+	encodedInput, err := json.Marshal(input)
+	if err != nil || len(encodedInput) > maxRetryPreviewBytes {
+		return RunRetryPreview{}, ErrRunNotRetryable
+	}
+	paths, err := historicRedactedPaths(input)
+	if err != nil {
+		return RunRetryPreview{}, err
+	}
+	paths, err = mergeRetryRedactedPaths(paths, run.InputRedactedPaths)
+	if err != nil {
+		return RunRetryPreview{}, err
+	}
+	clonedInput, err := cloneJSONMap(input)
+	if err != nil {
+		return RunRetryPreview{}, ErrRunNotRetryable
+	}
+	return RunRetryPreview{
+		Source:             runSummaryFromRun(run, workflowRecord),
+		RetryOfRunID:       run.ID,
+		Input:              clonedInput,
+		InputRedactedPaths: paths,
+		InputSchema:        append(json.RawMessage(nil), inputSchema...),
+	}, nil
+}
+
+func mergeRetryRedactedPaths(discovered, persisted []string) ([]string, error) {
+	unique := make(map[string]struct{}, len(discovered)+len(persisted))
+	for _, path := range append(append([]string(nil), discovered...), persisted...) {
+		if len(path) > maxRetryPointerBytes {
+			return nil, ErrRunNotRetryable
+		}
+		if _, valid := decodeStrictJSONPointer(path); !valid || path == "" {
+			return nil, ErrRunNotRetryable
+		}
+		unique[path] = struct{}{}
+		if len(unique) > maxRetryRedactedPaths {
+			return nil, ErrRunNotRetryable
+		}
+	}
+	result := make([]string, 0, len(unique))
+	for path := range unique {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func runSummaryFromRun(run domain.Run, workflowRecord domain.Workflow) domain.RunSummary {
+	return domain.RunSummary{
+		ID: run.ID, WorkflowID: run.WorkflowID, WorkflowName: workflowRecord.Name, WorkflowSlug: workflowRecord.Slug,
+		WorkflowVersionID: cloneStringPointer(run.WorkflowVersionID), DraftRevision: cloneInt64Pointer(run.DraftRevision),
+		SourceRunID: cloneStringPointer(run.SourceRunID), SourceNodeID: cloneStringPointer(run.SourceNodeID),
+		RetryOfRunID: cloneStringPointer(run.RetryOfRunID), Mode: run.Mode, Status: run.Status,
+		CancelRequestedAt: cloneTimePointer(run.CancelRequestedAt), StartedAt: run.StartedAt, EndedAt: cloneTimePointer(run.EndedAt),
+	}
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func (service *RunManagementService) List(ctx context.Context, request RunSummaryRequest) (RunSummaryPage, error) {
@@ -228,4 +339,179 @@ func cloneInt64Pointer(value *int64) *int64 {
 	}
 	cloned := *value
 	return &cloned
+}
+
+func historicRedactedPaths(value any) ([]string, error) {
+	paths := make([]string, 0)
+	var scan func(any, string, int) error
+	scan = func(current any, path string, depth int) error {
+		if depth > maxRetryRedactedDepth {
+			return ErrRunNotRetryable
+		}
+		if text, ok := current.(string); ok && text == redactedValue {
+			if len(path) > maxRetryPointerBytes || len(paths) >= maxRetryRedactedPaths {
+				return ErrRunNotRetryable
+			}
+			paths = append(paths, path)
+			return nil
+		}
+		switch typed := current.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				childPath := jsonPointerChild(path, key)
+				if len(childPath) > maxRetryPointerBytes {
+					return ErrRunNotRetryable
+				}
+				if err := scan(child, childPath, depth+1); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for index, child := range typed {
+				childPath := jsonPointerChild(path, strconv.Itoa(index))
+				if len(childPath) > maxRetryPointerBytes {
+					return ErrRunNotRetryable
+				}
+				if err := scan(child, childPath, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := scan(value, "", 0); err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func applyRetrySecrets(input map[string]any, required []string, provided map[string]any) (map[string]any, error) {
+	if len(required) != len(provided) {
+		return nil, ErrRunRetrySecretRequired
+	}
+	seen := make(map[string]struct{}, len(required))
+	for _, path := range required {
+		if _, exists := seen[path]; exists {
+			return nil, ErrRunRetrySecretRequired
+		}
+		seen[path] = struct{}{}
+		if _, exists := provided[path]; !exists {
+			return nil, ErrRunRetrySecretRequired
+		}
+	}
+	for path := range provided {
+		if _, exists := seen[path]; !exists {
+			return nil, ErrRunRetrySecretRequired
+		}
+	}
+
+	cloned, err := cloneJSONMap(input)
+	if err != nil {
+		return nil, ErrRunRetrySecretRequired
+	}
+	for _, path := range required {
+		tokens, ok := decodeStrictJSONPointer(path)
+		if !ok || len(tokens) == 0 || len(path) > maxRetryPointerBytes {
+			return nil, ErrRunRetrySecretRequired
+		}
+		replacement := provided[path]
+		if replacement == nil || replacement == "" || replacement == redactedValue {
+			return nil, ErrRunRetrySecretRequired
+		}
+		if !replaceRetryPointer(cloned, tokens, replacement) {
+			return nil, ErrRunRetrySecretRequired
+		}
+	}
+	remaining, err := historicRedactedPaths(cloned)
+	if err != nil || len(remaining) > 0 {
+		return nil, ErrRunRetrySecretRequired
+	}
+	return cloned, nil
+}
+
+func cloneJSONMap(value map[string]any) (map[string]any, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var cloned map[string]any
+	if err := decoder.Decode(&cloned); err != nil {
+		return nil, err
+	}
+	return cloned, nil
+}
+
+func decodeStrictJSONPointer(pointer string) ([]string, bool) {
+	if pointer == "" {
+		return []string{}, true
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return nil, false
+	}
+	encoded := strings.Split(pointer[1:], "/")
+	tokens := make([]string, len(encoded))
+	for index, token := range encoded {
+		var decoded strings.Builder
+		for offset := 0; offset < len(token); offset++ {
+			if token[offset] != '~' {
+				decoded.WriteByte(token[offset])
+				continue
+			}
+			if offset+1 >= len(token) || (token[offset+1] != '0' && token[offset+1] != '1') {
+				return nil, false
+			}
+			offset++
+			if token[offset] == '0' {
+				decoded.WriteByte('~')
+			} else {
+				decoded.WriteByte('/')
+			}
+		}
+		tokens[index] = decoded.String()
+	}
+	return tokens, true
+}
+
+func replaceRetryPointer(root map[string]any, tokens []string, replacement any) bool {
+	var current any = root
+	for index, token := range tokens {
+		last := index == len(tokens)-1
+		switch typed := current.(type) {
+		case map[string]any:
+			value, exists := typed[token]
+			if !exists {
+				return false
+			}
+			if last {
+				if value != redactedValue {
+					return false
+				}
+				typed[token] = replacement
+				return true
+			}
+			current = value
+		case []any:
+			if token == "-" || token == "" || (len(token) > 1 && token[0] == '0') {
+				return false
+			}
+			arrayIndex, err := strconv.Atoi(token)
+			if err != nil || arrayIndex < 0 || arrayIndex >= len(typed) {
+				return false
+			}
+			if last {
+				if typed[arrayIndex] != redactedValue {
+					return false
+				}
+				typed[arrayIndex] = replacement
+				return true
+			}
+			current = typed[arrayIndex]
+		default:
+			return false
+		}
+	}
+	return false
 }

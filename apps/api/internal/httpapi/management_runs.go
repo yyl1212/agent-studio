@@ -39,6 +39,20 @@ func (handler *handler) cancelRun(writer http.ResponseWriter, request *http.Requ
 	writeJSON(writer, http.StatusOK, summary)
 }
 
+func (handler *handler) previewRunRetry(writer http.ResponseWriter, request *http.Request) {
+	runID, err := parsePathUUID(request, "id")
+	if err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	preview, err := handler.dependencies.RunManagement.RetryPreview(request.Context(), runID)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, preview)
+}
+
 func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, error) {
 	allowed := map[string]bool{
 		"workflowId": true, "runId": true, "status": true, "mode": true,

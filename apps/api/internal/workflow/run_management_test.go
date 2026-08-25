@@ -2,13 +2,196 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
+
+func TestHistoricPlaceholderPathsEscapesSortsAndEnforcesBudgets(t *testing.T) {
+	input := map[string]any{
+		"token":    redactedValue,
+		"nested":   []any{map[string]any{"a/b~c": redactedValue}},
+		"ordinary": "visible",
+	}
+	paths, err := historicRedactedPaths(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(paths, []string{"/nested/0/a~1b~0c", "/token"}) {
+		t.Fatalf("paths=%v", paths)
+	}
+
+	tooMany := make(map[string]any, 257)
+	for index := 0; index < 257; index++ {
+		tooMany[string(rune(0x1000+index))] = redactedValue
+	}
+	if _, err := historicRedactedPaths(tooMany); !errors.Is(err, ErrRunNotRetryable) {
+		t.Fatalf("too many paths error=%v", err)
+	}
+	if _, err := historicRedactedPaths(map[string]any{strings.Repeat("x", 1025): redactedValue}); !errors.Is(err, ErrRunNotRetryable) {
+		t.Fatalf("long path error=%v", err)
+	}
+	deep := any(redactedValue)
+	for range 129 {
+		deep = []any{deep}
+	}
+	if _, err := historicRedactedPaths(deep); !errors.Is(err, ErrRunNotRetryable) {
+		t.Fatalf("deep input error=%v", err)
+	}
+}
+
+func TestApplyRetrySecretsUsesExactStrictPointersWithoutMutation(t *testing.T) {
+	input := map[string]any{
+		"token":  redactedValue,
+		"nested": []any{map[string]any{"a/b~c": redactedValue}},
+		"keep":   "visible",
+	}
+	wantOriginal, _ := json.Marshal(input)
+	replaced, err := applyRetrySecrets(input,
+		[]string{"/nested/0/a~1b~0c", "/token"},
+		map[string]any{"/token": "new-token", "/nested/0/a~1b~0c": false},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced["token"] != "new-token" || replaced["keep"] != "visible" {
+		t.Fatalf("replaced=%v", replaced)
+	}
+	nested := replaced["nested"].([]any)[0].(map[string]any)
+	if nested["a/b~c"] != false {
+		t.Fatalf("escaped replacement=%v", nested)
+	}
+	gotOriginal, _ := json.Marshal(input)
+	if string(gotOriginal) != string(wantOriginal) {
+		t.Fatalf("source mutated: before=%s after=%s", wantOriginal, gotOriginal)
+	}
+}
+
+func TestApplyRetrySecretsRejectsNonExactInvalidEmptyAndResidualValues(t *testing.T) {
+	input := map[string]any{"token": redactedValue, "nested": []any{redactedValue}}
+	tests := []struct {
+		name     string
+		required []string
+		provided map[string]any
+	}{
+		{name: "missing", required: []string{"/token"}, provided: map[string]any{}},
+		{name: "extra", required: []string{"/token"}, provided: map[string]any{"/token": "ok", "/extra": "no"}},
+		{name: "duplicate", required: []string{"/token", "/token"}, provided: map[string]any{"/token": "ok"}},
+		{name: "bad escape", required: []string{"/bad~2key"}, provided: map[string]any{"/bad~2key": "ok"}},
+		{name: "append", required: []string{"/nested/-"}, provided: map[string]any{"/nested/-": "ok"}},
+		{name: "missing target", required: []string{"/missing"}, provided: map[string]any{"/missing": "ok"}},
+		{name: "null", required: []string{"/token"}, provided: map[string]any{"/token": nil}},
+		{name: "empty", required: []string{"/token"}, provided: map[string]any{"/token": ""}},
+		{name: "placeholder", required: []string{"/token"}, provided: map[string]any{"/token": redactedValue}},
+		{name: "residual", required: []string{"/token"}, provided: map[string]any{"/token": "ok"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := applyRetrySecrets(input, test.required, test.provided); !errors.Is(err, ErrRunRetrySecretRequired) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestRetryPreviewUsesHistoricTestAndPublishedGraphs(t *testing.T) {
+	publishedVersionID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	for _, test := range []struct {
+		name    string
+		mode    domain.RunMode
+		status  domain.RunStatus
+		version *string
+	}{
+		{name: "failed test", mode: domain.RunModeTest, status: domain.RunFailed},
+		{name: "cancelled published", mode: domain.RunModePublished, status: domain.RunCancelled, version: &publishedVersionID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			historicGraph := graphReturningField(t, "historic-", "historic")
+			workflowRecord := domain.Workflow{ID: testWorkflowID, Name: "Workflow", Slug: "workflow", DraftGraph: graphReturningField(t, "current-", "current")}
+			store := &fakeRunManagementStore{
+				run: domain.Run{
+					ID: testRunID, WorkflowID: testWorkflowID, WorkflowVersionID: test.version,
+					Mode: test.mode, Status: test.status, GraphSnapshot: historicGraph,
+					Input:              json.RawMessage(`{"historic":"visible","token":"[REDACTED]","nested":[{"a/b~c":"[REDACTED]"}]}`),
+					InputRedactedPaths: []string{"/token", "/token"},
+				},
+				workflow: workflowRecord,
+				version:  domain.WorkflowVersion{ID: publishedVersionID, WorkflowID: testWorkflowID, Version: 7, Graph: historicGraph},
+			}
+			preview, err := NewRunManagementService(store, newRealCompiler(t), nil).RetryPreview(context.Background(), testRunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if preview.RetryOfRunID != testRunID || preview.Source.ID != testRunID || preview.Source.WorkflowName != "Workflow" || preview.Source.WorkflowSlug != "workflow" {
+				t.Fatalf("preview source=%+v retryOf=%s", preview.Source, preview.RetryOfRunID)
+			}
+			if !reflect.DeepEqual(preview.InputRedactedPaths, []string{"/nested/0/a~1b~0c", "/token"}) || preview.Input["historic"] != "visible" {
+				t.Fatalf("input=%v paths=%v", preview.Input, preview.InputRedactedPaths)
+			}
+			if !strings.Contains(string(preview.InputSchema), `"historic"`) || strings.Contains(string(preview.InputSchema), `"current"`) {
+				t.Fatalf("schema=%s", preview.InputSchema)
+			}
+			if test.mode == domain.RunModePublished && store.versionID != publishedVersionID {
+				t.Fatalf("loaded version=%s", store.versionID)
+			}
+		})
+	}
+}
+
+func TestRetryPreviewRejectsIneligibleAndArchivedRuns(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mode   domain.RunMode
+		status domain.RunStatus
+	}{
+		{name: "running", mode: domain.RunModeTest, status: domain.RunRunning},
+		{name: "cancelling", mode: domain.RunModeTest, status: domain.RunCancelling},
+		{name: "completed", mode: domain.RunModeTest, status: domain.RunCompleted},
+		{name: "debug", mode: domain.RunModeDebug, status: domain.RunFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeRunManagementStore{
+				run:      domain.Run{ID: testRunID, WorkflowID: testWorkflowID, Mode: test.mode, Status: test.status},
+				workflow: domain.Workflow{ID: testWorkflowID},
+			}
+			_, err := NewRunManagementService(store, newRealCompiler(t), nil).RetryPreview(context.Background(), testRunID)
+			if !errors.Is(err, ErrRunNotRetryable) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+
+	archivedAt := time.Now().UTC()
+	store := &fakeRunManagementStore{
+		run:      domain.Run{ID: testRunID, WorkflowID: testWorkflowID, Mode: domain.RunModeTest, Status: domain.RunFailed},
+		workflow: domain.Workflow{ID: testWorkflowID, ArchivedAt: &archivedAt},
+	}
+	_, err := NewRunManagementService(store, newRealCompiler(t), nil).RetryPreview(context.Background(), testRunID)
+	if !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("archived error=%v", err)
+	}
+}
+
+func TestRetryPreviewRejectsOversizedInput(t *testing.T) {
+	graph := graphReturningField(t, "historic-", "historic")
+	input, err := json.Marshal(map[string]any{"historic": strings.Repeat("x", 1<<20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeRunManagementStore{
+		run:      domain.Run{ID: testRunID, WorkflowID: testWorkflowID, Mode: domain.RunModeTest, Status: domain.RunFailed, GraphSnapshot: graph, Input: input},
+		workflow: domain.Workflow{ID: testWorkflowID},
+	}
+	_, err = NewRunManagementService(store, newRealCompiler(t), nil).RetryPreview(context.Background(), testRunID)
+	if !errors.Is(err, ErrRunNotRetryable) {
+		t.Fatalf("error=%v", err)
+	}
+}
 
 const (
 	testWorkflowID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -177,6 +360,13 @@ type fakeRunManagementStore struct {
 	cancelErr     error
 	cancelRunID   string
 	cancelCalls   int
+	run           domain.Run
+	runErr        error
+	workflow      domain.Workflow
+	workflowErr   error
+	version       domain.WorkflowVersion
+	versionErr    error
+	versionID     string
 }
 
 func (store *fakeRunManagementStore) RequestRunCancel(_ context.Context, runID string) (domain.RunSummary, error) {
@@ -185,16 +375,35 @@ func (store *fakeRunManagementStore) RequestRunCancel(_ context.Context, runID s
 	return store.cancelSummary, store.cancelErr
 }
 
-func (store *fakeRunManagementStore) GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error) {
-	return domain.Run{}, nil, domain.ErrNotFound
+func (store *fakeRunManagementStore) GetRun(_ context.Context, runID string) (domain.Run, []domain.NodeRun, error) {
+	if store.runErr != nil {
+		return domain.Run{}, nil, store.runErr
+	}
+	if store.run.ID == "" || store.run.ID != runID {
+		return domain.Run{}, nil, domain.ErrNotFound
+	}
+	return store.run, nil, nil
 }
 
-func (store *fakeRunManagementStore) GetWorkflow(context.Context, string) (domain.Workflow, error) {
-	return domain.Workflow{}, domain.ErrNotFound
+func (store *fakeRunManagementStore) GetWorkflow(_ context.Context, workflowID string) (domain.Workflow, error) {
+	if store.workflowErr != nil {
+		return domain.Workflow{}, store.workflowErr
+	}
+	if store.workflow.ID == "" || store.workflow.ID != workflowID {
+		return domain.Workflow{}, domain.ErrNotFound
+	}
+	return store.workflow, nil
 }
 
-func (store *fakeRunManagementStore) GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error) {
-	return domain.Workflow{}, domain.WorkflowVersion{}, domain.ErrNotFound
+func (store *fakeRunManagementStore) GetAgentVersion(_ context.Context, _ string, versionID string) (domain.Workflow, domain.WorkflowVersion, error) {
+	store.versionID = versionID
+	if store.versionErr != nil {
+		return domain.Workflow{}, domain.WorkflowVersion{}, store.versionErr
+	}
+	if store.version.ID == "" || store.version.ID != versionID {
+		return domain.Workflow{}, domain.WorkflowVersion{}, domain.ErrNotFound
+	}
+	return store.workflow, store.version, nil
 }
 
 type fakeLocalRunCanceller struct {

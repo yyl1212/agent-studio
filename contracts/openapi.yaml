@@ -701,6 +701,33 @@ paths:
           $ref: "#/components/responses/Error"
         "500":
           $ref: "#/components/responses/Error"
+  /api/runs/{id}/retry-preview:
+    get:
+      operationId: previewRunRetry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 完整重试的安全预览
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunRetryPreview"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
   /api/runs/{id}/debug:
     get:
       operationId: getRunDebug
@@ -1788,6 +1815,28 @@ components:
         nextCursor:
           type: [string, "null"]
           maxLength: 512
+    RunRetryPreview:
+      type: object
+      additionalProperties: false
+      required: [source, retryOfRunId, input, inputRedactedPaths, inputSchema]
+      properties:
+        source:
+          $ref: "#/components/schemas/RunSummary"
+        retryOfRunId:
+          type: string
+          format: uuid
+        input:
+          type: object
+          additionalProperties: true
+        inputRedactedPaths:
+          type: array
+          maxItems: 256
+          items:
+            type: string
+            maxLength: 1024
+        inputSchema:
+          type: object
+          additionalProperties: true
     NodeRun:
       type: object
       required: [id, runId, nodeId, nodeType, status]
