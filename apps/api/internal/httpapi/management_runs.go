@@ -53,6 +53,47 @@ func (handler *handler) previewRunRetry(writer http.ResponseWriter, request *htt
 	writeJSON(writer, http.StatusOK, preview)
 }
 
+func (handler *handler) retryRun(writer http.ResponseWriter, request *http.Request) {
+	runID, err := parsePathUUID(request, "id")
+	if err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	keys := request.Header.Values("Idempotency-Key")
+	if len(keys) != 1 {
+		writeRequestError(writer, request, errInvalidManagementRequest)
+		return
+	}
+	parsedKey, err := uuid.Parse(keys[0])
+	if err != nil || parsedKey.String() != keys[0] {
+		writeRequestError(writer, request, errInvalidManagementRequest)
+		return
+	}
+	var body workflow.RunRetryRequest
+	if err := decodeJSON(writer, request, &body); err != nil || body.SecretValues == nil || !validRetrySecretValues(body.SecretValues) {
+		writeRequestError(writer, request, errInvalidManagementRequest)
+		return
+	}
+	prepared, err := handler.dependencies.RunManagement.PrepareRetry(request.Context(), runID, keys[0], body)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	handler.streamRun(writer, request, prepared)
+}
+
+func validRetrySecretValues(values map[string]any) bool {
+	if len(values) > 256 {
+		return false
+	}
+	for path := range values {
+		if len(path) > 1024 {
+			return false
+		}
+	}
+	return true
+}
+
 func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, error) {
 	allowed := map[string]bool{
 		"workflowId": true, "runId": true, "status": true, "mode": true,

@@ -53,6 +53,7 @@ type RunManager interface {
 	List(context.Context, workflow.RunSummaryRequest) (workflow.RunSummaryPage, error)
 	Cancel(context.Context, string) (domain.RunSummary, error)
 	RetryPreview(context.Context, string) (workflow.RunRetryPreview, error)
+	PrepareRetry(context.Context, string, string, workflow.RunRetryRequest) (*workflow.PreparedRun, error)
 }
 
 type Debugger interface {
@@ -131,6 +132,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Get("/runs", handler.listRunSummaries)
 		api.Post("/runs/{id}/cancel", handler.cancelRun)
 		api.Get("/runs/{id}/retry-preview", handler.previewRunRetry)
+		api.Post("/runs/{id}/retries", handler.retryRun)
 		api.Get("/runs/{id}/debug", handler.getRunDebug)
 		api.Get("/runs/{id}/events", handler.listRunEvents)
 		api.Get("/runs/{id}/nodes/{nodeId}/rerun-preview", handler.previewNodeRerun)

@@ -39,6 +39,47 @@ func TestAgentRunUsesBodyVersionIDAndStreamsNDJSON(t *testing.T) {
 	}
 }
 
+func TestRetryRunRequiresCanonicalSingleIdempotencyKeyAndStreamsNDJSON(t *testing.T) {
+	dependencies := fixtureDeps()
+	request := httptest.NewRequest(http.MethodPost, "/api/runs/11111111-1111-4111-8111-111111111111/retries", strings.NewReader(`{"secretValues":{"/token":"new-secret"}}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "33333333-3333-4333-8333-333333333333")
+	recorder := httptest.NewRecorder()
+	NewRouter(dependencies).ServeHTTP(recorder, request)
+	manager := dependencies.RunManagement.(*fixtureRunManager)
+	if recorder.Code != http.StatusOK || manager.retryKey != "33333333-3333-4333-8333-333333333333" || manager.retryBody.SecretValues["/token"] != "new-secret" {
+		t.Fatalf("status=%d key=%q body=%+v response=%s", recorder.Code, manager.retryKey, manager.retryBody, recorder.Body.String())
+	}
+	if recorder.Header().Get("Content-Type") != "application/x-ndjson" || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" || !recorder.Flushed {
+		t.Fatalf("headers=%v flushed=%v", recorder.Header(), recorder.Flushed)
+	}
+
+	for _, headers := range [][]string{nil, {"bad"}, {"33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"}} {
+		dependencies = fixtureDeps()
+		request = httptest.NewRequest(http.MethodPost, "/api/runs/11111111-1111-4111-8111-111111111111/retries", strings.NewReader(`{"secretValues":{}}`))
+		for _, value := range headers {
+			request.Header.Add("Idempotency-Key", value)
+		}
+		recorder = httptest.NewRecorder()
+		NewRouter(dependencies).ServeHTTP(recorder, request)
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+	}
+}
+
+func TestRetryRunDuplicateReturnsOnlyExistingRunID(t *testing.T) {
+	dependencies := fixtureDeps()
+	manager := dependencies.RunManagement.(*fixtureRunManager)
+	manager.err = &workflow.RunRetryAlreadyCreatedError{RunID: "55555555-5555-4555-8555-555555555555"}
+	request := httptest.NewRequest(http.MethodPost, "/api/runs/11111111-1111-4111-8111-111111111111/retries", strings.NewReader(`{"secretValues":{"/token":"must-not-leak"}}`))
+	request.Header.Set("Idempotency-Key", "33333333-3333-4333-8333-333333333333")
+	recorder := httptest.NewRecorder()
+	NewRouter(dependencies).ServeHTTP(recorder, request)
+	assertJSONError(t, recorder, http.StatusConflict, "RUN_RETRY_ALREADY_CREATED")
+	if !strings.Contains(recorder.Body.String(), `"details":{"runId":"55555555-5555-4555-8555-555555555555"}`) || strings.Contains(recorder.Body.String(), "must-not-leak") {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+}
+
 func TestPrepareErrorStaysJSONBeforeStreaming(t *testing.T) {
 	dependencies := fixtureDeps()
 	dependencies.Runner.(*fixtureRunner).prepareErr = domain.ErrNotFound

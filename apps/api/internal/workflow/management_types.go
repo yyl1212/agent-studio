@@ -91,6 +91,18 @@ type RunRetryPreview struct {
 	InputSchema        json.RawMessage   `json:"inputSchema"`
 }
 
+type RunRetryRequest struct {
+	SecretValues map[string]any `json:"secretValues"`
+}
+
+type RunRetryAlreadyCreatedError struct {
+	RunID string
+}
+
+func (err *RunRetryAlreadyCreatedError) Error() string {
+	return "run retry already created"
+}
+
 type RunFinalization struct {
 	RunID         string
 	Status        domain.RunStatus
@@ -116,6 +128,7 @@ type RunManagementStore interface {
 	GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error)
 	GetWorkflow(context.Context, string) (domain.Workflow, error)
 	GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error)
+	CreateRetryRun(context.Context, domain.Run) (string, error)
 }
 
 type LocalRunCanceller interface {

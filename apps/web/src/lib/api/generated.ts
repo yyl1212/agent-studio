@@ -442,6 +442,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/retries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retryRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/debug": {
         parameters: {
             query?: never;
@@ -923,6 +939,11 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        RunRetryRequest: {
+            secretValues: {
+                [key: string]: unknown;
+            };
+        };
         NodeRun: {
             /** Format: uuid */
             id: string;
@@ -1029,6 +1050,11 @@ export interface components {
             message: string;
             requestId?: string;
             issues?: components["schemas"]["ValidationIssue"][];
+            details?: components["schemas"]["ErrorDetails"] | null;
+        };
+        ErrorDetails: {
+            /** Format: uuid */
+            runId?: string;
         };
         CreateWorkflowRequest: {
             name: string;
@@ -1847,6 +1873,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunRetryPreview"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    retryRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunRetryRequest"];
+            };
+        };
+        responses: {
+            /** @description 完整重试运行事件流 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": string;
                 };
             };
             400: components["responses"]["Error"];

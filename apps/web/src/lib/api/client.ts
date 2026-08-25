@@ -29,6 +29,8 @@ export type WorkflowSummary = components['schemas']['WorkflowSummary']
 export type WorkflowSummaryPage = components['schemas']['WorkflowSummaryPage']
 export type RunSummary = components['schemas']['RunSummary']
 export type RunSummaryPage = components['schemas']['RunSummaryPage']
+export type RunRetryPreview = components['schemas']['RunRetryPreview']
+export type RunRetryRequest = components['schemas']['RunRetryRequest']
 export type UpdateWorkflowRequest = components['schemas']['UpdateWorkflowRequest']
 export type CopyWorkflowRequest = components['schemas']['CopyWorkflowRequest']
 
@@ -65,6 +67,7 @@ export class APIError extends Error {
     message: string,
     readonly requestId?: string,
     readonly issues?: ValidationIssue[],
+    readonly details?: Readonly<{ runId?: string }>,
   ) {
     super(message)
     this.name = 'APIError'
@@ -101,7 +104,15 @@ async function throwAPIError(response: Response): Promise<never> {
   } catch {
     // 非 JSON 的上游故障也必须转换成稳定、安全的客户端错误。
   }
-  throw new APIError(response.status, body.code ?? 'INTERNAL_ERROR', body.message ?? '请求失败', body.requestId, body.issues)
+  throw new APIError(response.status, body.code ?? 'INTERNAL_ERROR', body.message ?? '请求失败', body.requestId, body.issues, safeErrorDetails(body.details))
+}
+
+const canonicalUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+function safeErrorDetails(value: unknown): Readonly<{ runId?: string }> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const runId = (value as Record<string, unknown>).runId
+  return typeof runId === 'string' && canonicalUUID.test(runId) ? Object.freeze({ runId }) : undefined
 }
 
 const jsonBody = (value: unknown) => JSON.stringify(value)
@@ -193,6 +204,12 @@ export const api = {
     params.set('limit', String(query.limit))
     return request<RunSummaryPage>(appendSearch('/api/runs', params), { signal })
   },
+  previewRunRetry: (id: string, signal?: AbortSignal) =>
+    request<RunRetryPreview>(`/api/runs/${encodeURIComponent(id)}/retry-preview`, { signal }),
+  retryRun: (id: string, idempotencyKey: string, body: RunRetryRequest, signal?: AbortSignal) =>
+    streamRequest(`/api/runs/${encodeURIComponent(id)}/retries`, {
+      method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: jsonBody(body), signal,
+    }),
   getDebugOverview: (id: string, signal?: AbortSignal) =>
     request<DebugOverview>(`/api/runs/${encodeURIComponent(id)}/debug`, { signal }),
   listRunEvents: (id: string, afterSequence = 0, signal?: AbortSignal) =>

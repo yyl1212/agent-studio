@@ -728,6 +728,45 @@ paths:
           $ref: "#/components/responses/Error"
         "500":
           $ref: "#/components/responses/Error"
+  /api/runs/{id}/retries:
+    post:
+      operationId: retryRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRetryRequest"
+      responses:
+        "200":
+          description: 完整重试运行事件流
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
   /api/runs/{id}/debug:
     get:
       operationId: getRunDebug
@@ -1837,6 +1876,17 @@ components:
         inputSchema:
           type: object
           additionalProperties: true
+    RunRetryRequest:
+      type: object
+      additionalProperties: false
+      required: [secretValues]
+      properties:
+        secretValues:
+          type: object
+          maxProperties: 256
+          propertyNames:
+            maxLength: 1024
+          additionalProperties: true
     NodeRun:
       type: object
       required: [id, runId, nodeId, nodeType, status]
@@ -2050,6 +2100,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ValidationIssue"
+        details:
+          oneOf:
+            - $ref: "#/components/schemas/ErrorDetails"
+            - type: "null"
+    ErrorDetails:
+      type: object
+      additionalProperties: false
+      properties:
+        runId:
+          type: string
+          format: uuid
     CreateWorkflowRequest:
       type: object
       additionalProperties: false

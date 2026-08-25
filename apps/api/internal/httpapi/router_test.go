@@ -167,6 +167,8 @@ type fixtureRunManager struct {
 	previewID string
 	summary   domain.RunSummary
 	preview   workflow.RunRetryPreview
+	retryKey  string
+	retryBody workflow.RunRetryRequest
 	err       error
 }
 
@@ -183,6 +185,14 @@ func (manager *fixtureRunManager) Cancel(_ context.Context, runID string) (domai
 func (manager *fixtureRunManager) RetryPreview(_ context.Context, runID string) (workflow.RunRetryPreview, error) {
 	manager.previewID = runID
 	return manager.preview, manager.err
+}
+
+func (manager *fixtureRunManager) PrepareRetry(_ context.Context, runID, key string, body workflow.RunRetryRequest) (*workflow.PreparedRun, error) {
+	manager.previewID, manager.retryKey, manager.retryBody = runID, key, body
+	if manager.err != nil {
+		return nil, manager.err
+	}
+	return &workflow.PreparedRun{RunID: runID}, nil
 }
 
 type fixtureDebugger struct {

@@ -20,6 +20,28 @@ describe('API client', () => {
     )
   })
 
+	it('错误详情只保留规范 UUID runId', async () => {
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({
+				code: 'RUN_RETRY_ALREADY_CREATED', message: '已创建',
+				details: { runId: '55555555-5555-4555-8555-555555555555', secret: 'must-drop' },
+			}), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({
+				code: 'RUN_RETRY_ALREADY_CREATED', message: '已创建', details: { runId: 'not-a-uuid', secret: 'must-drop' },
+			}), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+		vi.stubGlobal('fetch', fetchMock)
+
+		await expect(api.previewRunRetry('run/1')).rejects.toEqual(expect.objectContaining<Partial<APIError>>({
+			details: { runId: '55555555-5555-4555-8555-555555555555' },
+		}))
+		try {
+			await api.previewRunRetry('run/1')
+		} catch (error) {
+			expect((error as APIError).details).toBeUndefined()
+			expect(JSON.stringify(error)).not.toContain('must-drop')
+		}
+	})
+
   it('运行接口保留原始流式 Response', async () => {
     const response = new Response('{"type":"run.started"}\n', { status: 200 })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -52,6 +53,69 @@ func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 		return fmt.Errorf("commit create run: %w", err)
 	}
 	return nil
+}
+
+func (store *Store) CreateRetryRun(ctx context.Context, run domain.Run) (string, error) {
+	if run.RetryOfRunID == nil || run.RetryKey == nil {
+		return "", workflowservice.ErrInvalidWorkflowInput
+	}
+	errorJSON, err := marshalOptional(run.Error)
+	if err != nil {
+		return "", fmt.Errorf("encode retry run error: %w", err)
+	}
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin create retry run: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+
+	var sourceWorkflowID string
+	var sourceMode domain.RunMode
+	var sourceStatus domain.RunStatus
+	if err := transaction.QueryRow(ctx, `SELECT workflow_id::text,mode,status FROM runs WHERE id=$1 FOR UPDATE`, *run.RetryOfRunID).
+		Scan(&sourceWorkflowID, &sourceMode, &sourceStatus); err != nil {
+		return "", fmt.Errorf("lock retry source run: %w", mapNotFound(err))
+	}
+	if sourceWorkflowID != run.WorkflowID || sourceMode != run.Mode || (sourceStatus != domain.RunFailed && sourceStatus != domain.RunCancelled) {
+		return "", workflowservice.ErrRunNotRetryable
+	}
+	var archivedAt *time.Time
+	if err := transaction.QueryRow(ctx, "SELECT archived_at FROM workflows WHERE id=$1 FOR UPDATE", sourceWorkflowID).Scan(&archivedAt); err != nil {
+		return "", fmt.Errorf("lock retry workflow: %w", mapNotFound(err))
+	}
+	if archivedAt != nil {
+		return "", domain.ErrWorkflowArchived
+	}
+	inputPaths := run.InputRedactedPaths
+	if inputPaths == nil {
+		inputPaths = []string{}
+	}
+	_, err = transaction.Exec(ctx, `INSERT INTO runs(
+		id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,
+		retry_of_run_id,retry_key,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		run.ID, run.WorkflowID, run.WorkflowVersionID, run.DraftRevision, nullableRaw(run.GraphSnapshot),
+		run.SourceRunID, run.SourceNodeID, run.RetryOfRunID, run.RetryKey, run.Mode, run.Status, run.Input, inputPaths,
+		nullableRaw(run.Output), errorJSON, run.CancelRequestedAt, run.HeartbeatAt, run.StartedAt, run.EndedAt,
+	)
+	if err != nil {
+		var databaseError *pgconn.PgError
+		if errors.As(err, &databaseError) && databaseError.Code == "23505" && databaseError.ConstraintName == "runs_retry_key_unique_idx" {
+			if rollbackErr := transaction.Rollback(ctx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+				return "", fmt.Errorf("rollback duplicate retry run: %w", rollbackErr)
+			}
+			var existingID string
+			if queryErr := store.pool.QueryRow(ctx, `SELECT id::text FROM runs WHERE retry_of_run_id=$1 AND retry_key=$2`, *run.RetryOfRunID, *run.RetryKey).Scan(&existingID); queryErr != nil {
+				return "", fmt.Errorf("load existing retry run: %w", queryErr)
+			}
+			return "", &workflowservice.RunRetryAlreadyCreatedError{RunID: existingID}
+		}
+		return "", fmt.Errorf("create retry run: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit create retry run: %w", err)
+	}
+	return run.ID, nil
 }
 
 func (store *Store) UpsertNodeRun(ctx context.Context, nodeRun domain.NodeRun) error {

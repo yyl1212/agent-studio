@@ -379,6 +379,80 @@ func TestRunRecoveryFieldsRoundTripAndHideCoordinatorState(t *testing.T) {
 	}
 }
 
+func TestCreateRetryRunIsConcurrentAndSourceScopedIdempotent(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "retry-idempotency")
+	source := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(context.Background(), "UPDATE runs SET status='failed' WHERE id=$1", source.ID); err != nil {
+		t.Fatal(err)
+	}
+	key := fixtureUUID()
+	makeRetry := func() domain.Run {
+		retry := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+		retryOf, retryKey := source.ID, key
+		retry.RetryOfRunID, retry.RetryKey = &retryOf, &retryKey
+		return retry
+	}
+	type result struct {
+		id  string
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			id, err := store.CreateRetryRun(context.Background(), makeRetry())
+			results <- result{id: id, err: err}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	var success result
+	var duplicate *workflowservice.RunRetryAlreadyCreatedError
+	if first.err == nil {
+		success = first
+		if !errors.As(second.err, &duplicate) {
+			t.Fatalf("second error=%v", second.err)
+		}
+	} else {
+		success = second
+		if !errors.As(first.err, &duplicate) {
+			t.Fatalf("first error=%v", first.err)
+		}
+	}
+	if success.id == "" || duplicate == nil || duplicate.RunID != success.id {
+		t.Fatalf("success=%+v duplicate=%+v", success, duplicate)
+	}
+	var count int
+	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM runs WHERE retry_of_run_id=$1 AND retry_key=$2", source.ID, key).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("count=%d error=%v", count, err)
+	}
+
+	differentKey := fixtureUUID()
+	retry := makeRetry()
+	retry.RetryKey = &differentKey
+	if _, err := store.CreateRetryRun(context.Background(), retry); err != nil {
+		t.Fatalf("different key error=%v", err)
+	}
+
+	secondSource := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), secondSource); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(context.Background(), "UPDATE runs SET status='cancelled',ended_at=now() WHERE id=$1", secondSource.ID); err != nil {
+		t.Fatal(err)
+	}
+	otherSourceRetry := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	otherSourceRetry.RetryOfRunID, otherSourceRetry.RetryKey = &secondSource.ID, &key
+	if _, err := store.CreateRetryRun(context.Background(), otherSourceRetry); err != nil {
+		t.Fatalf("same key for different source error=%v", err)
+	}
+}
+
 func TestWorkflowLookupKeepsPublishedVersionsImmutable(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "immutable")

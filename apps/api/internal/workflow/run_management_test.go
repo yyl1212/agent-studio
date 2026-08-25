@@ -193,6 +193,94 @@ func TestRetryPreviewRejectsOversizedInput(t *testing.T) {
 	}
 }
 
+func TestPrepareRetryRestoresSecretsValidatesAndCreatesHistoricRun(t *testing.T) {
+	graph := rerunGraph(t)
+	store := &fakeRunManagementStore{
+		run: domain.Run{
+			ID: testRunID, WorkflowID: testWorkflowID, Mode: domain.RunModeTest, Status: domain.RunFailed,
+			GraphSnapshot: graph, DraftRevision: int64Pointer(3),
+			Input: json.RawMessage(`{"seed":"visible","webhookToken":"[REDACTED]"}`), InputRedactedPaths: []string{"/webhookToken"},
+		},
+		workflow: domain.Workflow{ID: testWorkflowID, Name: "Workflow", Slug: "workflow"},
+	}
+	key := "33333333-3333-4333-8333-333333333333"
+	prepared, err := NewRunManagementService(store, newRealCompiler(t), nil).PrepareRetry(context.Background(), testRunID, key, RunRetryRequest{
+		SecretValues: map[string]any{"/webhookToken": "new-secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.RunID == "" || prepared.Mode != domain.RunModeTest || prepared.Input["webhookToken"] != "new-secret" || prepared.Input["seed"] != "visible" {
+		t.Fatalf("prepared=%+v", prepared)
+	}
+	created := store.retryRun
+	if created.RetryOfRunID == nil || *created.RetryOfRunID != testRunID || created.RetryKey == nil || *created.RetryKey != key || created.SourceRunID != nil || created.Mode != domain.RunModeTest {
+		t.Fatalf("created=%+v", created)
+	}
+	if string(created.GraphSnapshot) != string(graph) || strings.Contains(string(created.Input), "new-secret") || !strings.Contains(string(created.Input), redactedValue) {
+		t.Fatalf("snapshot=%s persisted input=%s", created.GraphSnapshot, created.Input)
+	}
+}
+
+func TestPrepareRetryRejectsInvalidKeyAndSecretSetBeforeCreate(t *testing.T) {
+	graph := rerunGraph(t)
+	newStore := func() *fakeRunManagementStore {
+		return &fakeRunManagementStore{
+			run: domain.Run{ID: testRunID, WorkflowID: testWorkflowID, Mode: domain.RunModeTest, Status: domain.RunFailed, GraphSnapshot: graph,
+				Input: json.RawMessage(`{"seed":"visible","webhookToken":"[REDACTED]"}`), InputRedactedPaths: []string{"/webhookToken"}},
+			workflow: domain.Workflow{ID: testWorkflowID},
+		}
+	}
+	for _, test := range []struct {
+		name string
+		key  string
+		body RunRetryRequest
+		want error
+	}{
+		{name: "invalid key", key: "bad", body: RunRetryRequest{SecretValues: map[string]any{"/webhookToken": "secret"}}, want: ErrInvalidWorkflowInput},
+		{name: "non canonical key", key: "33333333-3333-4333-8333-333333333333 ", body: RunRetryRequest{SecretValues: map[string]any{"/webhookToken": "secret"}}, want: ErrInvalidWorkflowInput},
+		{name: "missing secret", key: "33333333-3333-4333-8333-333333333333", body: RunRetryRequest{SecretValues: map[string]any{}}, want: ErrRunRetrySecretRequired},
+		{name: "schema mismatch", key: "33333333-3333-4333-8333-333333333333", body: RunRetryRequest{SecretValues: map[string]any{"/webhookToken": false}}, want: ErrInputValidation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newStore()
+			_, err := NewRunManagementService(store, newRealCompiler(t), nil).PrepareRetry(context.Background(), testRunID, test.key, test.body)
+			if !errors.Is(err, test.want) || store.retryCalls != 0 {
+				t.Fatalf("error=%v retry calls=%d", err, store.retryCalls)
+			}
+		})
+	}
+}
+
+func TestPrepareRetryUsesOriginalPublishedVersionAndRechecksEligibility(t *testing.T) {
+	versionID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	graph := rerunGraph(t)
+	store := &fakeRunManagementStore{
+		run: domain.Run{ID: testRunID, WorkflowID: testWorkflowID, WorkflowVersionID: &versionID, Mode: domain.RunModePublished, Status: domain.RunCancelled,
+			Input: json.RawMessage(`{"seed":"visible"}`)},
+		workflow: domain.Workflow{ID: testWorkflowID, Slug: "workflow", DraftGraph: graphReturningField(t, "current-", "current")},
+		version:  domain.WorkflowVersion{ID: versionID, WorkflowID: testWorkflowID, Version: 4, Graph: graph},
+	}
+	prepared, err := NewRunManagementService(store, newRealCompiler(t), nil).PrepareRetry(context.Background(), testRunID,
+		"33333333-3333-4333-8333-333333333333", RunRetryRequest{SecretValues: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Mode != domain.RunModePublished || prepared.WorkflowVersionID == nil || *prepared.WorkflowVersionID != versionID || store.retryRun.GraphSnapshot != nil || store.versionID != versionID {
+		t.Fatalf("prepared=%+v created=%+v loaded version=%s", prepared, store.retryRun, store.versionID)
+	}
+
+	store.run.Status = domain.RunRunning
+	store.retryCalls = 0
+	_, err = NewRunManagementService(store, newRealCompiler(t), nil).PrepareRetry(context.Background(), testRunID,
+		"44444444-4444-4444-8444-444444444444", RunRetryRequest{SecretValues: map[string]any{}})
+	if !errors.Is(err, ErrRunNotRetryable) || store.retryCalls != 0 {
+		t.Fatalf("error=%v retry calls=%d", err, store.retryCalls)
+	}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
 const (
 	testWorkflowID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	testRunID      = "11111111-1111-4111-8111-111111111111"
@@ -367,6 +455,15 @@ type fakeRunManagementStore struct {
 	version       domain.WorkflowVersion
 	versionErr    error
 	versionID     string
+	retryRun      domain.Run
+	retryErr      error
+	retryCalls    int
+}
+
+func (store *fakeRunManagementStore) CreateRetryRun(_ context.Context, run domain.Run) (string, error) {
+	store.retryCalls++
+	store.retryRun = run
+	return run.ID, store.retryErr
 }
 
 func (store *fakeRunManagementStore) RequestRunCancel(_ context.Context, runID string) (domain.RunSummary, error) {
