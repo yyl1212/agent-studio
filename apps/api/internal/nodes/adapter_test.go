@@ -65,6 +65,40 @@ func TestNormalizeDefinitionUsesJSONArraysForMissingPorts(t *testing.T) {
 	}
 }
 
+func TestNormalizeDefinitionDefaultsExecutionSafetyConservatively(t *testing.T) {
+	for _, value := range []agentnode.ExecutionSafety{"", "future_value"} {
+		definition, err := NormalizeDefinition(agentnode.Definition{
+			Type:            "fixture",
+			Version:         "1",
+			Title:           "Fixture",
+			ConfigSchema:    json.RawMessage(`{"type":"object"}`),
+			ExecutionSafety: value,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if definition.ExecutionSafety != agentnode.ExecutionSafetySideEffect {
+			t.Fatalf("value=%q normalized=%q", value, definition.ExecutionSafety)
+		}
+	}
+}
+
+func TestNormalizeDefinitionPreservesKnownExecutionSafety(t *testing.T) {
+	definition, err := NormalizeDefinition(agentnode.Definition{
+		Type:            "fixture",
+		Version:         "1",
+		Title:           "Fixture",
+		ConfigSchema:    json.RawMessage(`{"type":"object"}`),
+		ExecutionSafety: agentnode.ExecutionSafetyReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definition.ExecutionSafety != agentnode.ExecutionSafetyReadOnly {
+		t.Fatalf("safety=%q", definition.ExecutionSafety)
+	}
+}
+
 func TestNormalizeDefinitionRejectsDuplicatePortKeys(t *testing.T) {
 	_, err := NormalizeDefinition(agentnode.Definition{
 		Type:    "example.duplicate",

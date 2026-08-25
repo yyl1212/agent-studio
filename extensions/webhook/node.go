@@ -70,11 +70,12 @@ func Register(registrar agentnode.Registrar) error {
 
 func (*Node) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "extension.webhook",
-		Version:     "1.0.0",
-		Title:       "Webhook",
-		Description: "向运维配置的基地址发送受约束的 JSON POST 请求",
-		Category:    "扩展",
+		Type:            "extension.webhook",
+		Version:         "1.0.0",
+		Title:           "Webhook",
+		Description:     "向运维配置的基地址发送受约束的 JSON POST 请求",
+		Category:        "扩展",
+		ExecutionSafety: agentnode.ExecutionSafetySideEffect,
 		ConfigSchema: agentnode.MustSchema(`{
           "$schema":"https://json-schema.org/draft/2020-12/schema",
           "type":"object",

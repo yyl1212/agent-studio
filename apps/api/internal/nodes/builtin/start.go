@@ -35,11 +35,12 @@ func NewStart() *startNode {
 
 func (*startNode) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "start",
-		Version:     "1",
-		Title:       "开始",
-		Description: "定义 Agent 运行参数",
-		Category:    "流程",
+		Type:            "start",
+		Version:         "1",
+		Title:           "开始",
+		Description:     "定义 Agent 运行参数",
+		Category:        "流程",
+		ExecutionSafety: agentnode.ExecutionSafetyPure,
 		ConfigSchema: json.RawMessage(`{
           "type":"object",
           "properties":{

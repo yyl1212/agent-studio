@@ -32,6 +32,31 @@ func (contractProvider) Complete(ctx context.Context, request modelprovider.Requ
 	}
 }
 
+func TestOfficialBuiltinExecutionSafetyMatrix(t *testing.T) {
+	tests := []struct {
+		node agentnode.Node
+		want agentnode.ExecutionSafety
+	}{
+		{node: NewStart(), want: agentnode.ExecutionSafetyPure},
+		{node: NewTemplate(), want: agentnode.ExecutionSafetyPure},
+		{node: NewCondition(), want: agentnode.ExecutionSafetyPure},
+		{node: NewEnd(), want: agentnode.ExecutionSafetyPure},
+		{node: NewCode(CodeOptions{}), want: agentnode.ExecutionSafetyPure},
+		{node: NewLLM(contractProvider{}, "contract-model"), want: agentnode.ExecutionSafetyReadOnly},
+		{node: NewLLMV2(contractProvider{}, "contract-model"), want: agentnode.ExecutionSafetyReadOnly},
+		{node: NewHTTP(HTTPOptions{}), want: agentnode.ExecutionSafetySideEffect},
+	}
+
+	for _, test := range tests {
+		definition := test.node.Definition()
+		t.Run(definition.Type+"@"+definition.Version, func(t *testing.T) {
+			if got := definition.ExecutionSafety; got != test.want {
+				t.Fatalf("execution safety=%q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCoreNodeContracts(t *testing.T) {
 	inputKind := agentnode.ErrorKindInput
 	internalKind := agentnode.ErrorKindInternal

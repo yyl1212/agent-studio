@@ -384,6 +384,54 @@ func TestNodeAPIDiscoversBothLLMVersionsAndResolvesV2Fields(t *testing.T) {
 	}
 }
 
+func TestNodeAPIExposesExactOfficialExecutionSafetyMatrix(t *testing.T) {
+	dependencies := fixtureDeps()
+	record := builtin.RuntimeRecord(buildinfo.Info{Version: "v0.3.0"})
+	if err := dependencies.Registry.RegisterPackage(record, func(registrar agentnode.Registrar) error {
+		if err := builtin.RegisterCore(registrar); err != nil {
+			return err
+		}
+		if err := builtin.RegisterLLM(registrar, modelprovider.NewMock(), "mock"); err != nil {
+			return err
+		}
+		return builtin.RegisterIntegrationNodes(registrar, builtin.HTTPOptions{})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := generated.RegisterNodes(dependencies.Registry); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/node-types", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var definitions []nodeTypeResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &definitions); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]agentnode.ExecutionSafety{
+		"start@1":                   agentnode.ExecutionSafetyPure,
+		"template@1":                agentnode.ExecutionSafetyPure,
+		"condition@1":               agentnode.ExecutionSafetyPure,
+		"end@1":                     agentnode.ExecutionSafetyPure,
+		"code@1":                    agentnode.ExecutionSafetyPure,
+		"llm@1":                     agentnode.ExecutionSafetyReadOnly,
+		"llm@2":                     agentnode.ExecutionSafetyReadOnly,
+		"http@1":                    agentnode.ExecutionSafetySideEffect,
+		"extension.echo@1.0.0":      agentnode.ExecutionSafetyPure,
+		"extension.retriever@1.0.0": agentnode.ExecutionSafetyPure,
+		"extension.webhook@1.0.0":   agentnode.ExecutionSafetySideEffect,
+	}
+	got := make(map[string]agentnode.ExecutionSafety, len(definitions))
+	for _, definition := range definitions {
+		got[definition.Type+"@"+definition.Version] = definition.ExecutionSafety
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("execution safeties=%v, want %v", got, want)
+	}
+}
+
 func TestNodeAPIIncludesGeneratedOfficialExtensions(t *testing.T) {
 	dependencies := fixtureDeps()
 	if err := generated.RegisterNodes(dependencies.Registry); err != nil {

@@ -24,11 +24,12 @@ func NewTemplate() *templateNode {
 
 func (*templateNode) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "template",
-		Version:     "1",
-		Title:       "提示词模板",
-		Description: "使用严格占位符组合提示词",
-		Category:    "文本",
+		Type:            "template",
+		Version:         "1",
+		Title:           "提示词模板",
+		Description:     "使用严格占位符组合提示词",
+		Category:        "文本",
+		ExecutionSafety: agentnode.ExecutionSafetyPure,
 		ConfigSchema: json.RawMessage(`{
           "type":"object",
           "properties":{

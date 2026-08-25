@@ -20,11 +20,12 @@ func Register(registrar agentnode.Registrar) error {
 
 func (Node) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "extension.echo",
-		Version:     "1.0.0",
-		Title:       "Echo",
-		Description: "返回带前缀的输入文本",
-		Category:    "扩展",
+		Type:            "extension.echo",
+		Version:         "1.0.0",
+		Title:           "Echo",
+		Description:     "返回带前缀的输入文本",
+		Category:        "扩展",
+		ExecutionSafety: agentnode.ExecutionSafetyPure,
 		ConfigSchema: agentnode.MustSchema(`{
           "$schema":"https://json-schema.org/draft/2020-12/schema",
           "type":"object",

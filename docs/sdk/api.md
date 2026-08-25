@@ -51,6 +51,7 @@ func (Node) Definition() agentnode.Definition {
     return agentnode.Definition{
         Type: "example.echo", Version: "1.0.0", Title: "Echo",
         Description: "为文本增加前缀", Category: "文本",
+        ExecutionSafety: agentnode.ExecutionSafetyPure,
         ConfigSchema: agentnode.MustSchema(`{
           "type":"object",
           "properties":{"prefix":{"type":"string"}},
@@ -115,6 +116,18 @@ var _ agentnode.Node = Node{}
 数据类型为 `string`、`number`、`boolean`、`json`、`any`。普通端口使用 `CardinalityOne`；需要从多个条件分支中恰好选择一个值时，输入端口可使用 `CardinalitySingleActive`。
 
 端口 `Key` 在同一方向必须非空且唯一。端口字段是持久化工作流和画布的稳定契约，发布后不要在同一节点版本中删除或改变语义。
+
+### 执行安全等级
+
+`Definition.ExecutionSafety` 声明节点重新执行时可能产生的最危险行为：
+
+- `ExecutionSafetyPure`（`pure`）：只做确定性的本地计算，不访问进程外状态，也不产生外部副作用。
+- `ExecutionSafetyReadOnly`（`read_only`）：可能读取外部服务或产生调用费用，但不会主动修改外部状态。
+- `ExecutionSafetySideEffect`（`side_effect`）：可能写入外部系统、发送请求或执行其他无法撤销的操作。
+
+节点作者必须按节点该版本的最危险可能行为声明。例如同时支持 GET 和 POST 的 HTTP 节点应整体声明为 `side_effect`，不能只按常用配置声明为 `read_only`。省略、空值或宿主不认识的未来值都会被保守规范为 `side_effect`，局部重跑时需要副作用确认。
+
+安全等级只决定调试重跑中的提示与确认策略，不是沙箱、权限控制或“不产生副作用”的运行时保证。真实隔离仍需依赖可信代码、容器、操作系统权限和网络策略。
 
 ## 动态端口
 

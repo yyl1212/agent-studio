@@ -23,11 +23,12 @@ func NewCondition() *conditionNode {
 
 func (*conditionNode) Definition() agentnode.Definition {
 	return agentnode.Definition{
-		Type:        "condition",
-		Version:     "1",
-		Title:       "条件",
-		Description: "根据输入值激活一个分支",
-		Category:    "流程",
+		Type:            "condition",
+		Version:         "1",
+		Title:           "条件",
+		Description:     "根据输入值激活一个分支",
+		Category:        "流程",
+		ExecutionSafety: agentnode.ExecutionSafetyPure,
 		ConfigSchema: json.RawMessage(`{
           "type":"object",
           "properties":{
