@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -60,5 +61,15 @@ func TestPublicModelErrorsRequireInternalKind(t *testing.T) {
 	got := NewPublicNodeError(err, "llm-2", "llm", "2")
 	if got.Code != "NODE_EXECUTION_FAILED" || got.Message != "节点输入无效" {
 		t.Fatalf("public=%+v", got)
+	}
+}
+
+func TestPublicRunEventBudgetErrorUsesStableSafeMessage(t *testing.T) {
+	got := NewPublicRunError(fmt.Errorf("private payload details: %w", ErrRunEventBudgetExceeded))
+	if got.Code != "RUN_EVENT_BUDGET_EXCEEDED" || got.Message != "运行事件超过大小限制" {
+		t.Fatalf("public=%+v", got)
+	}
+	if strings.Contains(got.Message, "private") {
+		t.Fatalf("public error leaked cause: %+v", got)
 	}
 }

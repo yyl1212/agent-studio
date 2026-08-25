@@ -29,7 +29,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
+	if count != 2 {
 		t.Fatalf("migration count=%d", count)
 	}
 }
@@ -188,6 +188,160 @@ func TestRunAndNodeRunRoundTrip(t *testing.T) {
 	runs, err := store.ListRuns(context.Background(), workflow.ID, 10)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs=%+v error=%v", runs, err)
+	}
+}
+
+func TestDebugRunRequiresSameWorkflowSourceAndSnapshot(t *testing.T) {
+	store := migratedTestStore(t)
+	first := createWorkflowFixture(t, store, "debug-source")
+	second := createWorkflowFixture(t, store, "debug-other")
+	source := newTestRun(first.ID, first.DraftRevision, first.DraftGraph)
+	if err := store.CreateRun(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceNodeID := "template-1"
+	valid := domain.Run{
+		ID: fixtureUUID(), WorkflowID: first.ID, GraphSnapshot: first.DraftGraph,
+		Mode: domain.RunModeDebug, Status: domain.RunRunning, Input: json.RawMessage(`{}`),
+		SourceRunID: &source.ID, SourceNodeID: &sourceNodeID, StartedAt: time.Now().UTC(),
+	}
+	if err := store.CreateRun(context.Background(), valid); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := store.GetRun(context.Background(), valid.ID)
+	if err != nil || loaded.SourceRunID == nil || *loaded.SourceRunID != source.ID || loaded.SourceNodeID == nil || *loaded.SourceNodeID != sourceNodeID {
+		t.Fatalf("loaded=%+v error=%v", loaded, err)
+	}
+
+	tests := []struct {
+		name string
+		run  domain.Run
+	}{
+		{name: "cross workflow source", run: domain.Run{
+			ID: fixtureUUID(), WorkflowID: second.ID, GraphSnapshot: second.DraftGraph,
+			Mode: domain.RunModeDebug, Status: domain.RunRunning, Input: json.RawMessage(`{}`),
+			SourceRunID: &source.ID, SourceNodeID: &sourceNodeID, StartedAt: time.Now().UTC(),
+		}},
+		{name: "debug without snapshot", run: domain.Run{
+			ID: fixtureUUID(), WorkflowID: first.ID,
+			Mode: domain.RunModeDebug, Status: domain.RunRunning, Input: json.RawMessage(`{}`),
+			SourceRunID: &source.ID, SourceNodeID: &sourceNodeID, StartedAt: time.Now().UTC(),
+		}},
+		{name: "test with source", run: domain.Run{
+			ID: fixtureUUID(), WorkflowID: first.ID, DraftRevision: &first.DraftRevision, GraphSnapshot: first.DraftGraph,
+			Mode: domain.RunModeTest, Status: domain.RunRunning, Input: json.RawMessage(`{}`),
+			SourceRunID: &source.ID, SourceNodeID: &sourceNodeID, StartedAt: time.Now().UTC(),
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := store.CreateRun(context.Background(), test.run); err == nil {
+				t.Fatal("expected source constraint failure")
+			}
+		})
+	}
+}
+
+func TestPersistRunEventIsAppendOnlyAndAtomicWithNodeSummary(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "event-atomic")
+	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	event := domain.RunEvent{
+		RunID: run.ID, Sequence: 1, Type: "node.started", NodeID: "start", Status: domain.NodeRunning,
+		ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, DataBytes: 2, Timestamp: now,
+	}
+	nodeRun := domain.NodeRun{
+		ID: fixtureUUID(), RunID: fixtureUUID(), NodeID: "start", NodeType: "start", Status: domain.NodeRunning, StartedAt: &now,
+	}
+	budget := domain.RunEventBudget{MaxEvents: 8, MaxTotalDataBytes: 32}
+	if err := store.PersistRunEvent(context.Background(), event, &nodeRun, budget); err == nil {
+		t.Fatal("expected node summary foreign key failure")
+	}
+	var count int
+	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM run_events WHERE run_id=$1", run.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("events after rollback=%d", count)
+	}
+
+	if err := store.PersistRunEvent(context.Background(), event, nil, budget); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PersistRunEvent(context.Background(), event, nil, budget); !errors.Is(err, domain.ErrRunEventSequence) {
+		t.Fatalf("duplicate error=%v", err)
+	}
+}
+
+func TestPersistRunEventRejectsSequenceGapAndTotalBudget(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "event-budget")
+	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	budget := domain.RunEventBudget{MaxEvents: 2, MaxTotalDataBytes: 4}
+	event := domain.RunEvent{
+		RunID: run.ID, Sequence: 2, Type: "run.started", ActivePorts: []string{},
+		InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, DataBytes: 2, Timestamp: now,
+	}
+	if err := store.PersistRunEvent(context.Background(), event, nil, budget); !errors.Is(err, domain.ErrRunEventSequence) {
+		t.Fatalf("gap error=%v", err)
+	}
+	event.Sequence = 1
+	if err := store.PersistRunEvent(context.Background(), event, nil, budget); err != nil {
+		t.Fatal(err)
+	}
+	event.Sequence = 2
+	event.Type = "run.completed"
+	event.DataBytes = 3
+	if err := store.PersistRunEvent(context.Background(), event, nil, budget); !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
+		t.Fatalf("budget error=%v", err)
+	}
+	events, err := store.ListRunEvents(context.Background(), run.ID, 0, 200)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events=%+v error=%v", events, err)
+	}
+}
+
+func TestListRunEventsUsesExclusiveCursorAndStableOrder(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "event-list")
+	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	budget := domain.RunEventBudget{MaxEvents: 8, MaxTotalDataBytes: 32}
+	for sequence, eventType := range []string{"run.started", "node.started", "node.completed", "run.completed"} {
+		event := domain.RunEvent{
+			RunID: run.ID, Sequence: int64(sequence + 1), Type: eventType, NodeID: "start",
+			ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, Timestamp: now.Add(time.Duration(sequence) * time.Millisecond),
+		}
+		if eventType == "run.started" || eventType == "run.completed" {
+			event.NodeID = ""
+		}
+		if err := store.PersistRunEvent(context.Background(), event, nil, budget); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := store.ListRunEvents(context.Background(), run.ID, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Sequence != 2 || events[1].Sequence != 3 {
+		t.Fatalf("events=%+v", events)
+	}
+	for _, event := range events {
+		if event.ActivePorts == nil || event.InputRedactedPaths == nil || event.OutputRedactedPaths == nil {
+			t.Fatalf("event arrays must be non-nil: %+v", event)
+		}
 	}
 }
 
