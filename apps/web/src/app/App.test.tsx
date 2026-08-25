@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import { App } from './App'
@@ -8,7 +8,8 @@ describe('App', () => {
     render(<App />)
 
     expect(screen.getByRole('heading', { name: 'Agent Studio' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '工作流' })).toBeInTheDocument()
-		expect(screen.getByRole('link', { name: '节点包' })).toBeInTheDocument()
+    const navigation = screen.getByRole('navigation', { name: '主导航' })
+    expect(within(navigation).getByRole('link', { name: '工作流' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('link', { name: '节点包' })).toBeInTheDocument()
   })
 })
