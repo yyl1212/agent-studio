@@ -7,7 +7,7 @@ import type { RunEvent } from '../../lib/api/ndjson'
 import { DebugWorkbench } from './DebugWorkbench'
 
 const overview = {
-	run: { id: 'r1', workflowId: 'w1', mode: 'test', status: 'completed', input: { topic: 'hello' }, startedAt: '2026-08-25T00:00:00Z', endedAt: '2026-08-25T00:00:02Z' },
+	run: { id: 'r1', workflowId: 'w1', mode: 'test', status: 'completed', input: { topic: 'hello' }, inputRedactedPaths: [], startedAt: '2026-08-25T00:00:00Z', endedAt: '2026-08-25T00:00:02Z' },
 	graph: { schemaVersion: 1, nodes: [], edges: [] }, nodeRuns: [], sourceChain: [], replayAvailable: true, rerunAvailable: true,
 } satisfies DebugOverview
 

@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest'
 import { readRunSearch, readWorkflowSearch, writeRunSearch, writeWorkflowSearch } from './managementQuery'
 
 describe('management query model', () => {
+	it('接受 cancelling 和完整五状态筛选', () => {
+		const parsed = readRunSearch(new URLSearchParams('status=cancelled&status=cancelling&status=completed&status=failed&status=running'))
+		expect(parsed.hadInvalid).toBe(false)
+		expect(parsed.query.statuses).toEqual(['cancelled', 'cancelling', 'completed', 'failed', 'running'])
+	})
+
 	it('移除非法工作流参数并回退默认值', () => {
 		const parsed = readWorkflowSearch(new URLSearchParams([
 			['q', 'a'], ['q', 'b'], ['state', 'deleted'], ['limit', '101'],

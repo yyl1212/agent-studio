@@ -50,7 +50,7 @@ export function RunDetailPanel({ summary, onRequestClose }: RunDetailPanelProps)
 function isAbort(error: unknown) { return error instanceof DOMException && error.name === 'AbortError' }
 function publicError(error: unknown) { return error instanceof APIError ? `${error.message}${error.requestId ? ` · Request ID: ${error.requestId}` : ''}` : '加载运行详情失败' }
 function modeLabel(mode: RunSummary['mode']) { return { test: '草稿测试', published: '已发布', debug: '局部调试' }[mode] }
-function statusLabel(status: RunSummary['status']) { return { running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
+function statusLabel(status: RunSummary['status']) { return { running: '运行中', cancelling: '取消中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
 function formatDate(value: string) { return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
 function duration(startedAt: string, endedAt?: string | null) { return endedAt ? `${((Date.parse(endedAt) - Date.parse(startedAt)) / 1000).toFixed(1)} 秒` : '—' }
 function formatOutput(value: unknown) { return typeof value === 'string' ? value : JSON.stringify(value, null, 2) }

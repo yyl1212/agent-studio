@@ -103,4 +103,12 @@ type RunExecutionCoordinator interface {
 
 type RunManagementStore interface {
 	ListRunSummaries(context.Context, RunSummaryStoreQuery) ([]domain.RunSummary, error)
+	RequestRunCancel(context.Context, string) (domain.RunSummary, error)
+	GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error)
+	GetWorkflow(context.Context, string) (domain.Workflow, error)
+	GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error)
+}
+
+type LocalRunCanceller interface {
+	CancelLocal(string) bool
 }

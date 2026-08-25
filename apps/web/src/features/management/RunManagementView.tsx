@@ -60,7 +60,7 @@ export function RunManagementView() {
     <div className="management-filters run-filters">
       <label>工作流 ID<input value={workflowInput} onChange={(event) => { const value = event.target.value; setWorkflowInput(value); if (!value || uuidPattern.test(value)) changeQuery({ workflowId: value || undefined }) }} /></label>
       <label>运行 ID<input value={runInput} onChange={(event) => { const value = event.target.value; setRunInput(value); if (!value || uuidPattern.test(value)) changeQuery({ runId: value || undefined }) }} /></label>
-      <fieldset><legend>状态</legend>{(['running', 'completed', 'failed', 'cancelled'] as const).map((status) => <label key={status}><input type="checkbox" checked={parsed.query.statuses.includes(status)} onChange={() => toggleStatus(status)} />{statusLabel(status)}</label>)}</fieldset>
+      <fieldset><legend>状态</legend>{(['running', 'cancelling', 'completed', 'failed', 'cancelled'] as const).map((status) => <label key={status}><input type="checkbox" checked={parsed.query.statuses.includes(status)} onChange={() => toggleStatus(status)} />{statusLabel(status)}</label>)}</fieldset>
       <fieldset><legend>模式</legend>{(['test', 'published', 'debug'] as const).map((mode) => <label key={mode}><input type="checkbox" checked={parsed.query.modes.includes(mode)} onChange={() => toggleMode(mode)} />{modeLabel(mode)}</label>)}</fieldset>
       <label>开始时间下限<input aria-label="开始时间下限" value={afterInput} onChange={(event) => { const value = event.target.value; setAfterInput(value); if (!value || isRFC3339(value)) changeQuery({ startedAfter: value || undefined }) }} /></label>
       <label>开始时间上限<input aria-label="开始时间上限" value={beforeInput} onChange={(event) => { const value = event.target.value; setBeforeInput(value); if (!value || isRFC3339(value)) changeQuery({ startedBefore: value || undefined }) }} /></label>
@@ -78,8 +78,8 @@ export function RunManagementView() {
 
 function toggle<T>(values: T[], value: T) { return values.includes(value) ? values.filter((item) => item !== value) : [...values, value] }
 function modeLabel(mode: RunSummary['mode']) { return { test: '草稿测试', published: '已发布', debug: '局部调试' }[mode] }
-function statusLabel(status: RunSummary['status']) { return { running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
-function statusTone(status: RunSummary['status']): 'info' | 'success' | 'danger' | 'warning' { return { running: 'info', completed: 'success', failed: 'danger', cancelled: 'warning' }[status] as 'info' | 'success' | 'danger' | 'warning' }
+function statusLabel(status: RunSummary['status']) { return { running: '运行中', cancelling: '取消中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
+function statusTone(status: RunSummary['status']): 'info' | 'success' | 'danger' | 'warning' { return { running: 'info', cancelling: 'warning', completed: 'success', failed: 'danger', cancelled: 'warning' }[status] as 'info' | 'success' | 'danger' | 'warning' }
 function formatDate(value: string) { return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
 function duration(run: RunSummary) { return run.endedAt ? `${((Date.parse(run.endedAt) - Date.parse(run.startedAt)) / 1000).toFixed(1)} 秒` : '—' }
 function isRFC3339(value: string) { return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value)) }

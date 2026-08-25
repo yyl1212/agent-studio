@@ -25,6 +25,20 @@ func (handler *handler) listRunSummaries(writer http.ResponseWriter, request *ht
 	writeJSON(writer, http.StatusOK, page)
 }
 
+func (handler *handler) cancelRun(writer http.ResponseWriter, request *http.Request) {
+	runID, err := parsePathUUID(request, "id")
+	if err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	summary, err := handler.dependencies.RunManagement.Cancel(request.Context(), runID)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, summary)
+}
+
 func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, error) {
 	allowed := map[string]bool{
 		"workflowId": true, "runId": true, "status": true, "mode": true,
@@ -40,7 +54,7 @@ func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, erro
 			return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 		}
 	}
-	if len(values["status"]) > 4 || len(values["mode"]) > 3 || len([]byte(values.Get("cursor"))) > 512 {
+	if len(values["status"]) > 5 || len(values["mode"]) > 3 || len([]byte(values.Get("cursor"))) > 512 {
 		return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 	}
 	input := workflow.RunSummaryRequest{Cursor: values.Get("cursor")}
@@ -53,7 +67,7 @@ func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, erro
 	}
 	for _, raw := range values["status"] {
 		status := domain.RunStatus(raw)
-		if status != domain.RunRunning && status != domain.RunCompleted && status != domain.RunFailed && status != domain.RunCancelled {
+		if status != domain.RunRunning && status != domain.RunCancelling && status != domain.RunCompleted && status != domain.RunFailed && status != domain.RunCancelled {
 			return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 		}
 		input.Statuses = append(input.Statuses, status)

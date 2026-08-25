@@ -17,7 +17,7 @@ const (
 
 func TestRunManagementListAppliesDefaultsWithoutImplicitTimeRange(t *testing.T) {
 	store := &fakeRunManagementStore{}
-	page, err := NewRunManagementService(store).List(context.Background(), RunSummaryRequest{})
+	page, err := NewRunManagementService(store, nil, nil).List(context.Background(), RunSummaryRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestRunManagementListNormalizesFiltersAndPaginatesWithoutMutation(t *testin
 		{ID: testRunID, WorkflowID: testWorkflowID, WorkflowVersionID: &versionID, WorkflowVersion: &version, StartedAt: firstTime},
 		{ID: "22222222-2222-4222-8222-222222222222", WorkflowID: testWorkflowID, StartedAt: secondTime},
 	}}
-	page, err := NewRunManagementService(store).List(context.Background(), RunSummaryRequest{
+	page, err := NewRunManagementService(store, nil, nil).List(context.Background(), RunSummaryRequest{
 		WorkflowID: testWorkflowID, Statuses: statuses, Modes: modes,
 		StartedAfter: &startedAfter, StartedBefore: &startedBefore, Limit: 1,
 	})
@@ -70,7 +70,7 @@ func TestRunManagementListNormalizesFiltersAndPaginatesWithoutMutation(t *testin
 	}
 
 	nextStore := &fakeRunManagementStore{}
-	nextPage, err := NewRunManagementService(nextStore).List(context.Background(), RunSummaryRequest{
+	nextPage, err := NewRunManagementService(nextStore, nil, nil).List(context.Background(), RunSummaryRequest{
 		WorkflowID:    testWorkflowID,
 		Statuses:      []domain.RunStatus{domain.RunRunning, domain.RunFailed},
 		Modes:         []domain.RunMode{domain.RunModeTest, domain.RunModeDebug},
@@ -97,8 +97,8 @@ func TestRunManagementListRejectsInvalidFiltersBeforeStore(t *testing.T) {
 	}{
 		{name: "workflow uuid", request: RunSummaryRequest{WorkflowID: "bad"}},
 		{name: "run uuid", request: RunSummaryRequest{RunID: "bad"}},
-		{name: "fifth status", request: RunSummaryRequest{Statuses: []domain.RunStatus{domain.RunRunning, domain.RunCompleted, domain.RunFailed, domain.RunCancelled, domain.RunFailed}}},
-		{name: "unknown status", request: RunSummaryRequest{Statuses: []domain.RunStatus{"cancelling"}}},
+		{name: "sixth status", request: RunSummaryRequest{Statuses: []domain.RunStatus{domain.RunRunning, domain.RunCancelling, domain.RunCompleted, domain.RunFailed, domain.RunCancelled, domain.RunFailed}}},
+		{name: "unknown status", request: RunSummaryRequest{Statuses: []domain.RunStatus{"paused"}}},
 		{name: "fourth mode", request: RunSummaryRequest{Modes: []domain.RunMode{domain.RunModeTest, domain.RunModePublished, domain.RunModeDebug, domain.RunModeTest}}},
 		{name: "unknown mode", request: RunSummaryRequest{Modes: []domain.RunMode{"batch"}}},
 		{name: "time order", request: RunSummaryRequest{StartedAfter: &after, StartedBefore: &beforeAfter}},
@@ -109,9 +109,44 @@ func TestRunManagementListRejectsInvalidFiltersBeforeStore(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			store := &fakeRunManagementStore{}
-			_, err := NewRunManagementService(store).List(context.Background(), test.request)
+			_, err := NewRunManagementService(store, nil, nil).List(context.Background(), test.request)
 			if !errors.Is(err, ErrInvalidWorkflowInput) || store.calls != 0 {
 				t.Fatalf("error=%v calls=%d", err, store.calls)
+			}
+		})
+	}
+}
+
+func TestCancelRunNormalizesIDAndCancelsLocalExecution(t *testing.T) {
+	store := &fakeRunManagementStore{cancelSummary: domain.RunSummary{ID: testRunID, Status: domain.RunCancelling}}
+	canceller := &fakeLocalRunCanceller{}
+	service := NewRunManagementService(store, nil, canceller)
+	summary, err := service.Cancel(context.Background(), "11111111-1111-4111-8111-111111111111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Status != domain.RunCancelling || store.cancelRunID != testRunID || !reflect.DeepEqual(canceller.ids, []string{testRunID}) {
+		t.Fatalf("summary=%+v store ID=%s local IDs=%v", summary, store.cancelRunID, canceller.ids)
+	}
+}
+
+func TestCancelRunRejectsInvalidIDBeforeStore(t *testing.T) {
+	store := &fakeRunManagementStore{}
+	canceller := &fakeLocalRunCanceller{}
+	_, err := NewRunManagementService(store, nil, canceller).Cancel(context.Background(), "bad")
+	if !errors.Is(err, ErrInvalidWorkflowInput) || store.cancelCalls != 0 || len(canceller.ids) != 0 {
+		t.Fatalf("error=%v store calls=%d local IDs=%v", err, store.cancelCalls, canceller.ids)
+	}
+}
+
+func TestCancelRunKeepsTerminalRunsUnchanged(t *testing.T) {
+	for _, status := range []domain.RunStatus{domain.RunCompleted, domain.RunFailed, domain.RunCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			store := &fakeRunManagementStore{cancelErr: ErrRunNotCancellable}
+			canceller := &fakeLocalRunCanceller{}
+			_, err := NewRunManagementService(store, nil, canceller).Cancel(context.Background(), testRunID)
+			if !errors.Is(err, ErrRunNotCancellable) || len(canceller.ids) != 0 {
+				t.Fatalf("status=%s error=%v local IDs=%v", status, err, canceller.ids)
 			}
 		})
 	}
@@ -127,17 +162,48 @@ func TestRunManagementListRejectsCursorFromDifferentFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &fakeRunManagementStore{}
-	_, err = NewRunManagementService(store).List(context.Background(), RunSummaryRequest{RunID: testRunID, Cursor: cursor})
+	_, err = NewRunManagementService(store, nil, nil).List(context.Background(), RunSummaryRequest{RunID: testRunID, Cursor: cursor})
 	if !errors.Is(err, ErrCursorInvalid) || store.calls != 0 {
 		t.Fatalf("error=%v calls=%d", err, store.calls)
 	}
 }
 
 type fakeRunManagementStore struct {
-	summaries []domain.RunSummary
-	query     RunSummaryStoreQuery
-	err       error
-	calls     int
+	summaries     []domain.RunSummary
+	query         RunSummaryStoreQuery
+	err           error
+	calls         int
+	cancelSummary domain.RunSummary
+	cancelErr     error
+	cancelRunID   string
+	cancelCalls   int
+}
+
+func (store *fakeRunManagementStore) RequestRunCancel(_ context.Context, runID string) (domain.RunSummary, error) {
+	store.cancelCalls++
+	store.cancelRunID = runID
+	return store.cancelSummary, store.cancelErr
+}
+
+func (store *fakeRunManagementStore) GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error) {
+	return domain.Run{}, nil, domain.ErrNotFound
+}
+
+func (store *fakeRunManagementStore) GetWorkflow(context.Context, string) (domain.Workflow, error) {
+	return domain.Workflow{}, domain.ErrNotFound
+}
+
+func (store *fakeRunManagementStore) GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error) {
+	return domain.Workflow{}, domain.WorkflowVersion{}, domain.ErrNotFound
+}
+
+type fakeLocalRunCanceller struct {
+	ids []string
+}
+
+func (canceller *fakeLocalRunCanceller) CancelLocal(runID string) bool {
+	canceller.ids = append(canceller.ids, runID)
+	return true
 }
 
 func (store *fakeRunManagementStore) ListRunSummaries(_ context.Context, query RunSummaryStoreQuery) ([]domain.RunSummary, error) {

@@ -30,7 +30,7 @@ describe('RunManagementView', () => {
 
 	it('显示摘要、只在选择后取详情，Escape 关闭并恢复焦点', async () => {
 		vi.spyOn(api, 'listRunSummaries').mockResolvedValue({ items: [summary('done', 'completed'), summary('live', 'running')], nextCursor: null })
-		vi.spyOn(api, 'getRun').mockResolvedValue({ run: { id: 'done', workflowId: summary('done').workflowId, mode: 'published', status: 'completed', input: {}, startedAt: '2026-08-26T00:00:00Z', endedAt: '2026-08-26T00:00:02Z' }, nodeRuns: [] })
+		vi.spyOn(api, 'getRun').mockResolvedValue({ run: { id: 'done', workflowId: summary('done').workflowId, mode: 'published', status: 'completed', input: {}, inputRedactedPaths: [], startedAt: '2026-08-26T00:00:00Z', endedAt: '2026-08-26T00:00:02Z' }, nodeRuns: [] })
 		renderPage('/runs')
 		expect(await screen.findByText('2.0 秒')).toBeInTheDocument()
 		expect(screen.getAllByText('演示')).toHaveLength(2)

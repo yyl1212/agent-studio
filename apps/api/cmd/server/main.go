@@ -84,7 +84,7 @@ func run(logger *slog.Logger) error {
 	workflowService := workflow.NewService(store, compiler, registry)
 	workflowManagement := workflow.NewWorkflowManagementService(store)
 	runService := workflow.NewRunService(store, compiler, runtime, workflow.WithLogger(logger), workflow.WithRunCoordinator(runCoordinator))
-	runManagement := workflow.NewRunManagementService(store)
+	runManagement := workflow.NewRunManagementService(store, compiler, runCoordinator)
 	debugService := workflow.NewDebugService(store, compiler)
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		Registry:           registry,

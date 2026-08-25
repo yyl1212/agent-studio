@@ -38,6 +38,43 @@ func (store *Store) HeartbeatRuns(ctx context.Context, ids []string) ([]string, 
 	return cancelled, nil
 }
 
+func (store *Store) RequestRunCancel(ctx context.Context, runID string) (domain.RunSummary, error) {
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return domain.RunSummary{}, fmt.Errorf("begin request run cancel: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+	var status domain.RunStatus
+	if err := transaction.QueryRow(ctx, "SELECT status FROM runs WHERE id=$1 FOR UPDATE", runID).Scan(&status); err != nil {
+		return domain.RunSummary{}, fmt.Errorf("lock run for cancellation: %w", mapNotFound(err))
+	}
+	switch status {
+	case domain.RunRunning:
+		if _, err := transaction.Exec(ctx, `UPDATE runs
+			SET status='cancelling',cancel_requested_at=clock_timestamp()
+			WHERE id=$1`, runID); err != nil {
+			return domain.RunSummary{}, fmt.Errorf("request run cancellation: %w", err)
+		}
+	case domain.RunCancelling:
+	case domain.RunCompleted, domain.RunFailed, domain.RunCancelled:
+		return domain.RunSummary{}, workflowservice.ErrRunNotCancellable
+	default:
+		return domain.RunSummary{}, fmt.Errorf("invalid run status %q", status)
+	}
+	summary, err := scanRunSummary(transaction.QueryRow(ctx, `SELECT `+runSummarySelectColumns+`
+		FROM runs r
+		JOIN workflows w ON w.id=r.workflow_id
+		LEFT JOIN workflow_versions rv ON rv.id=r.workflow_version_id AND rv.workflow_id=r.workflow_id
+		WHERE r.id=$1`, runID))
+	if err != nil {
+		return domain.RunSummary{}, fmt.Errorf("read cancelled run summary: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return domain.RunSummary{}, fmt.Errorf("commit run cancellation: %w", err)
+	}
+	return summary, nil
+}
+
 type interruptedRunCandidate struct {
 	id           string
 	nodes        json.RawMessage

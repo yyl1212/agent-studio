@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -11,6 +12,8 @@ import (
 )
 
 const maxRunFilterSpan = 90 * 24 * time.Hour
+
+var ErrRunNotCancellable = errors.New("run is not cancellable")
 
 type runSummaryFilter struct {
 	WorkflowID    string             `json:"workflowId,omitempty"`
@@ -22,11 +25,28 @@ type runSummaryFilter struct {
 }
 
 type RunManagementService struct {
-	store RunManagementStore
+	store     RunManagementStore
+	compiler  Compiler
+	canceller LocalRunCanceller
 }
 
-func NewRunManagementService(store RunManagementStore) *RunManagementService {
-	return &RunManagementService{store: store}
+func NewRunManagementService(store RunManagementStore, compiler Compiler, canceller LocalRunCanceller) *RunManagementService {
+	return &RunManagementService{store: store, compiler: compiler, canceller: canceller}
+}
+
+func (service *RunManagementService) Cancel(ctx context.Context, runID string) (domain.RunSummary, error) {
+	normalized, err := normalizeOptionalUUID(runID)
+	if err != nil || normalized == "" {
+		return domain.RunSummary{}, ErrInvalidWorkflowInput
+	}
+	summary, err := service.store.RequestRunCancel(ctx, normalized)
+	if err != nil {
+		return domain.RunSummary{}, fmt.Errorf("request run cancel: %w", err)
+	}
+	if service.canceller != nil {
+		service.canceller.CancelLocal(normalized)
+	}
+	return cloneRunSummary(summary), nil
 }
 
 func (service *RunManagementService) List(ctx context.Context, request RunSummaryRequest) (RunSummaryPage, error) {
@@ -112,12 +132,12 @@ func normalizeOptionalUUID(raw string) (string, error) {
 }
 
 func normalizeRunStatuses(values []domain.RunStatus) ([]domain.RunStatus, error) {
-	if len(values) > 4 {
+	if len(values) > 5 {
 		return nil, ErrInvalidWorkflowInput
 	}
 	result := append([]domain.RunStatus(nil), values...)
 	for _, value := range result {
-		if value != domain.RunRunning && value != domain.RunCompleted && value != domain.RunFailed && value != domain.RunCancelled {
+		if value != domain.RunRunning && value != domain.RunCancelling && value != domain.RunCompleted && value != domain.RunFailed && value != domain.RunCancelled {
 			return nil, ErrInvalidWorkflowInput
 		}
 	}
@@ -174,6 +194,11 @@ func cloneRunSummary(value domain.RunSummary) domain.RunSummary {
 	cloned.DraftRevision = cloneInt64Pointer(value.DraftRevision)
 	cloned.SourceRunID = cloneStringPointer(value.SourceRunID)
 	cloned.SourceNodeID = cloneStringPointer(value.SourceNodeID)
+	cloned.RetryOfRunID = cloneStringPointer(value.RetryOfRunID)
+	if value.CancelRequestedAt != nil {
+		cancelRequestedAt := *value.CancelRequestedAt
+		cloned.CancelRequestedAt = &cancelRequestedAt
+	}
 	if value.EndedAt != nil {
 		endedAt := *value.EndedAt
 		cloned.EndedAt = &endedAt

@@ -162,13 +162,20 @@ func (manager *fixtureWorkflowManager) Restore(_ context.Context, id string) (do
 }
 
 type fixtureRunManager struct {
-	request workflow.RunSummaryRequest
-	err     error
+	request  workflow.RunSummaryRequest
+	cancelID string
+	summary  domain.RunSummary
+	err      error
 }
 
 func (manager *fixtureRunManager) List(_ context.Context, request workflow.RunSummaryRequest) (workflow.RunSummaryPage, error) {
 	manager.request = request
 	return workflow.RunSummaryPage{Items: []domain.RunSummary{}}, manager.err
+}
+
+func (manager *fixtureRunManager) Cancel(_ context.Context, runID string) (domain.RunSummary, error) {
+	manager.cancelID = runID
+	return manager.summary, manager.err
 }
 
 type fixtureDebugger struct {
@@ -335,7 +342,7 @@ func TestRunManagementListParsesStrictQuery(t *testing.T) {
 func TestRunManagementListRejectsInvalidQuery(t *testing.T) {
 	tests := []string{
 		"?workflowId=a&workflowId=b", "?runId=a&runId=b", "?cursor=a&cursor=b", "?limit=1&limit=2",
-		"?status=running&status=completed&status=failed&status=cancelled&status=failed",
+		"?status=running&status=cancelling&status=completed&status=failed&status=cancelled&status=failed",
 		"?mode=test&mode=published&mode=debug&mode=test", "?workflowId=bad", "?runId=bad",
 		"?startedAfter=2026-01-01T00:00:00Z&startedBefore=2026-04-02T00:00:00Z",
 		"?startedAfter=2026-01-02T00:00:00Z&startedBefore=2026-01-01T00:00:00Z",
@@ -344,6 +351,44 @@ func TestRunManagementListRejectsInvalidQuery(t *testing.T) {
 	for _, query := range tests {
 		recorder := performRequest(NewRouter(fixtureDeps()), http.MethodGet, "/api/runs"+query, "")
 		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+	}
+}
+
+func TestCancelRunUsesStrictUUIDAndReturnsLatestSummary(t *testing.T) {
+	dependencies := fixtureDeps()
+	manager := dependencies.RunManagement.(*fixtureRunManager)
+	manager.summary = domain.RunSummary{ID: "11111111-1111-4111-8111-111111111111", Status: domain.RunCancelling}
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/runs/11111111-1111-4111-8111-111111111111/cancel", "")
+	if recorder.Code != http.StatusOK || manager.cancelID != manager.summary.ID || !strings.Contains(recorder.Body.String(), `"status":"cancelling"`) {
+		t.Fatalf("status=%d cancelID=%q body=%s", recorder.Code, manager.cancelID, recorder.Body.String())
+	}
+
+	dependencies = fixtureDeps()
+	manager = dependencies.RunManagement.(*fixtureRunManager)
+	recorder = performRequest(NewRouter(dependencies), http.MethodPost, "/api/runs/not-a-uuid/cancel", "")
+	if manager.cancelID != "" {
+		t.Fatalf("invalid ID reached manager: %q", manager.cancelID)
+	}
+	assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+}
+
+func TestCancelRunMapsTerminalConflictAndHidesInternalErrors(t *testing.T) {
+	dependencies := fixtureDeps()
+	manager := dependencies.RunManagement.(*fixtureRunManager)
+	manager.err = workflow.ErrRunNotCancellable
+	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/runs/11111111-1111-4111-8111-111111111111/cancel", "")
+	assertJSONError(t, recorder, http.StatusConflict, "RUN_NOT_CANCELLABLE")
+	var response ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.RequestID == "" {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+
+	dependencies = fixtureDeps()
+	dependencies.RunManagement.(*fixtureRunManager).err = errors.New("database secret detail")
+	recorder = performRequest(NewRouter(dependencies), http.MethodPost, "/api/runs/11111111-1111-4111-8111-111111111111/cancel", "")
+	assertJSONError(t, recorder, http.StatusInternalServerError, "INTERNAL_ERROR")
+	if strings.Contains(recorder.Body.String(), "database secret detail") {
+		t.Fatalf("internal error leaked: %s", recorder.Body.String())
 	}
 }
 
