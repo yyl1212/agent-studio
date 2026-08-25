@@ -33,8 +33,10 @@ func (store *Store) ListRunSummaries(ctx context.Context, query workflowservice.
 			&summary.DraftRevision,
 			&summary.SourceRunID,
 			&summary.SourceNodeID,
+			&summary.RetryOfRunID,
 			&summary.Mode,
 			&summary.Status,
+			&summary.CancelRequestedAt,
 			&summary.StartedAt,
 			&summary.EndedAt,
 		); err != nil {
@@ -78,8 +80,8 @@ func buildRunSummaryQuery(query workflowservice.RunSummaryStoreQuery) (string, [
 
 	statement := strings.Builder{}
 	statement.WriteString(`SELECT r.id::text,r.workflow_id::text,w.name,w.slug,r.workflow_version_id::text,
-       rv.version,r.draft_revision,r.source_run_id::text,r.source_node_id,r.mode,r.status,
-       r.started_at,r.ended_at
+	       rv.version,r.draft_revision,r.source_run_id::text,r.source_node_id,r.retry_of_run_id::text,r.mode,r.status,
+	       r.cancel_requested_at,r.started_at,r.ended_at
 FROM runs r
 JOIN workflows w ON w.id=r.workflow_id
 LEFT JOIN workflow_versions rv ON rv.id=r.workflow_version_id AND rv.workflow_id=r.workflow_id

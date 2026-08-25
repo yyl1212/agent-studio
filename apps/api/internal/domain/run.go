@@ -16,10 +16,11 @@ const (
 type RunStatus string
 
 const (
-	RunRunning   RunStatus = "running"
-	RunCompleted RunStatus = "completed"
-	RunFailed    RunStatus = "failed"
-	RunCancelled RunStatus = "cancelled"
+	RunRunning    RunStatus = "running"
+	RunCancelling RunStatus = "cancelling"
+	RunCompleted  RunStatus = "completed"
+	RunFailed     RunStatus = "failed"
+	RunCancelled  RunStatus = "cancelled"
 )
 
 type NodeStatus string
@@ -34,20 +35,25 @@ const (
 )
 
 type Run struct {
-	ID                string          `json:"id"`
-	WorkflowID        string          `json:"workflowId"`
-	WorkflowVersionID *string         `json:"workflowVersionId,omitempty"`
-	DraftRevision     *int64          `json:"draftRevision,omitempty"`
-	GraphSnapshot     json.RawMessage `json:"graphSnapshot,omitempty"`
-	SourceRunID       *string         `json:"sourceRunId,omitempty"`
-	SourceNodeID      *string         `json:"sourceNodeId,omitempty"`
-	Mode              RunMode         `json:"mode"`
-	Status            RunStatus       `json:"status"`
-	Input             json.RawMessage `json:"input"`
-	Output            json.RawMessage `json:"output,omitempty"`
-	Error             *PublicError    `json:"error,omitempty"`
-	StartedAt         time.Time       `json:"startedAt"`
-	EndedAt           *time.Time      `json:"endedAt,omitempty"`
+	ID                 string          `json:"id"`
+	WorkflowID         string          `json:"workflowId"`
+	WorkflowVersionID  *string         `json:"workflowVersionId,omitempty"`
+	DraftRevision      *int64          `json:"draftRevision,omitempty"`
+	GraphSnapshot      json.RawMessage `json:"graphSnapshot,omitempty"`
+	SourceRunID        *string         `json:"sourceRunId,omitempty"`
+	SourceNodeID       *string         `json:"sourceNodeId,omitempty"`
+	RetryOfRunID       *string         `json:"retryOfRunId,omitempty"`
+	RetryKey           *string         `json:"-"`
+	Mode               RunMode         `json:"mode"`
+	Status             RunStatus       `json:"status"`
+	Input              json.RawMessage `json:"input"`
+	InputRedactedPaths []string        `json:"inputRedactedPaths"`
+	Output             json.RawMessage `json:"output,omitempty"`
+	Error              *PublicError    `json:"error,omitempty"`
+	CancelRequestedAt  *time.Time      `json:"cancelRequestedAt,omitempty"`
+	HeartbeatAt        *time.Time      `json:"-"`
+	StartedAt          time.Time       `json:"startedAt"`
+	EndedAt            *time.Time      `json:"endedAt,omitempty"`
 }
 
 type RunSummary struct {
@@ -60,8 +66,10 @@ type RunSummary struct {
 	DraftRevision     *int64     `json:"draftRevision,omitempty"`
 	SourceRunID       *string    `json:"sourceRunId,omitempty"`
 	SourceNodeID      *string    `json:"sourceNodeId,omitempty"`
+	RetryOfRunID      *string    `json:"retryOfRunId,omitempty"`
 	Mode              RunMode    `json:"mode"`
 	Status            RunStatus  `json:"status"`
+	CancelRequestedAt *time.Time `json:"cancelRequestedAt,omitempty"`
 	StartedAt         time.Time  `json:"startedAt"`
 	EndedAt           *time.Time `json:"endedAt,omitempty"`
 }

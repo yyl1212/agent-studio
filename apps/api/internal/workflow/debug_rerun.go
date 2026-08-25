@@ -60,33 +60,35 @@ func (service *DebugService) PrepareRerun(ctx context.Context, runID, nodeID str
 		built.scope.EntryRunInput = map[string]any{}
 		built.scope.EntryNodeInputs = nodeInputs
 	}
-	inputJSON, err := json.Marshal(Redact(entryInput))
+	inputJSON, inputPaths, secretRedactor, err := persistedRunInput(entryInput)
 	if err != nil {
 		return nil, fmt.Errorf("encode debug run input: %w", err)
 	}
 	runIDNew := uuid.NewString()
 	sourceRunID, sourceNodeID := built.source.ID, nodeID
 	run := domain.Run{
-		ID:            runIDNew,
-		WorkflowID:    built.source.WorkflowID,
-		GraphSnapshot: append(json.RawMessage(nil), built.rawGraph...),
-		SourceRunID:   &sourceRunID,
-		SourceNodeID:  &sourceNodeID,
-		Mode:          domain.RunModeDebug,
-		Status:        domain.RunRunning,
-		Input:         inputJSON,
-		StartedAt:     time.Now().UTC(),
+		ID:                 runIDNew,
+		WorkflowID:         built.source.WorkflowID,
+		GraphSnapshot:      append(json.RawMessage(nil), built.rawGraph...),
+		SourceRunID:        &sourceRunID,
+		SourceNodeID:       &sourceNodeID,
+		Mode:               domain.RunModeDebug,
+		Status:             domain.RunRunning,
+		Input:              inputJSON,
+		InputRedactedPaths: inputPaths,
+		StartedAt:          time.Now().UTC(),
 	}
 	if err := service.store.CreateRun(ctx, run); err != nil {
 		return nil, err
 	}
 	return &PreparedRun{
-		RunID:      runIDNew,
-		Plan:       built.plan,
-		Input:      cloneAnyMap(entryInput),
-		Mode:       domain.RunModeDebug,
-		WorkflowID: built.source.WorkflowID,
-		Scope:      &built.scope,
+		RunID:          runIDNew,
+		Plan:           built.plan,
+		Input:          cloneAnyMap(entryInput),
+		Mode:           domain.RunModeDebug,
+		WorkflowID:     built.source.WorkflowID,
+		Scope:          &built.scope,
+		secretRedactor: secretRedactor,
 	}, nil
 }
 

@@ -29,6 +29,7 @@ type PreparedRun struct {
 	WorkflowVersionID *string
 	DraftRevision     *int64
 	Scope             *engine.ExecutionScope
+	secretRedactor    *SecretRedactor
 }
 
 type RunService struct {
@@ -85,30 +86,32 @@ func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, 
 		return nil, err
 	}
 	runID := uuid.NewString()
-	inputJSON, err := json.Marshal(Redact(input))
+	inputJSON, inputPaths, secretRedactor, err := persistedRunInput(input)
 	if err != nil {
 		return nil, fmt.Errorf("encode run input: %w", err)
 	}
 	run := domain.Run{
-		ID:            runID,
-		WorkflowID:    workflow.ID,
-		DraftRevision: &revision,
-		GraphSnapshot: append(json.RawMessage(nil), workflow.DraftGraph...),
-		Mode:          domain.RunModeTest,
-		Status:        domain.RunRunning,
-		Input:         inputJSON,
-		StartedAt:     time.Now().UTC(),
+		ID:                 runID,
+		WorkflowID:         workflow.ID,
+		DraftRevision:      &revision,
+		GraphSnapshot:      append(json.RawMessage(nil), workflow.DraftGraph...),
+		Mode:               domain.RunModeTest,
+		Status:             domain.RunRunning,
+		Input:              inputJSON,
+		InputRedactedPaths: inputPaths,
+		StartedAt:          time.Now().UTC(),
 	}
 	if err := service.store.CreateRun(ctx, run); err != nil {
 		return nil, err
 	}
 	return &PreparedRun{
-		RunID:         runID,
-		Plan:          plan,
-		Input:         input,
-		Mode:          domain.RunModeTest,
-		WorkflowID:    workflow.ID,
-		DraftRevision: &revision,
+		RunID:          runID,
+		Plan:           plan,
+		Input:          input,
+		Mode:           domain.RunModeTest,
+		WorkflowID:     workflow.ID,
+		DraftRevision:  &revision,
+		secretRedactor: secretRedactor,
 	}, nil
 }
 
@@ -129,19 +132,20 @@ func (service *RunService) PrepareAgent(ctx context.Context, slug, workflowVersi
 		return nil, err
 	}
 	runID := uuid.NewString()
-	inputJSON, err := json.Marshal(Redact(input))
+	inputJSON, inputPaths, secretRedactor, err := persistedRunInput(input)
 	if err != nil {
 		return nil, fmt.Errorf("encode run input: %w", err)
 	}
 	versionID := version.ID
 	run := domain.Run{
-		ID:                runID,
-		WorkflowID:        workflow.ID,
-		WorkflowVersionID: &versionID,
-		Mode:              domain.RunModePublished,
-		Status:            domain.RunRunning,
-		Input:             inputJSON,
-		StartedAt:         time.Now().UTC(),
+		ID:                 runID,
+		WorkflowID:         workflow.ID,
+		WorkflowVersionID:  &versionID,
+		Mode:               domain.RunModePublished,
+		Status:             domain.RunRunning,
+		Input:              inputJSON,
+		InputRedactedPaths: inputPaths,
+		StartedAt:          time.Now().UTC(),
 	}
 	if err := service.store.CreateRun(ctx, run); err != nil {
 		return nil, err
@@ -153,7 +157,18 @@ func (service *RunService) PrepareAgent(ctx context.Context, slug, workflowVersi
 		Mode:              domain.RunModePublished,
 		WorkflowID:        workflow.ID,
 		WorkflowVersionID: &versionID,
+		secretRedactor:    secretRedactor,
 	}, nil
+}
+
+func persistedRunInput(input map[string]any) (json.RawMessage, []string, *SecretRedactor, error) {
+	report := RedactWithReport(input)
+	encoded, err := json.Marshal(report.Value)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	paths := append([]string{}, report.Paths...)
+	return encoded, paths, NewSecretRedactor(report.SecretValues), nil
 }
 
 func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, observer engine.Observer) (engine.RunResult, error) {

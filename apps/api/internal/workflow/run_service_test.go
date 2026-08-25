@@ -325,6 +325,68 @@ func TestPreparePersistsRedactedInputAndCancellationFinishesRun(t *testing.T) {
 	}
 }
 
+func TestPrepareDraftAndAgentPersistInputRedactedPathsFromSameReport(t *testing.T) {
+	service, store := newRunServiceFixture(t)
+	graph := graphReturningWithOptionalToken(t)
+	store.workflow.DraftGraph = graph
+	input := map[string]any{"topic": "公开值", "webhookToken": "do-not-persist"}
+
+	draft, err := service.PrepareDraft(context.Background(), store.workflow.ID, store.workflow.DraftRevision, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedInputRedaction(t, store.LastRun(), draft, []string{"/webhookToken"})
+
+	schema, err := inputSchemaForGraph(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := store.AddVersion(graph, schema)
+	store.SetCurrentVersion(version)
+	agent, err := service.PrepareAgent(context.Background(), store.workflow.Slug, version.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedInputRedaction(t, store.LastRun(), agent, []string{"/webhookToken"})
+
+	withoutSecret, err := service.PrepareAgent(context.Background(), store.workflow.Slug, version.ID, map[string]any{"topic": "公开值"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedInputRedaction(t, store.LastRun(), withoutSecret, []string{})
+}
+
+func assertPreparedInputRedaction(t *testing.T, run domain.Run, prepared *PreparedRun, wantPaths []string) {
+	t.Helper()
+	if bytes.Contains(run.Input, []byte("do-not-persist")) || !reflect.DeepEqual(run.InputRedactedPaths, wantPaths) {
+		t.Fatalf("persisted input=%s paths=%v, want paths=%v", run.Input, run.InputRedactedPaths, wantPaths)
+	}
+	if run.InputRedactedPaths == nil || prepared.secretRedactor == nil {
+		t.Fatalf("redaction state missing: run=%+v prepared=%+v", run, prepared)
+	}
+}
+
+func graphReturningWithOptionalToken(t *testing.T) json.RawMessage {
+	t.Helper()
+	graph := domain.Graph{
+		SchemaVersion: 1,
+		Nodes: []domain.Node{
+			{ID: "start", Type: "start", TypeVersion: "1", Config: json.RawMessage(`{"fields":[{"key":"topic","label":"主题","type":"text","required":true},{"key":"webhookToken","label":"令牌","type":"text","required":false}]}`)},
+			{ID: "template", Type: "template", TypeVersion: "1", Config: json.RawMessage(`{"template":"{{topic}}"}`)},
+			{ID: "end", Type: "end", TypeVersion: "1", Config: json.RawMessage(`{}`)},
+		},
+		Edges: []domain.Edge{
+			{ID: "e1", Source: "start", SourcePort: "topic", Target: "template", TargetPort: "topic"},
+			{ID: "e2", Source: "template", SourcePort: "text", Target: "end", TargetPort: "result"},
+		},
+	}
+	raw, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 	store := newFakeStore(t)
 	const runID = "run-structured-error"

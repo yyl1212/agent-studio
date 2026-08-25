@@ -11,7 +11,8 @@ import (
 )
 
 const runSelectColumns = `id::text,workflow_id::text,workflow_version_id::text,draft_revision,
-    graph_snapshot,source_run_id::text,source_node_id,mode,status,input,output,error,started_at,ended_at`
+    graph_snapshot,source_run_id::text,source_node_id,retry_of_run_id::text,retry_key::text,
+    mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at`
 
 func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	errorJSON, err := marshalOptional(run.Error)
@@ -30,11 +31,17 @@ func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	if archivedAt != nil {
 		return domain.ErrWorkflowArchived
 	}
+	inputPaths := run.InputRedactedPaths
+	if inputPaths == nil {
+		inputPaths = []string{}
+	}
 	_, err = transaction.Exec(ctx, `INSERT INTO runs(
-        id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,mode,status,input,output,error,started_at,ended_at
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,
+		retry_of_run_id,retry_key,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		run.ID, run.WorkflowID, run.WorkflowVersionID, run.DraftRevision, nullableRaw(run.GraphSnapshot),
-		run.SourceRunID, run.SourceNodeID, run.Mode, run.Status, run.Input, nullableRaw(run.Output), errorJSON, run.StartedAt, run.EndedAt,
+		run.SourceRunID, run.SourceNodeID, run.RetryOfRunID, run.RetryKey, run.Mode, run.Status, run.Input, inputPaths,
+		nullableRaw(run.Output), errorJSON, run.CancelRequestedAt, run.HeartbeatAt, run.StartedAt, run.EndedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
@@ -273,7 +280,9 @@ func scanRun(row runScanner) (domain.Run, error) {
 	var graphSnapshot, input, output, errorJSON []byte
 	if err := row.Scan(
 		&run.ID, &run.WorkflowID, &run.WorkflowVersionID, &run.DraftRevision,
-		&graphSnapshot, &run.SourceRunID, &run.SourceNodeID, &run.Mode, &run.Status, &input, &output, &errorJSON,
+		&graphSnapshot, &run.SourceRunID, &run.SourceNodeID, &run.RetryOfRunID, &run.RetryKey,
+		&run.Mode, &run.Status, &input, &run.InputRedactedPaths, &output, &errorJSON,
+		&run.CancelRequestedAt, &run.HeartbeatAt,
 		&run.StartedAt, &run.EndedAt,
 	); err != nil {
 		return domain.Run{}, err
@@ -281,6 +290,9 @@ func scanRun(row runScanner) (domain.Run, error) {
 	run.GraphSnapshot = json.RawMessage(graphSnapshot)
 	run.Input = json.RawMessage(input)
 	run.Output = json.RawMessage(output)
+	if run.InputRedactedPaths == nil {
+		run.InputRedactedPaths = []string{}
+	}
 	if len(errorJSON) > 0 {
 		if err := json.Unmarshal(errorJSON, &run.Error); err != nil {
 			return domain.Run{}, fmt.Errorf("decode run error: %w", err)

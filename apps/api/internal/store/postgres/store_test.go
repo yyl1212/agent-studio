@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,7 +32,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 3 {
+	if count != 4 {
 		t.Fatalf("migration count=%d", count)
 	}
 }
@@ -328,6 +329,53 @@ func TestPublishedRunRejectsVersionFromAnotherWorkflow(t *testing.T) {
 	run := newPublishedRun(first.ID, secondVersion.ID)
 	if err := store.CreateRun(context.Background(), run); err == nil {
 		t.Fatal("expected composite foreign key violation")
+	}
+}
+
+func TestRunRecoveryFieldsRoundTripAndHideCoordinatorState(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "run-recovery")
+	source := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+	retryID := source.ID
+	retryKey := fixtureUUID()
+	cancelRequestedAt := time.Now().UTC().Truncate(time.Microsecond)
+	heartbeatAt := cancelRequestedAt.Add(time.Second)
+	retry := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	retry.Status = domain.RunCancelling
+	retry.RetryOfRunID = &retryID
+	retry.RetryKey = &retryKey
+	retry.InputRedactedPaths = []string{"/webhookToken"}
+	retry.CancelRequestedAt = &cancelRequestedAt
+	retry.HeartbeatAt = &heartbeatAt
+	if err := store.CreateRun(context.Background(), retry); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := store.GetRun(context.Background(), retry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != domain.RunCancelling || loaded.RetryOfRunID == nil || *loaded.RetryOfRunID != source.ID ||
+		loaded.RetryKey == nil || *loaded.RetryKey != retryKey || !reflect.DeepEqual(loaded.InputRedactedPaths, []string{"/webhookToken"}) ||
+		loaded.CancelRequestedAt == nil || !loaded.CancelRequestedAt.Equal(cancelRequestedAt) ||
+		loaded.HeartbeatAt == nil || !loaded.HeartbeatAt.Equal(heartbeatAt) {
+		t.Fatalf("loaded recovery fields=%+v", loaded)
+	}
+	encoded, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("retryKey")) || bytes.Contains(encoded, []byte("heartbeatAt")) {
+		t.Fatalf("coordinator state leaked in public JSON: %s", encoded)
+	}
+	loadedSource, _, err := store.GetRun(context.Background(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedSource.InputRedactedPaths == nil {
+		t.Fatal("inputRedactedPaths must be a non-nil empty array")
 	}
 }
 

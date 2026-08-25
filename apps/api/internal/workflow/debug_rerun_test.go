@@ -99,6 +99,23 @@ func TestPrepareRerunUsesEditedEntryInputAndCreatesDebugRun(t *testing.T) {
 	}
 }
 
+func TestPrepareRerunPersistsInputRedactedPaths(t *testing.T) {
+	service, store, _ := newRerunFixture(t)
+	prepared, err := service.PrepareRerun(context.Background(), "source-run", "start", RerunRequest{
+		EntryInput: map[string]any{"seed": "公开值", "webhookToken": "do-not-persist"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := store.LastRun()
+	if string(created.Input) != `{"seed":"公开值","webhookToken":"[REDACTED]"}` || !equalStrings(created.InputRedactedPaths, []string{"/webhookToken"}) {
+		t.Fatalf("created input=%s paths=%v", created.Input, created.InputRedactedPaths)
+	}
+	if created.InputRedactedPaths == nil || prepared.secretRedactor == nil {
+		t.Fatal("debug prepare must retain non-nil redaction state")
+	}
+}
+
 func TestPrepareRerunRequiresConfirmationForSideEffectsAndUnknownSafety(t *testing.T) {
 	for _, safety := range []agentnode.ExecutionSafety{agentnode.ExecutionSafetySideEffect, "future"} {
 		t.Run(string(safety), func(t *testing.T) {
@@ -196,7 +213,7 @@ func newRerunFixture(t *testing.T) (*DebugService, *fakeStore, json.RawMessage) 
 
 func rerunGraph(t *testing.T) json.RawMessage {
 	t.Helper()
-	start := json.RawMessage(`{"fields":[{"key":"seed","label":"Seed","type":"text","required":true}]}`)
+	start := json.RawMessage(`{"fields":[{"key":"seed","label":"Seed","type":"text","required":true},{"key":"webhookToken","label":"Token","type":"text","required":false}]}`)
 	graph := domain.Graph{SchemaVersion: 1, Nodes: []domain.Node{
 		{ID: "start", Type: "start", TypeVersion: "1", Config: start},
 		{ID: "left", Type: "template", TypeVersion: "1", Config: json.RawMessage(`{"template":"L-{{seed}}"}`)},
