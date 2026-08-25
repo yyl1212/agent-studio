@@ -74,7 +74,7 @@ func scanWorkflowAndVersion(row pgx.Row) (domain.Workflow, domain.WorkflowVersio
 	if err := row.Scan(
 		&workflow.ID, &workflow.Name, &workflow.Slug, &workflow.Description, &draftGraph,
 		&workflow.DraftRevision, &workflow.PublishedVersionID, &workflow.PublishedVersion,
-		&workflow.CreatedAt, &workflow.UpdatedAt,
+		&workflow.ArchivedAt, &workflow.CreatedAt, &workflow.UpdatedAt,
 		&version.ID, &version.WorkflowID, &version.Version, &versionGraph, &inputSchema, &version.CreatedAt,
 	); err != nil {
 		return domain.Workflow{}, domain.WorkflowVersion{}, mapNotFound(err)

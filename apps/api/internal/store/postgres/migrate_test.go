@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestMigrateUpgradesInitialSchemaWithDebugRunEvents(t *testing.T) {
+func TestMigrateUpgradesPreviousSchemaWithManagementColumns(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
@@ -67,27 +68,49 @@ func TestMigrateUpgradesInitialSchemaWithDebugRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 2 {
-		t.Fatalf("migration files=%d, want 2", len(files))
+	if len(files) != 3 {
+		t.Fatalf("migration files=%d, want 3", len(files))
 	}
 	if err := store.applyMigration(ctx, files[0]); err != nil {
 		t.Fatal(err)
 	}
-	var before *string
-	if err := store.pool.QueryRow(ctx, "SELECT to_regclass('run_events')::text").Scan(&before); err != nil {
+	if err := store.applyMigration(ctx, files[1]); err != nil {
 		t.Fatal(err)
 	}
-	if before != nil {
-		t.Fatalf("run_events existed before upgrade: %q", *before)
+	var beforeColumn *string
+	if err := store.pool.QueryRow(ctx, `SELECT data_type FROM information_schema.columns
+		WHERE table_schema=current_schema() AND table_name='workflows' AND column_name='archived_at'`).Scan(&beforeColumn); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatal(err)
+	}
+	if beforeColumn != nil {
+		t.Fatalf("archived_at existed before management migration: %q", *beforeColumn)
 	}
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var after *string
-	if err := store.pool.QueryRow(ctx, "SELECT to_regclass('run_events')::text").Scan(&after); err != nil {
+	var archivedType string
+	if err := store.pool.QueryRow(ctx, `SELECT data_type FROM information_schema.columns
+		WHERE table_schema=current_schema() AND table_name='workflows' AND column_name='archived_at'`).Scan(&archivedType); err != nil {
 		t.Fatal(err)
 	}
-	if after == nil || *after != "run_events" {
-		t.Fatalf("run_events after upgrade=%v", after)
+	if archivedType != "timestamp with time zone" {
+		t.Fatalf("archived_at type=%q", archivedType)
+	}
+	for _, indexName := range []string{
+		"workflows_management_idx",
+		"runs_started_at_id_idx",
+		"runs_workflow_started_at_id_idx",
+		"runs_status_started_at_id_idx",
+		"runs_mode_started_at_id_idx",
+		"runs_workflow_status_started_at_id_idx",
+		"runs_workflow_mode_started_at_id_idx",
+	} {
+		var index *string
+		if err := store.pool.QueryRow(ctx, "SELECT to_regclass($1)::text", indexName).Scan(&index); err != nil {
+			t.Fatal(err)
+		}
+		if index == nil || *index != indexName {
+			t.Fatalf("index %q after upgrade=%v", indexName, index)
+		}
 	}
 }

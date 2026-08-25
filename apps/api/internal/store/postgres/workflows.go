@@ -13,12 +13,13 @@ import (
 )
 
 const workflowSelectColumns = `w.id::text,w.name,w.slug,w.description,w.draft_graph,w.draft_revision,
-    w.published_version_id::text,pv.version,w.created_at,w.updated_at`
+    w.published_version_id::text,pv.version,w.archived_at,w.created_at,w.updated_at`
 
 func (store *Store) ListWorkflows(ctx context.Context) ([]domain.Workflow, error) {
 	rows, err := store.pool.Query(ctx, `SELECT `+workflowSelectColumns+`
         FROM workflows w
         LEFT JOIN workflow_versions pv ON pv.workflow_id=w.id AND pv.id=w.published_version_id
+        WHERE w.archived_at IS NULL
         ORDER BY w.updated_at DESC,w.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list workflows: %w", err)
@@ -54,7 +55,7 @@ func (store *Store) CreateWorkflow(ctx context.Context, workflow domain.Workflow
         RETURNING *
     )
     SELECT i.id::text,i.name,i.slug,i.description,i.draft_graph,i.draft_revision,
-           i.published_version_id::text,NULL::integer,i.created_at,i.updated_at
+           i.published_version_id::text,NULL::integer,i.archived_at,i.created_at,i.updated_at
     FROM inserted i`, workflow.ID, workflow.Name, workflow.Slug, workflow.Description, workflow.DraftGraph, workflow.DraftRevision)
 	created, err := scanWorkflow(row)
 	if err != nil {
@@ -87,7 +88,7 @@ func (store *Store) UpdateDraft(ctx context.Context, workflowID string, expected
         RETURNING *
     )
     SELECT u.id::text,u.name,u.slug,u.description,u.draft_graph,u.draft_revision,
-           u.published_version_id::text,pv.version,u.created_at,u.updated_at
+           u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
     FROM updated u
     LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`, workflowID, expectedRevision, graph)
 	workflow, err := scanWorkflow(row)
@@ -116,6 +117,7 @@ func scanWorkflow(row workflowScanner) (domain.Workflow, error) {
 		&workflow.DraftRevision,
 		&workflow.PublishedVersionID,
 		&workflow.PublishedVersion,
+		&workflow.ArchivedAt,
 		&workflow.CreatedAt,
 		&workflow.UpdatedAt,
 	); err != nil {

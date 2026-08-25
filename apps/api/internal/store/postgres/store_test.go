@@ -29,8 +29,37 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 {
+	if count != 3 {
 		t.Fatalf("migration count=%d", count)
+	}
+}
+
+func TestListWorkflowsHidesArchivedButGetPreservesState(t *testing.T) {
+	store := migratedTestStore(t)
+	active := createWorkflowFixture(t, store, "active-list")
+	archived := createWorkflowFixture(t, store, "archived-list")
+	archivedAt := time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC)
+	if _, err := store.pool.Exec(context.Background(),
+		"UPDATE workflows SET archived_at=$2 WHERE id=$1",
+		archived.ID,
+		archivedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	workflows, err := store.ListWorkflows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workflows) != 1 || workflows[0].ID != active.ID {
+		t.Fatalf("active workflows=%+v", workflows)
+	}
+	loaded, err := store.GetWorkflow(context.Background(), archived.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ArchivedAt == nil || !loaded.ArchivedAt.Equal(archivedAt) {
+		t.Fatalf("archived workflow=%+v", loaded)
 	}
 }
 

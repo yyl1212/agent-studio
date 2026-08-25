@@ -14,8 +14,22 @@ type Workflow struct {
 	DraftRevision      int64           `json:"draftRevision"`
 	PublishedVersionID *string         `json:"publishedVersionId,omitempty"`
 	PublishedVersion   *int            `json:"publishedVersion,omitempty"`
+	ArchivedAt         *time.Time      `json:"archivedAt,omitempty"`
 	CreatedAt          time.Time       `json:"createdAt"`
 	UpdatedAt          time.Time       `json:"updatedAt"`
+}
+
+type WorkflowSummary struct {
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	Slug               string     `json:"slug"`
+	Description        string     `json:"description"`
+	DraftRevision      int64      `json:"draftRevision"`
+	PublishedVersionID *string    `json:"publishedVersionId,omitempty"`
+	PublishedVersion   *int       `json:"publishedVersion,omitempty"`
+	ArchivedAt         *time.Time `json:"archivedAt,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
 }
 
 type WorkflowVersion struct {
