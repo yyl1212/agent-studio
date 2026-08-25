@@ -206,6 +206,8 @@ export const api = {
   },
   previewRunRetry: (id: string, signal?: AbortSignal) =>
     request<RunRetryPreview>(`/api/runs/${encodeURIComponent(id)}/retry-preview`, { signal }),
+  cancelRun: (id: string, signal?: AbortSignal) =>
+    request<RunSummary>(`/api/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST', signal }),
   retryRun: (id: string, idempotencyKey: string, body: RunRetryRequest, signal?: AbortSignal) =>
     streamRequest(`/api/runs/${encodeURIComponent(id)}/retries`, {
       method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: jsonBody(body), signal,

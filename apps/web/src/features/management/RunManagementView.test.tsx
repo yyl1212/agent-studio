@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api, type RunSummary } from '../../lib/api/client'
 import { ManagementPage } from './ManagementPage'
+import * as runListModule from './useRunList'
 
 describe('RunManagementView', () => {
 	afterEach(() => vi.restoreAllMocks())
@@ -45,11 +46,34 @@ describe('RunManagementView', () => {
 		expect(screen.queryByRole('button', { name: '取消运行' })).not.toBeInTheDocument()
 		expect(screen.queryByRole('button', { name: '重新运行' })).not.toBeInTheDocument()
 	})
+
+	it('普通刷新更新已选摘要且不抢走详情焦点', async () => {
+		const reload = vi.fn()
+		const list = vi.spyOn(runListModule, 'useRunList').mockReturnValue({
+			page: { items: [summary('live', 'running')], nextCursor: null }, loading: false, error: '', reload,
+		})
+		vi.spyOn(api, 'getRun').mockResolvedValue({
+			run: { id: 'live', workflowId: summary('live').workflowId, mode: 'published', status: 'running', input: {}, inputRedactedPaths: [], startedAt: '2026-08-26T00:00:00Z' }, nodeRuns: [],
+		})
+		const rendered = renderPage('/runs')
+		await userEvent.click(screen.getByRole('button', { name: '查看运行 live' }))
+		const dialog = await screen.findByRole('dialog')
+		expect(within(dialog).getByText(/运行中/)).toBeInTheDocument()
+
+		list.mockReturnValue({
+			page: { items: [summary('live', 'completed')], nextCursor: null }, loading: false, error: '', reload,
+		})
+		rendered.rerender(pageElement('/runs'))
+		expect(screen.getByRole('dialog')).toBe(dialog)
+		expect(within(dialog).getByText(/已完成/)).toBeInTheDocument()
+	})
 })
 
 function renderPage(entry: string) {
-	return render(<MemoryRouter initialEntries={[entry]}><Routes><Route path="/runs" element={<><ManagementPage section="runs" /><Location /></>} /></Routes></MemoryRouter>)
+	return render(pageElement(entry))
 }
+
+function pageElement(entry: string) { return <MemoryRouter initialEntries={[entry]}><Routes><Route path="/runs" element={<><ManagementPage section="runs" /><Location /></>} /></Routes></MemoryRouter> }
 
 function Location() { return <output data-testid="location-search">{useLocation().search}</output> }
 

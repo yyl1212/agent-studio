@@ -21,6 +21,8 @@ export function RunManagementView() {
   const [beforeInput, setBeforeInput] = useState(parsed.query.startedBefore ?? '')
   const returnFocus = useRef<HTMLButtonElement | null>(null)
   const previousFilter = useRef('')
+	const selectedFilter = useRef('')
+	const filterKey = writeRunSearch({ ...parsed.query, cursor: undefined }).toString()
 
   useEffect(() => {
     if (parsed.hadInvalid) {
@@ -34,13 +36,21 @@ export function RunManagementView() {
     setAfterInput(parsed.query.startedAfter ?? '')
     setBeforeInput(parsed.query.startedBefore ?? '')
   }, [parsed.query.workflowId, parsed.query.runId, parsed.query.startedAfter, parsed.query.startedBefore])
-  useEffect(() => {
-    const current = parsed.params.toString()
-    if (previousFilter.current && previousFilter.current !== current) setSelected(undefined)
-    previousFilter.current = current
-  }, [parsed.params.toString()])
+	useEffect(() => {
+		if (previousFilter.current && previousFilter.current !== filterKey) {
+			selectedFilter.current = ''
+			setSelected(undefined)
+		}
+		previousFilter.current = filterKey
+	}, [filterKey])
+	useEffect(() => {
+		if (!selected || !page || selectedFilter.current !== filterKey) return
+		const refreshed = page.items.find((item) => item.id === selected.id)
+		if (refreshed && refreshed !== selected) setSelected(refreshed)
+	}, [page, selected])
 
   const changeQuery = (patch: Partial<typeof parsed.query>) => {
+		selectedFilter.current = ''
     setSelected(undefined)
     setSearchParams(writeRunSearch({ ...parsed.query, ...patch, cursor: undefined }))
   }
@@ -48,9 +58,11 @@ export function RunManagementView() {
   const toggleMode = (mode: RunSummary['mode']) => changeQuery({ modes: toggle(parsed.query.modes, mode) })
   const selectRun = (summary: RunSummary, event: MouseEvent<HTMLButtonElement>) => {
     returnFocus.current = event.currentTarget
+		selectedFilter.current = filterKey
     setSelected(summary)
   }
   const closeDetail = () => {
+		selectedFilter.current = ''
     setSelected(undefined)
     queueMicrotask(() => returnFocus.current?.focus())
   }
