@@ -36,4 +36,11 @@ describe('基础界面控件', () => {
     render(<ConfirmDialog open title="未应用配置" description="端口仍在解析" confirmLabel="应用" discardLabel="放弃" cancelLabel="继续编辑" confirmDisabled onConfirm={vi.fn()} onDiscard={vi.fn()} onCancel={vi.fn()} />)
     expect(screen.getByRole('button', { name: '应用' })).toBeDisabled()
   })
+
+	it('危险第三操作为可选，双按钮确认框不渲染放弃按钮', () => {
+		render(<ConfirmDialog open title="归档工作流" description="归档后只读" confirmLabel="确认归档" cancelLabel="取消" onConfirm={vi.fn()} onCancel={vi.fn()} />)
+		expect(screen.getByRole('button', { name: '确认归档' })).toBeInTheDocument()
+		expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument()
+		expect(screen.queryByRole('button', { name: '放弃' })).not.toBeInTheDocument()
+	})
 })
