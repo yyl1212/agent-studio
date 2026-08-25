@@ -62,6 +62,7 @@ export function RetryRunDialog({ sourceRunID, onRequestClose, onRetryCreated }: 
           startedRunID = event.runId
           setSecretValues({})
           idempotencyKey.current = undefined
+          controller.current = undefined
           onRequestClose()
           onRetryCreated(event.runId)
         }

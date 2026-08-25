@@ -45,6 +45,26 @@ describe('RetryRunDialog', () => {
     await userEvent.click(screen.getByRole('button', { name: '重新运行' }))
     await waitFor(() => expect(onRetryCreated).toHaveBeenCalledWith('44444444-4444-4444-8444-444444444444'))
   })
+
+  it('收到 run.started 后关闭对话框不取消新运行的流', async () => {
+    vi.spyOn(api, 'previewRunRetry').mockResolvedValue(preview())
+    let requestSignal: AbortSignal | undefined
+    vi.spyOn(api, 'retryRun').mockImplementation(async (_runID, _key, _body, signal) => {
+      requestSignal = signal
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"sequence":1,"type":"run.started","runId":"55555555-5555-4555-8555-555555555555"}\n'))
+        },
+      }))
+    })
+    const onRetryCreated = vi.fn()
+    const rendered = render(<RetryRunDialog sourceRunID="11111111-1111-4111-8111-111111111111" onRequestClose={() => rendered.unmount()} onRetryCreated={onRetryCreated} />)
+    await userEvent.type(await screen.findByLabelText('令牌'), 'retry-secret-value')
+    await userEvent.click(screen.getByRole('button', { name: '重新运行' }))
+
+    await waitFor(() => expect(onRetryCreated).toHaveBeenCalledWith('55555555-5555-4555-8555-555555555555'))
+    expect(requestSignal?.aborted).toBe(false)
+  })
 })
 
 function preview(): RunRetryPreview {

@@ -1,5 +1,11 @@
 import { expect, type Locator, type Page } from '@playwright/test'
 
+interface DraftGraph {
+  schemaVersion: number
+  nodes: Array<Record<string, unknown>>
+  edges: Array<Record<string, unknown>>
+}
+
 export async function createWorkflow(page: Page, slug: string, name = `SDK Echo ${slug}`) {
   await page.goto('/workflows')
   await page.getByRole('button', { name: '新建工作流' }).click()
@@ -9,6 +15,16 @@ export async function createWorkflow(page: Page, slug: string, name = `SDK Echo 
   await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]+$/)
   await expect(page.getByText(name)).toBeVisible()
   return page.url()
+}
+
+export async function saveDraftGraph(page: Page, workflowID: string, graph: DraftGraph) {
+  const endpoint = `http://127.0.0.1:8080/api/workflows/${workflowID}`
+  const currentResponse = await page.request.get(endpoint)
+  expect(currentResponse.ok()).toBe(true)
+  const current = await currentResponse.json() as { draftRevision: number }
+  const saveResponse = await page.request.put(endpoint, { data: { draftRevision: current.draftRevision, graph } })
+  expect(saveResponse.ok()).toBe(true)
+  return await saveResponse.json() as { draftRevision: number }
 }
 
 export async function configureStartField(page: Page, key: string, label: string, type: 'text' | 'json') {

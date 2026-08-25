@@ -20,7 +20,13 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
-      command: `cd ../api && CGO_ENABLED=0 DATABASE_URL=postgres://agent:agent@127.0.0.1:5432/agent_studio?sslmode=disable MODEL_PROVIDER=mock HTTP_ADDR=127.0.0.1:8080 AGENT_STUDIO_NODE_INDEX_CACHE_DIR=${JSON.stringify(nodeIndexCacheDirectory)} AGENT_STUDIO_WEBHOOK_URL=http://127.0.0.1:8080 AGENT_STUDIO_WEBHOOK_TOKEN=e2e-webhook-secret go run ./cmd/server`,
+      command: 'node e2e/fixtures/slow-webhook.mjs',
+      url: 'http://127.0.0.1:8090/healthz',
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    {
+      command: `cd ../api && CGO_ENABLED=0 DATABASE_URL=postgres://agent:agent@127.0.0.1:5432/agent_studio?sslmode=disable MODEL_PROVIDER=mock HTTP_ADDR=127.0.0.1:8080 AGENT_STUDIO_NODE_INDEX_CACHE_DIR=${JSON.stringify(nodeIndexCacheDirectory)} AGENT_STUDIO_WEBHOOK_URL=http://127.0.0.1:8090 AGENT_STUDIO_WEBHOOK_TOKEN=e2e-webhook-secret go run ./cmd/server`,
       url: 'http://127.0.0.1:8080/readyz',
       reuseExistingServer: false,
       timeout: 120_000,
