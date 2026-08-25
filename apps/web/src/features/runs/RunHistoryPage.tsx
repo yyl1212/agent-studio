@@ -39,13 +39,16 @@ export function RunHistoryPage() {
         <div className="run-history-layout">
           <div className="run-table" role="table" aria-label="运行记录">
             {runs.map((run) => (
-              <button type="button" className={selectedRun === run.id ? 'selected' : ''} key={run.id} aria-label={`查看运行 ${run.id}`} onClick={() => loadDetail(run.id)}>
-                <span>{run.mode === 'published' ? '已发布' : '草稿测试'}</span>
-                <span>{run.workflowVersionId ? `版本 ${shortID(run.workflowVersionId)}` : `r${run.draftRevision ?? '-'}`}</span>
-                <span>{statusLabel(run.status)}</span>
-                <span>{formatDate(run.startedAt)}</span>
-                <span>{duration(run)}</span>
-              </button>
+				<div className="run-table-row" key={run.id}>
+					<button type="button" className={selectedRun === run.id ? 'selected' : ''} aria-label={`查看运行 ${run.id}`} onClick={() => loadDetail(run.id)}>
+						<span>{modeLabel(run.mode)}</span>
+						<span>{run.mode === 'debug' ? `来源 ${shortID(run.sourceRunId ?? '-')}` : run.workflowVersionId ? `版本 ${shortID(run.workflowVersionId)}` : `r${run.draftRevision ?? '-'}`}</span>
+						<span>{statusLabel(run.status)}</span>
+						<span>{formatDate(run.startedAt)}</span>
+						<span>{duration(run)}</span>
+					</button>
+					{run.status !== 'running' && <Link className="run-debug-link" to={`/workflows/${id}/runs/${run.id}/debug`}>调试回放</Link>}
+				</div>
             ))}
           </div>
           {selectedRun && <aside className="run-detail"><h3>节点详情</h3>{nodeRuns.map((nodeRun) => <article key={nodeRun.id}><strong>{nodeRun.nodeId}</strong><span>{nodeRun.nodeType} · {nodeRun.status}</span>{nodeRun.output !== undefined && <pre>{formatOutput(nodeRun.output)}</pre>}</article>)}</aside>}
@@ -58,6 +61,7 @@ export function RunHistoryPage() {
 function shortID(value: string) { return value.slice(0, 8) }
 function formatDate(value: string) { return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
 function statusLabel(status: Run['status']) { return { running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
+function modeLabel(mode: Run['mode']) { return { test: '草稿测试', published: '已发布', debug: '局部调试' }[mode] }
 function duration(run: Run) {
   if (!run.endedAt) return '—'
   return `${((new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()) / 1000).toFixed(1)} 秒`

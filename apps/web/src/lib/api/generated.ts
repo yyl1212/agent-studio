@@ -677,9 +677,6 @@ export interface components {
             /** Format: int64 */
             draftRevision: number;
             /** Format: uuid */
-            sourceRunId?: string | null;
-            sourceNodeId?: string | null;
-            /** Format: uuid */
             publishedVersionId?: string | null;
             publishedVersion?: number | null;
             /** Format: date-time */
@@ -719,6 +716,9 @@ export interface components {
             workflowVersionId?: string | null;
             /** Format: int64 */
             draftRevision?: number | null;
+            /** Format: uuid */
+            sourceRunId?: string | null;
+            sourceNodeId?: string | null;
             graphSnapshot?: components["schemas"]["Graph"] | null;
             /** @enum {string} */
             mode: "test" | "published" | "debug";

@@ -1,0 +1,38 @@
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
+
+import type { DebugOverview } from '../../lib/api/client'
+import type { RunEvent } from '../../lib/api/ndjson'
+import { DebugWorkbench } from './DebugWorkbench'
+
+const overview = {
+	run: { id: 'r1', workflowId: 'w1', mode: 'test', status: 'completed', input: { topic: 'hello' }, startedAt: '2026-08-25T00:00:00Z', endedAt: '2026-08-25T00:00:02Z' },
+	graph: { schemaVersion: 1, nodes: [], edges: [] }, nodeRuns: [], sourceChain: [], replayAvailable: true, rerunAvailable: true,
+} satisfies DebugOverview
+
+const emptyArrays = { activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [] }
+const events: RunEvent[] = [
+	{ sequence: 1, type: 'run.started', runId: 'r1', timestamp: '2026-08-25T00:00:00Z', ...emptyArrays },
+	{ sequence: 2, type: 'node.started', runId: 'r1', nodeId: 'node-1', input: { prompt: ['hello'] }, timestamp: '2026-08-25T00:00:00Z', ...emptyArrays },
+	{ sequence: 3, type: 'node.completed', runId: 'r1', nodeId: 'node-1', output: '<img src=x onerror=alert(1)>', timestamp: '2026-08-25T00:00:01Z', ...emptyArrays },
+]
+
+describe('DebugWorkbench', () => {
+	it('按 sequence 导航并把输出安全渲染为文本', async () => {
+		const onSelectSequence = vi.fn()
+		const onSelectNode = vi.fn()
+		const { rerender } = render(<DebugWorkbench overview={overview} events={events} selectedSequence={2} selectedNodeID="node-1" onSelectSequence={onSelectSequence} onSelectNode={onSelectNode} />)
+		expect(screen.getByText('已定位事件 2：node.started')).toBeInTheDocument()
+		await userEvent.click(screen.getByRole('button', { name: '下一项' }))
+		expect(onSelectSequence).toHaveBeenCalledWith(3)
+		await userEvent.click(screen.getByRole('button', { name: /#3 node.completed node-1/ }))
+		expect(onSelectNode).toHaveBeenCalledWith('node-1')
+		rerender(<DebugWorkbench overview={overview} events={events} selectedSequence={3} selectedNodeID="node-1" onSelectSequence={onSelectSequence} onSelectNode={onSelectNode} />)
+		expect(screen.getByText('"<img src=x onerror=alert(1)>"')).toBeInTheDocument()
+		expect(document.querySelector('img')).toBeNull()
+		expect(screen.getByText('1.000 秒')).toBeInTheDocument()
+		await userEvent.click(screen.getByRole('button', { name: '上一项' }))
+		expect(onSelectSequence).toHaveBeenCalledWith(2)
+	})
+})
