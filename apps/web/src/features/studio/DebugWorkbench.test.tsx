@@ -35,4 +35,11 @@ describe('DebugWorkbench', () => {
 		await userEvent.click(screen.getByRole('button', { name: '上一项' }))
 		expect(onSelectSequence).toHaveBeenCalledWith(2)
 	})
+
+	it('从选中节点进入局部重跑预览', async () => {
+		const onStartRerun = vi.fn()
+		render(<DebugWorkbench overview={overview} events={events} selectedNodeID="node-1" onSelectSequence={vi.fn()} onSelectNode={vi.fn()} onStartRerun={onStartRerun} />)
+		await userEvent.click(screen.getByRole('button', { name: '从此节点重新运行' }))
+		expect(onStartRerun).toHaveBeenCalledWith('node-1')
+	})
 })

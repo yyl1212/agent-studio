@@ -46,6 +46,9 @@ describe('DebugPage', () => {
 		vi.spyOn(api, 'resolveNodeType').mockResolvedValue({ inputs: [], outputs: [] })
 		vi.spyOn(api, 'saveWorkflow').mockResolvedValue({} as never)
 		vi.spyOn(api, 'listRunEvents').mockResolvedValueOnce({ events: pageEvents, nextAfterSequence: 3 }).mockResolvedValueOnce({ events: [], nextAfterSequence: 3 })
+		vi.spyOn(api, 'previewRerun').mockResolvedValue({
+			sourceRunId: 'r1', sourceNodeId: 'start', entryInput: {}, entryInputRedactedPaths: [], activeNodes: [{ id: 'start', type: 'start', version: '1', title: '开始', safety: 'pure' }], frozenEdges: [], effectiveSafety: 'pure', requiresConfirmation: false,
+		})
 	})
 
 	it('加载全部事件页、保留只读画布并联动时间线节点', async () => {
@@ -66,12 +69,59 @@ describe('DebugPage', () => {
 		expect(api.listRunEvents).not.toHaveBeenCalled()
 		expect(screen.queryByRole('button', { name: '从此节点重新运行' })).not.toBeInTheDocument()
 	})
+
+	it('局部重跑逐项显示 NDJSON 并在完成后进入新回放', async () => {
+		vi.spyOn(api, 'rerunFromNode').mockResolvedValue(new Response([
+			JSON.stringify({ sequence: 1, type: 'run.started', runId: 'debug-1', activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [], timestamp: '2026-08-25T00:00:03Z' }),
+			JSON.stringify({ sequence: 2, type: 'run.completed', runId: 'debug-1', activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [], timestamp: '2026-08-25T00:00:04Z' }),
+		].join('\n') + '\n'))
+		renderDebugPage(true)
+		await userEvent.click(await screen.findByRole('button', { name: /#2 node.started start/ }))
+		await userEvent.click(screen.getByRole('button', { name: '从此节点重新运行' }))
+		await userEvent.click(await screen.findByRole('button', { name: '开始局部重跑' }))
+		expect(await screen.findByText('新回放页面')).toBeInTheDocument()
+		expect(api.rerunFromNode).toHaveBeenCalledWith('r1', 'start', { entryInput: {}, confirmSideEffects: false }, expect.any(AbortSignal))
+	})
+
+	it('取消局部重跑会中止请求并保留表单', async () => {
+		let requestSignal: AbortSignal | undefined
+		vi.spyOn(api, 'rerunFromNode').mockImplementation((_runID, _nodeID, _body, signal) => new Promise((_resolve, reject) => {
+			requestSignal = signal
+			signal?.addEventListener('abort', () => reject(new DOMException('操作已取消', 'AbortError')), { once: true })
+		}))
+		renderDebugPage()
+		await userEvent.click(await screen.findByRole('button', { name: /#2 node.started start/ }))
+		await userEvent.click(screen.getByRole('button', { name: '从此节点重新运行' }))
+		await userEvent.click(await screen.findByRole('button', { name: '开始局部重跑' }))
+		await userEvent.click(await screen.findByRole('button', { name: '取消运行' }))
+		expect(requestSignal?.aborted).toBe(true)
+		expect(await screen.findByRole('alert')).toHaveTextContent('运行已取消')
+		expect(screen.getByLabelText('入口输入 JSON')).toBeInTheDocument()
+	})
+
+	it('失败终态保留实时事件和打开新调试运行链接', async () => {
+		vi.spyOn(api, 'rerunFromNode').mockResolvedValue(new Response([
+			JSON.stringify({ sequence: 1, type: 'run.started', runId: 'debug-failed', activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [], timestamp: '2026-08-25T00:00:03Z' }),
+			JSON.stringify({ sequence: 2, type: 'run.failed', runId: 'debug-failed', activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [], timestamp: '2026-08-25T00:00:04Z' }),
+		].join('\n') + '\n'))
+		renderDebugPage()
+		await userEvent.click(await screen.findByRole('button', { name: /#2 node.started start/ }))
+		await userEvent.click(screen.getByRole('button', { name: '从此节点重新运行' }))
+		await userEvent.click(await screen.findByRole('button', { name: '开始局部重跑' }))
+		expect(await screen.findByText('#1 run.started')).toBeInTheDocument()
+		expect(screen.getByText('#2 run.failed')).toBeInTheDocument()
+		expect(screen.getByRole('link', { name: '打开新调试运行' })).toHaveAttribute('href', '/workflows/w1/runs/debug-failed/debug')
+		expect(screen.getByLabelText('入口输入 JSON')).toHaveValue('{}')
+	})
 })
 
-function renderDebugPage() {
+function renderDebugPage(withDestination = false) {
 	return render(
 		<MemoryRouter initialEntries={['/workflows/w1/runs/r1/debug']}>
-			<Routes><Route path="/workflows/:id/runs/:runId/debug" element={<DebugPage />} /></Routes>
+			<Routes>
+				<Route path="/workflows/:id/runs/:runId/debug" element={<DebugPage />} />
+				{withDestination && <Route path="/workflows/w1/runs/debug-1/debug" element={<p>新回放页面</p>} />}
+			</Routes>
 		</MemoryRouter>,
 	)
 }

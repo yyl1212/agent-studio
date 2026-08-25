@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import type { Connection, EdgeChange, NodeChange } from '@xyflow/react'
 
-import { APIError, api, type DebugOverview } from '../../lib/api/client'
-import type { RunEvent } from '../../lib/api/ndjson'
+import { APIError, api, type DebugOverview, type RerunPreview } from '../../lib/api/client'
+import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { portsFromDefinition, toFlowGraph } from './graphAdapter'
 import type { StudioEdge, StudioNode } from './types'
 import { DebugWorkbench } from './DebugWorkbench'
@@ -13,6 +13,7 @@ import './studio.css'
 
 export function DebugPage() {
 	const { id = '', runId = '' } = useParams()
+	const navigate = useNavigate()
 	const [overview, setOverview] = useState<DebugOverview>()
 	const [nodes, setNodes] = useState<StudioNode[]>([])
 	const [edges, setEdges] = useState<StudioEdge[]>([])
@@ -20,6 +21,14 @@ export function DebugPage() {
 	const [selectedSequence, setSelectedSequence] = useState<number>()
 	const [selectedNodeID, setSelectedNodeID] = useState<string>()
 	const [error, setError] = useState('')
+	const [rerunPreview, setRerunPreview] = useState<RerunPreview>()
+	const [rerunEvents, setRerunEvents] = useState<RunEvent[]>([])
+	const [rerunRunning, setRerunRunning] = useState(false)
+	const [rerunError, setRerunError] = useState('')
+	const [newRunID, setNewRunID] = useState<string>()
+	const rerunController = useRef<AbortController | undefined>(undefined)
+
+	useEffect(() => () => rerunController.current?.abort(), [])
 
 	useEffect(() => {
 		const controller = new AbortController()
@@ -70,6 +79,56 @@ export function DebugPage() {
 	const ignoreNodes = (_changes: NodeChange<StudioNode>[]) => undefined
 	const ignoreEdges = (_changes: EdgeChange<StudioEdge>[]) => undefined
 	const ignoreConnect = (_connection: Connection) => undefined
+	const startRerun = async (nodeID: string) => {
+		rerunController.current?.abort()
+		const controller = new AbortController()
+		rerunController.current = controller
+		setRerunError('')
+		try {
+			setRerunPreview(await api.previewRerun(runId, nodeID, controller.signal))
+			setRerunEvents([])
+			setNewRunID(undefined)
+		} catch (failure) {
+			if (!(failure instanceof DOMException && failure.name === 'AbortError')) setRerunError(debugMessage(failure))
+		}
+	}
+	const submitRerun = async (entryInput: Record<string, unknown>, confirmed: boolean) => {
+		if (!rerunPreview) return
+		rerunController.current?.abort()
+		const controller = new AbortController()
+		rerunController.current = controller
+		setRerunRunning(true)
+		setRerunError('')
+		setRerunEvents([])
+		setNewRunID(undefined)
+		let currentRunID = ''
+		try {
+			const response = await api.rerunFromNode(runId, rerunPreview.sourceNodeId, {
+				entryInput,
+				confirmSideEffects: rerunPreview.requiresConfirmation && confirmed,
+			}, controller.signal)
+			await readNDJSON(response, (event) => {
+				if (!currentRunID) {
+					currentRunID = event.runId
+					setNewRunID(currentRunID)
+				}
+				setRerunEvents((current) => [...current, event])
+				if (event.type === 'run.completed' && currentRunID) navigate(`/workflows/${id}/runs/${currentRunID}/debug`)
+			}, controller.signal)
+		} catch (failure) {
+			if (failure instanceof DOMException && failure.name === 'AbortError') setRerunError('运行已取消')
+			else setRerunError(debugMessage(failure))
+		} finally {
+			setRerunRunning(false)
+		}
+	}
+	const closeRerun = () => {
+		rerunController.current?.abort()
+		setRerunPreview(undefined)
+		setRerunEvents([])
+		setRerunError('')
+		setNewRunID(undefined)
+	}
 
 	if (error) return <main className="page-container"><p role="alert">{error}</p><Link to={`/workflows/${id}/runs`}>返回运行记录</Link></main>
 	if (!overview) return <main className="page-container" aria-live="polite">正在加载调试回放…</main>
@@ -81,7 +140,7 @@ export function DebugPage() {
 			</header>
 			<WorkflowCanvas readOnly currentNodeID={selectedNodeID} nodes={displayNodes} edges={edges} onNodesChange={ignoreNodes} onEdgesChange={ignoreEdges} onConnect={ignoreConnect} isValidConnection={() => false} onNodeClick={(node) => setSelectedNodeID(node.id)} />
 			{overview.replayAvailable
-				? <DebugWorkbench overview={overview} events={events} selectedSequence={selectedSequence} selectedNodeID={selectedNodeID} onSelectSequence={setSelectedSequence} onSelectNode={setSelectedNodeID} />
+				? <DebugWorkbench overview={overview} events={events} selectedSequence={selectedSequence} selectedNodeID={selectedNodeID} onSelectSequence={setSelectedSequence} onSelectNode={setSelectedNodeID} onStartRerun={startRerun} rerunPreview={rerunPreview} rerunEvents={rerunEvents} rerunRunning={rerunRunning} rerunError={rerunError} debugRunPath={newRunID ? `/workflows/${id}/runs/${newRunID}/debug` : undefined} onSubmitRerun={submitRerun} onCancelRerun={() => rerunController.current?.abort()} onCloseRerun={closeRerun} />
 				: <aside className="debug-workbench debug-unavailable"><h2>运行摘要</h2><p role="status">{overview.unavailableReason || '当前运行无法精确回放'}</p><p>仍可查看画布和节点最终摘要，但不能执行局部重跑。</p></aside>}
 		</main>
 	)

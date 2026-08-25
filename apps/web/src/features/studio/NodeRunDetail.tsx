@@ -3,9 +3,10 @@ import type { RunEvent } from '../../lib/api/ndjson'
 interface NodeRunDetailProps {
 	nodeID?: string
 	events: RunEvent[]
+	onRerun?: (nodeID: string) => void
 }
 
-export function NodeRunDetail({ nodeID, events }: NodeRunDetailProps) {
+export function NodeRunDetail({ nodeID, events, onRerun }: NodeRunDetailProps) {
 	if (!nodeID) return <section className="node-run-detail"><h2>节点详情</h2><p>从画布或时间线选择节点。</p></section>
 	const started = events.find((event) => event.nodeId === nodeID && event.type === 'node.started')
 	const terminal = events.find((event) => event.nodeId === nodeID && ['node.completed', 'node.failed', 'node.skipped', 'node.cancelled'].includes(event.type))
@@ -20,6 +21,7 @@ export function NodeRunDetail({ nodeID, events }: NodeRunDetailProps) {
 			{terminal?.output !== undefined && <DebugValue title="输出" value={terminal.output} />}
 			{terminal && <DebugValue title="激活端口" value={terminal.activePorts} />}
 			{terminal?.error && <DebugValue title="公开错误" value={terminal.error} />}
+			{onRerun && <button className="primary-button inline" type="button" onClick={() => onRerun(nodeID)}>从此节点重新运行</button>}
 		</section>
 	)
 }
