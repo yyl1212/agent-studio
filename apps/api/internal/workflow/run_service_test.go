@@ -27,6 +27,27 @@ type failingRunEngine struct {
 	err error
 }
 
+type terminalEchoEngine struct {
+	secret string
+}
+
+func (runtime terminalEchoEngine) Run(ctx context.Context, runID string, _ *engine.Plan, _ map[string]any, observer engine.Observer) (engine.RunResult, error) {
+	startedAt := time.Now().UTC()
+	if err := observer.Observe(ctx, engine.Event{Sequence: 1, Type: "run.started", RunID: runID, Timestamp: startedAt}); err != nil {
+		return engine.RunResult{RunID: runID, EndedAt: time.Now().UTC()}, err
+	}
+	output := map[string]any{"result": runtime.secret, "nested": map[string]any{runtime.secret: "value"}}
+	endedAt := time.Now().UTC()
+	if err := observer.Observe(ctx, engine.Event{Sequence: 2, Type: "run.completed", RunID: runID, Output: output, ActivePorts: []string{"result"}, Timestamp: endedAt}); err != nil {
+		return engine.RunResult{RunID: runID, Output: output, EndedAt: endedAt}, err
+	}
+	return engine.RunResult{RunID: runID, Output: output, EndedAt: endedAt}, nil
+}
+
+func (runtime terminalEchoEngine) RunWithScope(ctx context.Context, runID string, plan *engine.Plan, input map[string]any, observer engine.Observer, _ engine.ExecutionScope) (engine.RunResult, error) {
+	return runtime.Run(ctx, runID, plan, input, observer)
+}
+
 func (runtime failingRunEngine) Run(_ context.Context, runID string, _ *engine.Plan, _ map[string]any, _ engine.Observer) (engine.RunResult, error) {
 	return engine.RunResult{RunID: runID, EndedAt: time.Now().UTC()}, runtime.err
 }
@@ -88,6 +109,102 @@ func TestPersistenceObserverCommitsRedactedEventBeforeDownstream(t *testing.T) {
 	}
 }
 
+func TestTerminalEventWaitsForFinalizationAndUsesCommittedSafeEvent(t *testing.T) {
+	store := newFakeStore(t)
+	const runID = "run-terminal"
+	const secret = "do-not-persist"
+	store.runs = append(store.runs, domain.Run{ID: runID, WorkflowID: store.workflow.ID, Status: domain.RunRunning})
+	report := RedactWithReport(map[string]any{"webhookToken": secret})
+	prepared := &PreparedRun{
+		RunID: runID, Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{}}, Input: map[string]any{},
+		secretRedactor: NewSecretRedactor(report.SecretValues),
+	}
+	downstream := &recordingObserver{}
+	store.beforeFinalize = func() {
+		if hasTerminalRunEvent(store.runEvents) || hasTerminalEngineEvent(downstream.events) {
+			t.Fatal("terminal event became visible before FinalizeRun committed")
+		}
+	}
+	service := NewRunService(store, nil, terminalEchoEngine{secret: secret})
+	if _, err := service.Execute(context.Background(), prepared, downstream); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.finalizations) != 1 || !hasExactlyOneTerminalRunEvent(store.runEvents) || !hasExactlyOneTerminalEngineEvent(downstream.events) {
+		t.Fatalf("finalizations=%d stored=%+v downstream=%+v", len(store.finalizations), store.runEvents, downstream.events)
+	}
+	storedBytes, _ := json.Marshal(store.finalizations[0])
+	downstreamBytes, _ := json.Marshal(downstream.events)
+	if bytes.Contains(storedBytes, []byte(secret)) || bytes.Contains(downstreamBytes, []byte(secret)) || bytes.Contains(store.LastRun().Output, []byte(secret)) {
+		t.Fatalf("secret leaked: finalization=%s downstream=%s run=%s", storedBytes, downstreamBytes, store.LastRun().Output)
+	}
+	lastDownstream := &downstream.events[len(downstream.events)-1]
+	lastStored := store.runEvents[len(store.runEvents)-1]
+	lastDownstream.ActivePorts[0] = "mutated"
+	lastDownstream.OutputRedactedPaths[0] = "mutated"
+	lastDownstream.Output.(map[string]any)["result"] = "mutated"
+	if lastStored.ActivePorts[0] != "result" || lastStored.OutputRedactedPaths[0] == "mutated" || bytes.Contains(lastStored.Output, []byte("mutated")) {
+		t.Fatalf("downstream mutated stored terminal event: %+v", lastStored)
+	}
+}
+
+func TestPersistenceObserverRejectsSecondTerminalEvent(t *testing.T) {
+	store := newFakeStore(t)
+	observer := &persistenceObserver{
+		store: store, prepared: &PreparedRun{RunID: "run-duplicate-terminal", Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{}}},
+		started: make(map[string]time.Time),
+	}
+	first := engine.Event{RunID: "run-duplicate-terminal", Sequence: 1, Type: "run.completed", Timestamp: time.Now().UTC()}
+	if err := observer.Observe(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	first.Sequence = 2
+	first.Type = "run.failed"
+	if err := observer.Observe(context.Background(), first); err == nil || err.Error() != "duplicate run terminal event" {
+		t.Fatalf("duplicate terminal error=%v", err)
+	}
+	if len(store.runEvents) != 0 {
+		t.Fatalf("terminal events persisted before finalization: %+v", store.runEvents)
+	}
+}
+
+func hasTerminalRunEvent(events []domain.RunEvent) bool {
+	for _, event := range events {
+		if isRunTerminal(event.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTerminalEngineEvent(events []engine.Event) bool {
+	for _, event := range events {
+		if isRunTerminal(event.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExactlyOneTerminalRunEvent(events []domain.RunEvent) bool {
+	count := 0
+	for _, event := range events {
+		if isRunTerminal(event.Type) {
+			count++
+		}
+	}
+	return count == 1
+}
+
+func hasExactlyOneTerminalEngineEvent(events []engine.Event) bool {
+	count := 0
+	for _, event := range events {
+		if isRunTerminal(event.Type) {
+			count++
+		}
+	}
+	return count == 1
+}
+
 func TestRunEventBudgetsRejectOffendingEventWithoutDownstreamDelivery(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -132,7 +249,7 @@ func TestRunEventCountAndTotalBudgetsKeepPreviouslyCommittedEvents(t *testing.T)
 				t.Fatal(err)
 			}
 		}
-		if err := observer.Observe(context.Background(), engine.Event{Sequence: 5, RunID: "run-count", Type: "run.completed", Timestamp: time.Now().UTC()}); !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
+		if err := observer.Observe(context.Background(), engine.Event{Sequence: 5, RunID: "run-count", Type: "run.started", Timestamp: time.Now().UTC()}); !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
 			t.Fatalf("error=%v", err)
 		}
 		if len(store.runEvents) != 4 || len(downstream.events) != 4 {
@@ -399,14 +516,18 @@ func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 		errors.New("top-secret cause"),
 		map[string]any{
 			"Authorization": "Bearer top-secret",
-			"field":         "prompt",
+			"field":         "top-secret",
+			"nested":        map[string]any{"top-secret": "value"},
 		},
 	)
 	runErr := &engine.NodeExecutionError{NodeID: "llm-1", NodeType: "llm", Err: nodeErr}
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	service := NewRunService(store, newRealCompiler(t), failingRunEngine{err: runErr}, WithLogger(logger))
-	_, err := service.Execute(context.Background(), &PreparedRun{RunID: runID, Plan: &engine.Plan{}}, &recordingObserver{})
+	report := RedactWithReport(map[string]any{"token": "top-secret"})
+	_, err := service.Execute(context.Background(), &PreparedRun{
+		RunID: runID, Plan: &engine.Plan{}, secretRedactor: NewSecretRedactor(report.SecretValues),
+	}, &recordingObserver{})
 	if !errors.Is(err, nodeErr) {
 		t.Fatalf("execute error = %v", err)
 	}
@@ -432,7 +553,8 @@ func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 		}
 	}
 	details, ok := record["error_details"].(map[string]any)
-	if !ok || details["Authorization"] != "[REDACTED]" || details["field"] != "prompt" {
+	nested, nestedOK := details["nested"].(map[string]any)
+	if !ok || details["Authorization"] != "[REDACTED]" || details["field"] != "[REDACTED]" || !nestedOK || nested["[REDACTED]"] != "value" {
 		t.Fatalf("redacted details = %#v", record["error_details"])
 	}
 	causes, ok := record["error_causes"].([]any)

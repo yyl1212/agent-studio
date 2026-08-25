@@ -82,6 +82,16 @@ type RunSummaryPage struct {
 	NextCursor *string             `json:"nextCursor"`
 }
 
+type RunFinalization struct {
+	RunID         string
+	Status        domain.RunStatus
+	Output        any
+	Error         *domain.PublicError
+	EndedAt       time.Time
+	TerminalEvent domain.RunEvent
+	Budget        domain.RunEventBudget
+}
+
 type RunManagementStore interface {
 	ListRunSummaries(context.Context, RunSummaryStoreQuery) ([]domain.RunSummary, error)
 }

@@ -479,7 +479,11 @@ func TestRunAndNodeRunRoundTrip(t *testing.T) {
 	if err := store.UpsertNodeRun(context.Background(), nodeRun); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishRun(context.Background(), run.ID, domain.RunCompleted, map[string]any{"answer": "ok"}, nil, now); err != nil {
+	if _, err := store.FinalizeRun(context.Background(), workflowservice.RunFinalization{
+		RunID: run.ID, Status: domain.RunCompleted, Output: map[string]any{"answer": "ok"}, EndedAt: now,
+		TerminalEvent: domain.RunEvent{RunID: run.ID, Sequence: 1, Type: "run.completed", Output: json.RawMessage(`{"answer":"ok"}`), Timestamp: now},
+		Budget:        domain.RunEventBudget{MaxEvents: 10, MaxTotalDataBytes: 1 << 20},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, nodeRuns, err := store.GetRun(context.Background(), run.ID)
@@ -492,6 +496,124 @@ func TestRunAndNodeRunRoundTrip(t *testing.T) {
 	runs, err := store.ListRuns(context.Background(), workflow.ID, 10)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs=%+v error=%v", runs, err)
+	}
+}
+
+func TestFinalizeRunCancellationWinsAndKeepsSingleTerminal(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "finalize-cancel")
+	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, nodeRun := range []domain.NodeRun{
+		{ID: fixtureUUID(), RunID: run.ID, NodeID: "running", NodeType: "fixture", Status: domain.NodeRunning, StartedAt: &now},
+		{ID: fixtureUUID(), RunID: run.ID, NodeID: "completed", NodeType: "fixture", Status: domain.NodeCompleted, StartedAt: &now, EndedAt: &now},
+	} {
+		if err := store.UpsertNodeRun(context.Background(), nodeRun); err != nil {
+			t.Fatal(err)
+		}
+	}
+	budget := domain.RunEventBudget{MaxEvents: 10, MaxTotalDataBytes: 1 << 20}
+	if err := store.PersistRunEvent(context.Background(), domain.RunEvent{
+		RunID: run.ID, Sequence: 1, Type: "run.started", ActivePorts: []string{},
+		InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, Timestamp: now,
+	}, nil, budget); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(context.Background(), "UPDATE runs SET status='cancelling',cancel_requested_at=$2 WHERE id=$1", run.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	finalEvent, err := store.FinalizeRun(context.Background(), workflowservice.RunFinalization{
+		RunID: run.ID, Status: domain.RunCompleted, Output: map[string]any{"answer": "should-disappear"}, EndedAt: now,
+		TerminalEvent: domain.RunEvent{RunID: run.ID, Sequence: 2, Type: "run.completed", Output: json.RawMessage(`{"answer":"should-disappear"}`), ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, Timestamp: now},
+		Budget:        budget,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalEvent.Type != "run.cancelled" || finalEvent.Error == nil || finalEvent.Error.Code != "RUN_CANCELLED" || len(finalEvent.Output) != 0 {
+		t.Fatalf("final event=%+v", finalEvent)
+	}
+	loaded, nodeRuns, err := store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != domain.RunCancelled || len(loaded.Output) != 0 || loaded.Error == nil || loaded.Error.Code != "RUN_CANCELLED" {
+		t.Fatalf("loaded run=%+v", loaded)
+	}
+	statuses := map[string]domain.NodeStatus{}
+	for _, nodeRun := range nodeRuns {
+		statuses[nodeRun.NodeID] = nodeRun.Status
+	}
+	if statuses["running"] != domain.NodeCancelled || statuses["completed"] != domain.NodeCompleted {
+		t.Fatalf("node statuses=%v", statuses)
+	}
+	events, err := store.ListRunEvents(context.Background(), run.ID, 0, 10)
+	if err != nil || len(events) != 2 || events[1].Type != "run.cancelled" {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestFinalizeRunCompletionPreventsLaterCancellationAndDuplicateTerminal(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "finalize-complete")
+	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	budget := domain.RunEventBudget{MaxEvents: 10, MaxTotalDataBytes: 1 << 20}
+	finalization := workflowservice.RunFinalization{
+		RunID: run.ID, Status: domain.RunCompleted, Output: map[string]any{"answer": "ok"}, EndedAt: now,
+		TerminalEvent: domain.RunEvent{RunID: run.ID, Sequence: 1, Type: "run.completed", Output: json.RawMessage(`{"answer":"ok"}`), ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, Timestamp: now},
+		Budget:        budget,
+	}
+	first, err := store.FinalizeRun(context.Background(), finalization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := store.pool.Exec(context.Background(), "UPDATE runs SET status='cancelling',cancel_requested_at=$2 WHERE id=$1 AND status IN ('running','cancelling')", run.ID, now)
+	if err != nil || command.RowsAffected() != 0 {
+		t.Fatalf("late cancel rows=%d err=%v", command.RowsAffected(), err)
+	}
+	second, err := store.FinalizeRun(context.Background(), finalization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Type != "run.completed" || second.Sequence != first.Sequence || second.Type != first.Type {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	events, err := store.ListRunEvents(context.Background(), run.ID, 0, 10)
+	if err != nil || len(events) != 1 || events[0].Type != "run.completed" {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestFinalizeRunRejectsTerminalOutsideEventBudgetWithoutPartialState(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "finalize-budget")
+	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	_, err := store.FinalizeRun(context.Background(), workflowservice.RunFinalization{
+		RunID: run.ID, Status: domain.RunCompleted, EndedAt: now,
+		TerminalEvent: domain.RunEvent{RunID: run.ID, Sequence: 1, Type: "run.completed", Timestamp: now},
+		Budget:        domain.RunEventBudget{MaxEvents: 0, MaxTotalDataBytes: 1 << 20},
+	})
+	if !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
+		t.Fatalf("budget error=%v", err)
+	}
+	loaded, _, getErr := store.GetRun(context.Background(), run.ID)
+	if getErr != nil || loaded.Status != domain.RunRunning || loaded.EndedAt != nil {
+		t.Fatalf("partially finalized run=%+v err=%v", loaded, getErr)
+	}
+	events, listErr := store.ListRunEvents(context.Background(), run.ID, 0, 10)
+	if listErr != nil || len(events) != 0 {
+		t.Fatalf("partial terminal events=%+v err=%v", events, listErr)
 	}
 }
 

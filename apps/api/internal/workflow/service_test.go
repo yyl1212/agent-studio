@@ -26,6 +26,9 @@ type fakeStore struct {
 	runEvents        []domain.RunEvent
 	eventBudget      domain.RunEventBudget
 	failPersist      error
+	finalizations    []RunFinalization
+	beforeFinalize   func()
+	finalizeErr      error
 	sequence         int
 	createCalls      int
 	updateDraftCalls int
@@ -155,21 +158,27 @@ func (store *fakeStore) ListRunEvents(_ context.Context, runID string, afterSequ
 	return events, nil
 }
 
-func (store *fakeStore) FinishRun(ctx context.Context, runID string, status domain.RunStatus, output any, publicError *domain.PublicError, endedAt time.Time) error {
-	if err := ctx.Err(); err != nil {
-		return err
+func (store *fakeStore) FinalizeRun(ctx context.Context, finalization RunFinalization) (domain.RunEvent, error) {
+	if store.beforeFinalize != nil {
+		store.beforeFinalize()
 	}
+	if store.finalizeErr != nil {
+		return domain.RunEvent{}, store.finalizeErr
+	}
+	store.finalizations = append(store.finalizations, finalization)
 	for index := range store.runs {
-		if store.runs[index].ID == runID {
-			store.runs[index].Status = status
-			store.runs[index].Error = publicError
-			store.runs[index].EndedAt = &endedAt
-			encoded, _ := json.Marshal(output)
-			store.runs[index].Output = encoded
-			return nil
+		if store.runs[index].ID != finalization.RunID {
+			continue
 		}
+		store.runs[index].Status = finalization.Status
+		store.runs[index].Error = finalization.Error
+		store.runs[index].EndedAt = &finalization.EndedAt
+		encoded, _ := json.Marshal(finalization.Output)
+		store.runs[index].Output = encoded
+		store.runEvents = append(store.runEvents, finalization.TerminalEvent)
+		return finalization.TerminalEvent, nil
 	}
-	return domain.ErrNotFound
+	return domain.RunEvent{}, domain.ErrNotFound
 }
 
 func (store *fakeStore) GetRun(_ context.Context, runID string) (domain.Run, []domain.NodeRun, error) {

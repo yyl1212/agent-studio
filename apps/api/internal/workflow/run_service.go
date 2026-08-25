@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -185,8 +186,12 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	} else {
 		result, runErr = service.engine.RunWithScope(ctx, prepared.RunID, prepared.Plan, prepared.Input, persistence, *prepared.Scope)
 	}
+	if result.EndedAt.IsZero() {
+		result.EndedAt = time.Now().UTC()
+	}
+	result.Output = redactPreparedValue(prepared, result.Output).Value
 	if runErr != nil {
-		service.logRunError(prepared.RunID, runErr)
+		service.logRunError(prepared, runErr)
 	}
 	status := domain.RunCompleted
 	var publicError *domain.PublicError
@@ -211,7 +216,31 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	}
 	finishContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	finishErr := service.store.FinishRun(finishContext, prepared.RunID, status, Redact(result.Output), publicError, result.EndedAt)
+	if persistence.terminal == nil {
+		terminalType := "run.completed"
+		if status == domain.RunFailed {
+			terminalType = "run.failed"
+		} else if status == domain.RunCancelled {
+			terminalType = "run.cancelled"
+		}
+		if err := persistence.Observe(finishContext, engine.Event{
+			Sequence: persistence.lastSequence + 1, Type: terminalType, RunID: prepared.RunID,
+			Output: result.Output, Error: publicError, Timestamp: result.EndedAt,
+		}); err != nil {
+			if runErr != nil {
+				return result, runErr
+			}
+			return result, err
+		}
+	}
+	finalization := RunFinalization{
+		RunID: prepared.RunID, Status: status, Output: result.Output, Error: publicError, EndedAt: result.EndedAt,
+		TerminalEvent: cloneRunEvent(*persistence.terminal), Budget: persistence.budget(),
+	}
+	finalEvent, finishErr := service.store.FinalizeRun(finishContext, finalization)
+	if finishErr == nil && observer != nil {
+		finishErr = observer.Observe(finishContext, runEventToEngineEvent(finalEvent))
+	}
 	if runErr != nil {
 		return result, runErr
 	}
@@ -221,7 +250,7 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	return result, nil
 }
 
-func (service *RunService) logRunError(runID string, err error) {
+func (service *RunService) logRunError(prepared *PreparedRun, err error) {
 	var executionErr *engine.NodeExecutionError
 	if !errors.As(err, &executionErr) {
 		return
@@ -232,11 +261,11 @@ func (service *RunService) logRunError(runID string, err error) {
 	var nodeErr *agentnode.NodeError
 	if errors.As(executionErr.Err, &nodeErr) {
 		code = nodeErr.Code
-		details, _ = Redact(nodeErr.Details).(map[string]any)
+		details, _ = redactPreparedValue(prepared, nodeErr.Details).Value.(map[string]any)
 	}
 	service.logger.Error(
 		"node execution failed",
-		"run_id", runID,
+		"run_id", prepared.RunID,
 		"node_id", executionErr.NodeID,
 		"node_type", executionErr.NodeType,
 		"error_kind", kind,
@@ -294,18 +323,57 @@ func normalizeInput(input map[string]any) map[string]any {
 }
 
 type persistenceObserver struct {
-	store      Store
-	prepared   *PreparedRun
-	downstream engine.Observer
-	started    map[string]time.Time
+	store        Store
+	prepared     *PreparedRun
+	downstream   engine.Observer
+	started      map[string]time.Time
+	terminal     *domain.RunEvent
+	lastSequence int64
 }
 
 func (observer *persistenceObserver) Observe(ctx context.Context, event engine.Event) error {
+	safeEvent, runEvent, err := observer.prepareEvent(event)
+	if err != nil {
+		return err
+	}
+	if isRunTerminal(event.Type) {
+		if observer.terminal != nil {
+			return errors.New("duplicate run terminal event")
+		}
+		stored := cloneRunEvent(runEvent)
+		observer.terminal = &stored
+		if event.Sequence > observer.lastSequence {
+			observer.lastSequence = event.Sequence
+		}
+		return nil
+	}
+	var nodeRun *domain.NodeRun
+	if event.NodeID != "" {
+		built, err := observer.nodeRunForEvent(safeEvent, runEvent.Input, runEvent.Output)
+		if err != nil {
+			return err
+		}
+		nodeRun = &built
+	}
+	if err := observer.store.PersistRunEvent(ctx, runEvent, nodeRun, observer.budget()); err != nil {
+		return err
+	}
+	if event.Sequence > observer.lastSequence {
+		observer.lastSequence = event.Sequence
+	}
+	if observer.downstream != nil {
+		return observer.downstream.Observe(ctx, safeEvent)
+	}
+	return nil
+}
+
+func (observer *persistenceObserver) prepareEvent(event engine.Event) (engine.Event, domain.RunEvent, error) {
 	safeEvent := event
-	inputReport := RedactWithReport(event.Input)
-	outputReport := RedactWithReport(event.Output)
+	inputReport := redactPreparedValue(observer.prepared, event.Input)
+	outputReport := redactPreparedValue(observer.prepared, event.Output)
 	safeEvent.Input = inputReport.Value
 	safeEvent.Output = outputReport.Value
+	safeEvent.Error = redactPublicError(observer.prepared, event.Error)
 	safeEvent.InputRedactedPaths = append([]string(nil), inputReport.Paths...)
 	safeEvent.OutputRedactedPaths = append([]string(nil), outputReport.Paths...)
 	if safeEvent.ActivePorts == nil {
@@ -319,30 +387,30 @@ func (observer *persistenceObserver) Observe(ctx context.Context, event engine.E
 	}
 	inputJSON, err := marshalEventValue(safeEvent.Input)
 	if err != nil {
-		return err
+		return engine.Event{}, domain.RunEvent{}, err
 	}
 	outputJSON, err := marshalEventValue(safeEvent.Output)
 	if err != nil {
-		return err
+		return engine.Event{}, domain.RunEvent{}, err
 	}
 	errorJSON, err := marshalEventValue(safeEvent.Error)
 	if err != nil {
-		return err
+		return engine.Event{}, domain.RunEvent{}, err
 	}
 	activePortsJSON, err := json.Marshal(safeEvent.ActivePorts)
 	if err != nil {
-		return fmt.Errorf("encode active ports: %w", err)
+		return engine.Event{}, domain.RunEvent{}, fmt.Errorf("encode active ports: %w", err)
 	}
 	inputPathsJSON, err := json.Marshal(safeEvent.InputRedactedPaths)
 	if err != nil {
-		return fmt.Errorf("encode input redaction paths: %w", err)
+		return engine.Event{}, domain.RunEvent{}, fmt.Errorf("encode input redaction paths: %w", err)
 	}
 	outputPathsJSON, err := json.Marshal(safeEvent.OutputRedactedPaths)
 	if err != nil {
-		return fmt.Errorf("encode output redaction paths: %w", err)
+		return engine.Event{}, domain.RunEvent{}, fmt.Errorf("encode output redaction paths: %w", err)
 	}
 	if len(inputJSON) > 1<<20 || len(outputJSON) > 1<<20 || len(errorJSON) > 64<<10 {
-		return domain.ErrRunEventBudgetExceeded
+		return engine.Event{}, domain.RunEvent{}, domain.ErrRunEventBudgetExceeded
 	}
 	runEvent := domain.RunEvent{
 		RunID: safeEvent.RunID, Sequence: safeEvent.Sequence, Type: safeEvent.Type, NodeID: safeEvent.NodeID,
@@ -351,22 +419,87 @@ func (observer *persistenceObserver) Observe(ctx context.Context, event engine.E
 		OutputRedactedPaths: append([]string(nil), safeEvent.OutputRedactedPaths...), Timestamp: safeEvent.Timestamp,
 		DataBytes: int64(len(inputJSON) + len(outputJSON) + len(errorJSON) + len(activePortsJSON) + len(inputPathsJSON) + len(outputPathsJSON)),
 	}
-	var nodeRun *domain.NodeRun
-	if event.NodeID != "" {
-		built, err := observer.nodeRunForEvent(safeEvent, inputJSON, outputJSON)
-		if err != nil {
-			return err
+	return safeEvent, runEvent, nil
+}
+
+func (observer *persistenceObserver) budget() domain.RunEventBudget {
+	return domain.RunEventBudget{MaxEvents: 2*len(observer.prepared.Plan.Nodes) + 2, MaxTotalDataBytes: 16 << 20}
+}
+
+func isRunTerminal(eventType string) bool {
+	switch eventType {
+	case "run.completed", "run.failed", "run.cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func redactPreparedValue(prepared *PreparedRun, value any) RedactionReport {
+	secretReport := RedactionReport{Value: value, Paths: []string{}}
+	if prepared != nil && prepared.secretRedactor != nil {
+		secretReport = prepared.secretRedactor.RedactWithReport(value)
+	}
+	keyReport := RedactWithReport(secretReport.Value)
+	paths := append([]string{}, secretReport.Paths...)
+	for _, path := range keyReport.Paths {
+		appendUniquePath(&paths, path)
+	}
+	sort.Strings(paths)
+	return RedactionReport{Value: keyReport.Value, Paths: paths}
+}
+
+func redactPublicError(prepared *PreparedRun, publicError *domain.PublicError) *domain.PublicError {
+	if publicError == nil {
+		return nil
+	}
+	safe := *publicError
+	if value, ok := redactPreparedValue(prepared, publicError.Code).Value.(string); ok {
+		safe.Code = value
+	}
+	if value, ok := redactPreparedValue(prepared, publicError.Message).Value.(string); ok {
+		safe.Message = value
+	}
+	if value, ok := redactPreparedValue(prepared, publicError.NodeID).Value.(string); ok {
+		safe.NodeID = value
+	}
+	return &safe
+}
+
+func cloneRunEvent(event domain.RunEvent) domain.RunEvent {
+	cloned := event
+	cloned.Input = append(json.RawMessage(nil), event.Input...)
+	cloned.Output = append(json.RawMessage(nil), event.Output...)
+	cloned.ActivePorts = append([]string{}, event.ActivePorts...)
+	cloned.InputRedactedPaths = append([]string{}, event.InputRedactedPaths...)
+	cloned.OutputRedactedPaths = append([]string{}, event.OutputRedactedPaths...)
+	if event.Error != nil {
+		errorCopy := *event.Error
+		cloned.Error = &errorCopy
+	}
+	return cloned
+}
+
+func runEventToEngineEvent(event domain.RunEvent) engine.Event {
+	converted := engine.Event{
+		Sequence: event.Sequence, Type: event.Type, RunID: event.RunID, NodeID: event.NodeID, Status: event.Status,
+		ActivePorts: append([]string{}, event.ActivePorts...), Error: redactPublicError(nil, event.Error),
+		InputRedactedPaths:  append([]string{}, event.InputRedactedPaths...),
+		OutputRedactedPaths: append([]string{}, event.OutputRedactedPaths...), Timestamp: event.Timestamp,
+	}
+	if len(event.Input) > 0 {
+		var input any
+		if decodeJSON(event.Input, &input) == nil {
+			converted.Input = input
 		}
-		nodeRun = &built
 	}
-	budget := domain.RunEventBudget{MaxEvents: 2*len(observer.prepared.Plan.Nodes) + 2, MaxTotalDataBytes: 16 << 20}
-	if err := observer.store.PersistRunEvent(ctx, runEvent, nodeRun, budget); err != nil {
-		return err
+	if len(event.Output) > 0 {
+		var output any
+		if decodeJSON(event.Output, &output) == nil {
+			converted.Output = output
+		}
 	}
-	if observer.downstream != nil {
-		return observer.downstream.Observe(ctx, safeEvent)
-	}
-	return nil
+	return converted
 }
 
 func (observer *persistenceObserver) nodeRunForEvent(event engine.Event, inputJSON, outputJSON json.RawMessage) (domain.NodeRun, error) {

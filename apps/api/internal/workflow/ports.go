@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
@@ -20,7 +19,7 @@ type Store interface {
 	CreateRun(context.Context, domain.Run) error
 	PersistRunEvent(context.Context, domain.RunEvent, *domain.NodeRun, domain.RunEventBudget) error
 	ListRunEvents(context.Context, string, int64, int) ([]domain.RunEvent, error)
-	FinishRun(context.Context, string, domain.RunStatus, any, *domain.PublicError, time.Time) error
+	FinalizeRun(context.Context, RunFinalization) (domain.RunEvent, error)
 	GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error)
 	ListRuns(context.Context, string, int) ([]domain.Run, error)
 }
