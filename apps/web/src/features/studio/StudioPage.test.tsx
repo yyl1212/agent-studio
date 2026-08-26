@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition } from '../../lib/api/client'
-import { markInvalidEdges, StudioPage } from './StudioPage'
+import { isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
 import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -118,6 +118,14 @@ describe('StudioPage', () => {
     vi.spyOn(api, 'listNodeTypes').mockResolvedValue(definitions)
     vi.spyOn(api, 'resolveNodeType').mockResolvedValue({ inputs: [], outputs: [] })
     vi.spyOn(api, 'saveWorkflow').mockResolvedValue({ ...workflow, draftRevision: 2 })
+  })
+
+  it('只把图结构变化写入草稿，不持久化 React Flow 尺寸和选中态', () => {
+	 expect(isPersistentNodeChange({ type: 'dimensions', id: 'a', dimensions: { width: 100, height: 60 } })).toBe(false)
+	 expect(isPersistentNodeChange({ type: 'select', id: 'a', selected: true })).toBe(false)
+	 expect(isPersistentNodeChange({ type: 'position', id: 'a', position: { x: 10, y: 20 }, dragging: false })).toBe(true)
+	 expect(isPersistentEdgeChange({ type: 'select', id: 'edge', selected: true })).toBe(false)
+	 expect(isPersistentEdgeChange({ type: 'remove', id: 'edge' })).toBe(true)
   })
 
   it('打开节点库、添加节点并在右侧配置', async () => {
@@ -245,6 +253,10 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '版本历史' }))
     await userEvent.click(await screen.findByRole('button', { name: '恢复 v1 为草稿' }))
+	await userEvent.keyboard('{Escape}')
+	expect(screen.queryByRole('dialog', { name: '恢复 v1 为草稿？' })).not.toBeInTheDocument()
+	expect(screen.getByRole('dialog', { name: '版本历史' })).toBeInTheDocument()
+	await userEvent.click(screen.getByRole('button', { name: '恢复 v1 为草稿' }))
     await userEvent.click(screen.getByRole('button', { name: '确认恢复' }))
     expect(screen.getByRole('button', { name: '关闭工作台' })).toBeDisabled()
     fireEvent.click(screen.getByTestId('node-start'))
@@ -253,6 +265,7 @@ describe('StudioPage', () => {
     expect(await screen.findByText('已回滚到版本 1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '关闭工作台' })).toBeEnabled()
     await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
+	await vi.waitFor(() => expect(screen.getByRole('button', { name: '版本历史' })).toHaveFocus())
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledWith('w1', expect.objectContaining({ draftRevision: 2 })), { timeout: 2000 })

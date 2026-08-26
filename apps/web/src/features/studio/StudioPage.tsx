@@ -111,7 +111,7 @@ export function StudioPage() {
     if (archived) return
     setNodes((current) => {
       const next = applyNodeChanges(changes, current)
-      commit(next, edges)
+		  if (changes.some(isPersistentNodeChange)) commit(next, edges)
       return next
     })
   }
@@ -119,7 +119,7 @@ export function StudioPage() {
     if (archived) return
     setEdges((current) => {
       const next = applyEdgeChanges(changes, current)
-      commit(nodes, next)
+		  if (changes.some(isPersistentEdgeChange)) commit(nodes, next)
       return next
     })
   }
@@ -409,6 +409,14 @@ export function StudioPage() {
 
 function createID(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
+}
+
+export function isPersistentNodeChange(change: NodeChange<StudioNode>) {
+	return change.type === 'position' || change.type === 'add' || change.type === 'remove' || change.type === 'replace'
+}
+
+export function isPersistentEdgeChange(change: EdgeChange<StudioEdge>) {
+	return change.type === 'add' || change.type === 'remove' || change.type === 'replace'
 }
 
 function defaultValue(schema: JSONSchema): unknown {
