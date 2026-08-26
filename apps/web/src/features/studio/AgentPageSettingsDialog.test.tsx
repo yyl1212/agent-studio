@@ -18,6 +18,16 @@ function renderDialog(overrides: Partial<Parameters<typeof AgentPageSettingsDial
 }
 
 describe('AgentPageSettingsDialog', () => {
+  it('使用模态语义并在 Escape 后恢复触发点焦点', async () => {
+    const trigger = document.createElement('button')
+    document.body.append(trigger)
+    trigger.focus()
+    const { props } = renderDialog()
+    const dialog = screen.getByRole('dialog', { name: '页面设置' })
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    dialog.dispatchEvent(new Event('cancel', { cancelable: true }))
+    expect(props.onClose).toHaveBeenCalled()
+  })
   it('按当前设置初始化并实时预览全部字段', async () => {
     renderDialog()
     expect(screen.getByLabelText('页面标题')).toHaveValue('知识助手')

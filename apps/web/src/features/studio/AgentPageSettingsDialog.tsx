@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { AgentPresentation } from '../../lib/api/client'
 
@@ -16,12 +16,26 @@ export interface AgentPageSettingsDialogProps {
 export function AgentPageSettingsDialog(props: AgentPageSettingsDialogProps) {
   const [draft, setDraft] = useState<AgentPresentation>(props.value)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const restoreFocus = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!props.open) return
     setDraft(props.value)
     setConfirmDiscard(false)
   }, [props.open, props.value.title, props.value.description, props.value.accent, props.value.submitLabel, props.value.resultMode])
+
+  useEffect(() => {
+    if (!props.open || !dialogRef.current) return
+    const dialog = dialogRef.current
+    restoreFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    if (typeof dialog.showModal === 'function') dialog.showModal()
+    else dialog.setAttribute('open', '')
+    return () => {
+      if (dialog.open && typeof dialog.close === 'function') dialog.close()
+      restoreFocus.current?.focus()
+    }
+  }, [props.open])
 
   const errors = useMemo(() => validatePresentation(draft), [draft])
   const dirty = !samePresentation(draft, props.value)
@@ -42,7 +56,7 @@ export function AgentPageSettingsDialog(props: AgentPageSettingsDialogProps) {
   }
 
   return <div className="dialog-backdrop agent-settings-backdrop">
-    <dialog open aria-labelledby="agent-page-settings-title" className="agent-settings-dialog">
+    <dialog ref={dialogRef} aria-modal="true" aria-labelledby="agent-page-settings-title" className="agent-settings-dialog" onCancel={(event) => { event.preventDefault(); requestClose() }}>
       <header className="agent-settings-heading">
         <div><span className="node-category">Agent 页面</span><h2 id="agent-page-settings-title">页面设置</h2></div>
         <button type="button" aria-label="关闭页面设置" onClick={requestClose}>×</button>
@@ -111,12 +125,14 @@ function validatePresentation(value: AgentPresentation) {
   const title = value.title.trim()
   const submitLabel = value.submitLabel.trim()
   if (!title) errors.title = '页面标题不能为空'
-  else if (title.length > 80) errors.title = '页面标题不能超过 80 个字符'
-  if (value.description.length > 500) errors.description = '页面说明不能超过 500 个字符'
+  else if (characterCount(title) > 80) errors.title = '页面标题不能超过 80 个字符'
+  if (characterCount(value.description.trim()) > 500) errors.description = '页面说明不能超过 500 个字符'
   if (!submitLabel) errors.submitLabel = '提交按钮文案不能为空'
-  else if (submitLabel.length > 24) errors.submitLabel = '提交按钮文案不能超过 24 个字符'
+  else if (characterCount(submitLabel) > 24) errors.submitLabel = '提交按钮文案不能超过 24 个字符'
   return errors
 }
+
+function characterCount(value: string) { return Array.from(value).length }
 
 function samePresentation(left: AgentPresentation, right: AgentPresentation) {
   return left.title === right.title && left.description === right.description && left.accent === right.accent && left.submitLabel === right.submitLabel && left.resultMode === right.resultMode

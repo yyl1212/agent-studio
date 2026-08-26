@@ -30,6 +30,15 @@ describe('useAgentRun', () => {
     expect(result.current.events.map((event) => event.sequence)).toEqual([1, 2])
   })
 
+  it('终态仍有分页时追平全部事件后再停止', async () => {
+    const get = vi.spyOn(api, 'getAgentRunView')
+      .mockResolvedValueOnce(view('completed', { events: [{ sequence: 1, type: 'node.started', timestamp: 't' }], nextSequence: 1, hasMore: true }))
+      .mockResolvedValueOnce(view('completed', { events: [{ sequence: 2, type: 'node.completed', timestamp: 't' }], nextSequence: 2 }))
+    const { result } = renderHook(() => useAgentRun({ slug: 'demo', runId: 'run-1', onAccepted: vi.fn() }))
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+    expect(result.current.events.map((event) => event.sequence)).toEqual([1, 2])
+  })
+
   it('失败重试复用幂等键，接受后立即通知并轮询', async () => {
     const start = vi.spyOn(api, 'startAgentRun').mockRejectedValueOnce(new TypeError('offline')).mockResolvedValueOnce(view().run)
     vi.spyOn(api, 'getAgentRunView').mockResolvedValue(view('completed'))
@@ -100,6 +109,18 @@ describe('useAgentRun', () => {
     expect(result.current.phase).toBe('running')
     await act(async () => { await Promise.all([result.current.cancel(), result.current.cancel()]) })
     expect(cancel).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(result.current.phase).toBe('cancelled')
+  })
+
+  it('取消响应丢失时转为重连并继续观察真实终态', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getAgentRunView').mockResolvedValueOnce(view('running')).mockResolvedValueOnce(view('cancelled'))
+    vi.spyOn(api, 'cancelAgentRun').mockRejectedValue(new TypeError('offline'))
+    const { result } = renderHook(() => useAgentRun({ slug: 'demo', runId: 'run-1', onAccepted: vi.fn() }))
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await result.current.cancel() })
+    expect(result.current.phase).toBe('reconnecting')
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(result.current.phase).toBe('cancelled')
   })

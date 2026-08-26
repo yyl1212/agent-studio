@@ -992,6 +992,30 @@ func TestCreateAgentRunIsIdempotentAndScoped(t *testing.T) {
 	}
 }
 
+func TestArchivedAgentRunIsNotPubliclyAccessible(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-archived-public")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	run := newPublishedRun(workflow.ID, version.ID)
+	run.AgentRequestKey = &key
+	if _, _, err := store.CreateAgentRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ArchiveWorkflow(context.Background(), workflow.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FindAgentRunByRequestKey(context.Background(), workflow.Slug, key); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("find error=%v", err)
+	}
+	if _, err := store.GetAgentRun(context.Background(), workflow.Slug, run.ID, 0, 10); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("view error=%v", err)
+	}
+	if _, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("cancel error=%v", err)
+	}
+}
+
 func TestCreateAgentRunConcurrentRequestsCreateExactlyOnce(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "agent-concurrent")

@@ -24,6 +24,7 @@ export function AgentRunView({ phase, view, events, error, onCancel, onRestart }
     {error && <p role="alert">{error}</p>}
     {phase === 'failed' && view?.run.error && !error && <p role="alert">{view.run.error.message}（{view.run.error.code}）</p>}
     {phase === 'completed' && view && <AgentResult value={view.run.output} mode={view.presentation.resultMode} />}
+    {(phase === 'failed' || phase === 'cancelled') && view && <p className="agent-run-id">运行 ID：<code>{view.run.runId}</code></p>}
     <div className="agent-run-actions">
       {canCancel && <button type="button" onClick={onCancel}>取消运行</button>}
       {phase === 'cancelling' && <button type="button" disabled>正在取消…</button>}

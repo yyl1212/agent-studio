@@ -35,7 +35,7 @@ func (store *Store) CreateAgentRun(ctx context.Context, run domain.Run) (domain.
 func (store *Store) FindAgentRunByRequestKey(ctx context.Context, slug, requestKey string) (workflowservice.AgentRunRecord, error) {
 	run, err := scanRun(store.pool.QueryRow(ctx, `SELECT `+runSelectColumns+`
 		FROM runs r WHERE r.agent_request_key=$2 AND r.mode='published'
-		AND EXISTS (SELECT 1 FROM workflows w WHERE w.id=r.workflow_id AND w.slug=$1)`, slug, requestKey))
+		AND EXISTS (SELECT 1 FROM workflows w WHERE w.id=r.workflow_id AND w.slug=$1 AND w.archived_at IS NULL)`, slug, requestKey))
 	if err != nil {
 		return workflowservice.AgentRunRecord{}, mapNotFound(err)
 	}
@@ -71,7 +71,7 @@ func (store *Store) RequestAgentRunCancel(ctx context.Context, slug, runID strin
 	defer transaction.Rollback(ctx)
 	run, err := scanRun(transaction.QueryRow(ctx, `SELECT `+runSelectColumns+`
 		FROM runs r WHERE r.id=$2 AND r.mode='published'
-		AND EXISTS (SELECT 1 FROM workflows w WHERE w.id=r.workflow_id AND w.slug=$1)
+		AND EXISTS (SELECT 1 FROM workflows w WHERE w.id=r.workflow_id AND w.slug=$1 AND w.archived_at IS NULL)
 		FOR UPDATE`, slug, runID))
 	if err != nil {
 		return workflowservice.AgentRunRecord{}, mapNotFound(err)
@@ -109,7 +109,7 @@ type agentRunQueryer interface {
 func loadAgentRunRecord(ctx context.Context, queryer agentRunQueryer, slug, runID string, afterSequence int64, limit int) (workflowservice.AgentRunRecord, error) {
 	run, err := scanRun(queryer.QueryRow(ctx, `SELECT `+runSelectColumns+`
 		FROM runs r WHERE r.id=$2 AND r.mode='published'
-		AND EXISTS (SELECT 1 FROM workflows w WHERE w.id=r.workflow_id AND w.slug=$1)`, slug, runID))
+		AND EXISTS (SELECT 1 FROM workflows w WHERE w.id=r.workflow_id AND w.slug=$1 AND w.archived_at IS NULL)`, slug, runID))
 	if err != nil {
 		return workflowservice.AgentRunRecord{}, mapNotFound(err)
 	}

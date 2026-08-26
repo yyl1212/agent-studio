@@ -40,6 +40,7 @@ describe('AgentRunView', () => {
   it.each([['failed', '运行失败'], ['cancelled', '运行已取消']] as const)('%s 显示明确终态', (phase, label) => {
     render(<AgentRunView phase={phase} view={publicView(phase)} events={[]} error={phase === 'failed' ? '执行失败' : undefined} onCancel={vi.fn()} onRestart={vi.fn()} />)
     expect(screen.getByText(label)).toBeInTheDocument()
+    expect(screen.getByText(/运行 ID：/)).toHaveTextContent('run-1')
     expect(screen.getByRole('button', { name: '再次运行' })).toBeInTheDocument()
   })
 })

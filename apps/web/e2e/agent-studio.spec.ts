@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, type AgentPresentationSettings } from './helpers'
+import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, saveDraftGraph, type AgentPresentationSettings } from './helpers'
 
 test('创建、测试、发布并运行 Agent', async ({ page }) => {
   const suffix = Date.now().toString(36)
@@ -14,6 +14,13 @@ test('创建、测试、发布并运行 Agent', async ({ page }) => {
   await page.getByRole('button', { name: settings.submitLabel }).click()
   await expect(page).toHaveURL(/\?runId=[0-9a-f-]+$/)
   await expect(page.getByRole('region', { name: '运行结果' })).toContainText('Mock 回复：回答：Workflow')
+  const manifest = await (await page.request.get(`http://127.0.0.1:8080/api/agents/e2e-flow-${suffix}`)).json() as { workflowVersionId: string }
+  const legacy = await page.request.post(`http://127.0.0.1:8080/api/agents/e2e-flow-${suffix}/runs`, {
+    data: { workflowVersionId: manifest.workflowVersionId, input: { topic: 'Legacy' } },
+  })
+  expect(legacy.ok()).toBe(true)
+  expect(legacy.headers()['content-type']).toContain('application/x-ndjson')
+  expect(await legacy.text()).toContain('run.completed')
 })
 
 test('已加载 Agent 固定旧版本，刷新后切换新版本', async ({ page, context }) => {
@@ -44,6 +51,44 @@ test('已加载 Agent 固定旧版本，刷新后切换新版本', async ({ page
   await page.getByRole('button', { name: '运行 Agent' }).click()
   await expect(page.getByText('Mock 回复：V2：新页')).toBeVisible()
   await editor.close()
+})
+
+test('活动 Agent 运行刷新后继续并可取消', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const slug = `agent-recover-${suffix}`
+  const workflowURL = await createWorkflow(page, slug, `恢复助手 ${suffix}`)
+  const workflowID = workflowURL.split('/').at(-1)
+  if (!workflowID) throw new Error('创建后未获得工作流 ID')
+  const saved = await saveDraftGraph(page, workflowID, {
+    schemaVersion: 1,
+    nodes: [
+      { id: 'start', type: 'start', typeVersion: '1', position: { x: 0, y: 0 }, config: { fields: [{ key: 'payload', label: '请求体', type: 'json', required: true }] } },
+      { id: 'webhook', type: 'extension.webhook', typeVersion: '1.0.0', position: { x: 300, y: 0 }, config: { path: 'slow', timeoutMs: 30000 } },
+      { id: 'end', type: 'end', typeVersion: '1', position: { x: 600, y: 0 }, config: {} },
+    ],
+    edges: [
+      { id: 'start-webhook', source: 'start', sourcePort: 'payload', target: 'webhook', targetPort: 'body' },
+      { id: 'webhook-end', source: 'webhook', sourcePort: 'body', target: 'end', targetPort: 'result' },
+    ],
+  })
+  const publish = await page.request.post(`http://127.0.0.1:8080/api/workflows/${workflowID}/publish`, { data: { draftRevision: saved.draftRevision } })
+  expect(publish.ok()).toBe(true)
+  await page.goto(`/agents/${slug}`)
+  await page.getByLabel('请求体').fill('{"slow":true}')
+  await page.getByRole('button', { name: '运行 Agent' }).click()
+  await expect(page).toHaveURL(/\?runId=[0-9a-f-]+$/)
+  const runID = new URL(page.url()).searchParams.get('runId')
+  if (!runID) throw new Error('运行 URL 未包含 runId')
+  const wrongSlug = await page.request.get(`http://127.0.0.1:8080/api/agents/wrong-${slug}/runs/${runID}`)
+  expect(wrongSlug.status()).toBe(404)
+  await expect(page.getByText('正在运行')).toBeVisible()
+  await page.reload()
+  await expect(page.getByText(/正在恢复运行|正在运行/)).toBeVisible()
+  await page.getByRole('button', { name: '取消运行' }).click()
+  await expect(page.getByText('运行已取消')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('body')).not.toContainText('{"slow":true}')
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
 
 test('LLM v2 结构化输出完成草稿、发布、Agent 与运行记录闭环', async ({ page }) => {

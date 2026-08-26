@@ -62,9 +62,9 @@ export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): Ag
       const status = next.run.status as AgentRunPhase
       setPhase(status)
       cancelling.current = status === 'cancelling'
-      if (terminal.has(status)) return
       const schedule = () => { timer.current = setTimeout(() => { void poll(expectedGeneration) }, POLL_DELAY_MS) }
       if (next.hasMore) queueMicrotask(() => { void poll(expectedGeneration) })
+      else if (terminal.has(status)) return
       else schedule()
     } catch (caught) {
       if (expectedGeneration !== generation.current || requestController.signal.aborted) return
@@ -148,9 +148,17 @@ export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): Ag
       timer.current = setTimeout(() => { void poll(expectedGeneration) }, POLL_DELAY_MS)
     } catch (caught) {
       if (expectedGeneration !== generation.current || requestController.signal.aborted) return
-      cancelling.current = false
-      setPhase('failed')
-      setError(publicRunError(caught))
+      if (isPermanent(caught)) {
+        cancelling.current = false
+        setPhase('failed')
+        setError(publicRunError(caught))
+        return
+      }
+      setPhase('reconnecting')
+      setError('连接暂时中断，正在重试…')
+      const delay = RETRY_DELAYS_MS[Math.min(retryIndex.current, RETRY_DELAYS_MS.length - 1)]
+      retryIndex.current += 1
+      timer.current = setTimeout(() => { void poll(expectedGeneration) }, delay)
     }
   }, [phase, poll, slug, stopRequest])
 
