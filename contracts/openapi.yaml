@@ -287,6 +287,32 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+  /api/workflows/{id}/agent-presentation:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    put:
+      operationId: saveAgentPresentation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveAgentPresentationRequest"
+      responses:
+        "200":
+          description: 已保存 Agent 页面配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
   /api/workflows/{id}/copies:
     parameters:
       - $ref: "#/components/parameters/WorkflowID"
@@ -1631,10 +1657,32 @@ components:
           items:
             type: string
             enum: [network, secrets, filesystem-read, filesystem-write]
+    AgentPresentation:
+      type: object
+      additionalProperties: false
+      required: [title, description, accent, submitLabel, resultMode]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+        description:
+          type: string
+          maxLength: 500
+        accent:
+          type: string
+          enum: [indigo, blue, teal, amber, rose]
+        submitLabel:
+          type: string
+          minLength: 1
+          maxLength: 24
+        resultMode:
+          type: string
+          enum: [auto, text, json]
     Workflow:
       type: object
       additionalProperties: false
-      required: [id, name, slug, description, draftGraph, draftRevision, createdAt, updatedAt]
+      required: [id, name, slug, description, agentPresentation, draftGraph, draftRevision, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -1645,6 +1693,8 @@ components:
           type: string
         description:
           type: string
+        agentPresentation:
+          $ref: "#/components/schemas/AgentPresentation"
         draftGraph:
           $ref: "#/components/schemas/Graph"
         draftRevision:
@@ -1709,7 +1759,8 @@ components:
           maxLength: 512
     WorkflowVersion:
       type: object
-      required: [id, workflowId, version, graph, inputSchema, createdAt]
+      additionalProperties: false
+      required: [id, workflowId, version, graph, inputSchema, agentPresentation, createdAt]
       properties:
         id:
           type: string
@@ -1724,12 +1775,15 @@ components:
         inputSchema:
           type: object
           additionalProperties: true
+        agentPresentation:
+          $ref: "#/components/schemas/AgentPresentation"
         createdAt:
           type: string
           format: date-time
     AgentManifest:
       type: object
-      required: [workflowVersionId, version, title, description, inputSchema]
+      additionalProperties: false
+      required: [workflowVersionId, version, title, description, inputSchema, presentation]
       properties:
         workflowVersionId:
           type: string
@@ -1743,6 +1797,8 @@ components:
         inputSchema:
           type: object
           additionalProperties: true
+        presentation:
+          $ref: "#/components/schemas/AgentPresentation"
     Run:
       type: object
       required: [id, workflowId, mode, status, input, inputRedactedPaths, startedAt]
@@ -2156,6 +2212,17 @@ components:
           format: int64
         graph:
           $ref: "#/components/schemas/Graph"
+    SaveAgentPresentationRequest:
+      type: object
+      additionalProperties: false
+      required: [draftRevision, presentation]
+      properties:
+        draftRevision:
+          type: integer
+          format: int64
+          minimum: 1
+        presentation:
+          $ref: "#/components/schemas/AgentPresentation"
     DraftRunRequest:
       type: object
       additionalProperties: false

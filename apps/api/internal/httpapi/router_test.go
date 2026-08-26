@@ -26,17 +26,20 @@ import (
 )
 
 type fixtureWorkflowService struct {
-	workflow           domain.Workflow
-	panicOnList        bool
-	templateExport     workflow.TemplateExport
-	templatePreview    workflowtemplate.Preview
-	templatePreviewErr error
-	templateExportErr  error
-	templateImportErr  error
-	validateErr        error
-	manifestErr        error
-	lastExportRevision int64
-	lastImported       workflow.ImportWorkflowTemplateInput
+	workflow                 domain.Workflow
+	panicOnList              bool
+	templateExport           workflow.TemplateExport
+	templatePreview          workflowtemplate.Preview
+	templatePreviewErr       error
+	templateExportErr        error
+	templateImportErr        error
+	validateErr              error
+	manifestErr              error
+	lastExportRevision       int64
+	lastImported             workflow.ImportWorkflowTemplateInput
+	lastPresentationID       string
+	lastPresentationRevision int64
+	lastPresentation         domain.AgentPresentation
 }
 
 func (service *fixtureWorkflowService) List(context.Context) ([]domain.Workflow, error) {
@@ -58,6 +61,18 @@ func (service *fixtureWorkflowService) Create(_ context.Context, input workflow.
 
 func (service *fixtureWorkflowService) SaveDraft(context.Context, string, int64, domain.Graph) (domain.Workflow, error) {
 	return domain.Workflow{}, domain.ErrRevisionConflict
+}
+
+func (service *fixtureWorkflowService) SaveAgentPresentation(_ context.Context, id string, revision int64, presentation domain.AgentPresentation) (domain.Workflow, error) {
+	service.lastPresentationID = id
+	service.lastPresentationRevision = revision
+	service.lastPresentation = presentation
+	if presentation.Title == "" {
+		return domain.Workflow{}, workflow.ErrInvalidAgentPresentation
+	}
+	service.workflow.AgentPresentation = presentation
+	service.workflow.DraftRevision = revision + 1
+	return service.workflow, nil
 }
 
 func (service *fixtureWorkflowService) Validate(context.Context, string) ([]domain.ValidationIssue, error) {
@@ -236,6 +251,22 @@ func TestRevisionConflictUsesStableErrorShape(t *testing.T) {
 	dependencies := fixtureDeps()
 	recorder := performRequest(NewRouter(dependencies), http.MethodPut, "/api/workflows/w1", `{"draftRevision":1,"graph":{"schemaVersion":1,"nodes":[],"edges":[]}}`)
 	assertJSONError(t, recorder, http.StatusConflict, "WORKFLOW_REVISION_CONFLICT")
+}
+
+func TestAgentPresentationEndpoint(t *testing.T) {
+	dependencies := fixtureDeps()
+	body := `{"draftRevision":2,"presentation":{"title":"公开助手","description":"说明","accent":"teal","submitLabel":"开始","resultMode":"auto"}}`
+	recorder := performRequest(NewRouter(dependencies), http.MethodPut, "/api/workflows/w1/agent-presentation", body)
+	service := dependencies.Workflows.(*fixtureWorkflowService)
+	if recorder.Code != http.StatusOK || service.lastPresentationID != "w1" || service.lastPresentationRevision != 2 || service.lastPresentation.Title != "公开助手" || service.lastPresentation.Accent != domain.AgentAccentTeal {
+		t.Fatalf("status=%d service=%+v body=%s", recorder.Code, service, recorder.Body.String())
+	}
+
+	invalid := performRequest(NewRouter(fixtureDeps()), http.MethodPut, "/api/workflows/w1/agent-presentation", `{"draftRevision":2,"presentation":{"title":"","description":"说明","accent":"teal","submitLabel":"开始","resultMode":"auto"}}`)
+	assertJSONError(t, invalid, http.StatusBadRequest, "REQUEST_INVALID")
+
+	unknown := performRequest(NewRouter(fixtureDeps()), http.MethodPut, "/api/workflows/w1/agent-presentation", `{"draftRevision":2,"presentation":{"title":"助手","description":"","accent":"teal","submitLabel":"开始","resultMode":"auto","unknown":true}}`)
+	assertJSONError(t, unknown, http.StatusBadRequest, "REQUEST_INVALID")
 }
 
 func TestArchivedWorkflowUsesStableErrorAcrossValidationAndRunEntrypoints(t *testing.T) {

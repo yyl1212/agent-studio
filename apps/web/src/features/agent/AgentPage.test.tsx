@@ -25,7 +25,10 @@ describe('AgentPage', () => {
   afterEach(() => vi.restoreAllMocks())
 
   beforeEach(() => {
-    vi.spyOn(api, 'getAgentManifest').mockResolvedValue({ workflowVersionId: 'version-1', version: 1, title: '知识助手', description: '回答问题', inputSchema })
+    vi.spyOn(api, 'getAgentManifest').mockResolvedValue({
+      workflowVersionId: 'version-1', version: 1, title: '知识助手', description: '回答问题', inputSchema,
+      presentation: { title: '知识助手', description: '回答问题', accent: 'indigo', submitLabel: '运行 Agent', resultMode: 'auto' },
+    })
   })
 
   it('运行时回传页面加载时的 workflowVersionId 并安全显示文本', async () => {

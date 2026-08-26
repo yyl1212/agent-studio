@@ -85,6 +85,8 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 		response.Issues = validationError.Issues
 	case errors.Is(err, workflow.ErrInvalidWorkflowInput), errors.Is(err, workflow.ErrInputValidation):
 		status, response.Code, response.Message = http.StatusBadRequest, "REQUEST_INVALID", "请求内容无效"
+	case errors.Is(err, workflow.ErrInvalidAgentPresentation):
+		status, response.Code, response.Message = http.StatusBadRequest, "REQUEST_INVALID", "请求内容无效"
 	case errors.Is(err, workflow.ErrInvalidWorkflowTemplate):
 		status, response.Code, response.Message = http.StatusBadRequest, "REQUEST_INVALID", "请求内容无效"
 	default:

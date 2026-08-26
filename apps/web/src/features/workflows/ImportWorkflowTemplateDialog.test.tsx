@@ -168,6 +168,7 @@ const previewFixture = (): WorkflowTemplatePreview => ({
 
 const workflowFixture = (): Workflow => ({
   id: 'w-copy', name: '副本', slug: 'copy', description: '', draftRevision: 1,
+  agentPresentation: { title: '副本', description: '', accent: 'indigo', submitLabel: '运行 Agent', resultMode: 'auto' },
   draftGraph: { schemaVersion: 1, nodes: [], edges: [] },
   createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
 })

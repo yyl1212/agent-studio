@@ -14,6 +14,7 @@ vi.mock('../../lib/api/client', async (importOriginal) => {
 
 const workflow = {
   id: 'w1', name: '演示助手', slug: 'demo', description: '', draftRevision: 1,
+  agentPresentation: { title: '演示助手', description: '', accent: 'indigo' as const, submitLabel: '运行 Agent', resultMode: 'auto' as const },
   draftGraph: {
     schemaVersion: 1 as const,
     nodes: [
@@ -203,7 +204,7 @@ describe('StudioPage', () => {
     vi.mocked(api.saveWorkflow).mockReturnValueOnce(new Promise((resolve) => { resolveSave = resolve }))
     vi.spyOn(api, 'validateWorkflow').mockResolvedValue({ valid: true, issues: [] })
     vi.spyOn(api, 'publishWorkflow').mockResolvedValue({
-      id: 'v1', workflowId: 'w1', version: 1, graph: workflow.draftGraph, inputSchema: {}, createdAt: '2026-08-17T00:00:00Z',
+      id: 'v1', workflowId: 'w1', version: 1, graph: workflow.draftGraph, inputSchema: {}, agentPresentation: workflow.agentPresentation, createdAt: '2026-08-17T00:00:00Z',
     })
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     await screen.findByText('演示助手')

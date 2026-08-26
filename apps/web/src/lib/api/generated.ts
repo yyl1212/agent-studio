@@ -166,6 +166,24 @@ export interface paths {
         patch: operations["updateWorkflow"];
         trace?: never;
     };
+    "/api/workflows/{id}/agent-presentation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["saveAgentPresentation"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{id}/copies": {
         parameters: {
             query?: never;
@@ -801,12 +819,22 @@ export interface components {
             available: boolean;
             capabilities: ("network" | "secrets" | "filesystem-read" | "filesystem-write")[];
         };
+        AgentPresentation: {
+            title: string;
+            description: string;
+            /** @enum {string} */
+            accent: "indigo" | "blue" | "teal" | "amber" | "rose";
+            submitLabel: string;
+            /** @enum {string} */
+            resultMode: "auto" | "text" | "json";
+        };
         Workflow: {
             /** Format: uuid */
             id: string;
             name: string;
             slug: string;
             description: string;
+            agentPresentation: components["schemas"]["AgentPresentation"];
             draftGraph: components["schemas"]["Graph"];
             /** Format: int64 */
             draftRevision: number;
@@ -852,6 +880,7 @@ export interface components {
             inputSchema: {
                 [key: string]: unknown;
             };
+            agentPresentation: components["schemas"]["AgentPresentation"];
             /** Format: date-time */
             createdAt: string;
         };
@@ -864,6 +893,7 @@ export interface components {
             inputSchema: {
                 [key: string]: unknown;
             };
+            presentation: components["schemas"]["AgentPresentation"];
         };
         Run: {
             /** Format: uuid */
@@ -1073,6 +1103,11 @@ export interface components {
             /** Format: int64 */
             draftRevision: number;
             graph: components["schemas"]["Graph"];
+        };
+        SaveAgentPresentationRequest: {
+            /** Format: int64 */
+            draftRevision: number;
+            presentation: components["schemas"]["AgentPresentation"];
         };
         DraftRunRequest: {
             /** Format: int64 */
@@ -1422,6 +1457,36 @@ export interface operations {
         };
         responses: {
             /** @description 已更新工作流元数据 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workflow"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    saveAgentPresentation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveAgentPresentationRequest"];
+            };
+        };
+        responses: {
+            /** @description 已保存 Agent 页面配置 */
             200: {
                 headers: {
                     [name: string]: unknown;

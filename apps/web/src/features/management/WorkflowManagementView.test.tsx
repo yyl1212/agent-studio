@@ -79,5 +79,9 @@ function summary(id: string): WorkflowSummary {
 }
 
 function workflow(id: string) {
-	return { ...summary(id), draftGraph: { schemaVersion: 1 as const, nodes: [], edges: [] } }
+	return {
+		...summary(id),
+		agentPresentation: { title: id, description: '', accent: 'indigo' as const, submitLabel: '运行 Agent', resultMode: 'auto' as const },
+		draftGraph: { schemaVersion: 1 as const, nodes: [], edges: [] },
+	}
 }
