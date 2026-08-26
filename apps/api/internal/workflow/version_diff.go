@@ -6,9 +6,16 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/nodesecurity"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
+)
+
+const (
+	maxWorkflowDiffDetails    = 500
+	maxWorkflowDiffValueBytes = 4 << 10
 )
 
 type SemanticDiffEngine struct {
@@ -38,7 +45,8 @@ func (engine *SemanticDiffEngine) Diff(base, compare workflowSnapshot) (domain.W
 }
 
 type diffCollector struct {
-	result domain.WorkflowDiff
+	result  domain.WorkflowDiff
+	details int
 }
 
 func newDiffCollector(base, compare domain.WorkflowSnapshotDescriptor) *diffCollector {
@@ -57,30 +65,86 @@ func newDiffCollector(base, compare domain.WorkflowSnapshotDescriptor) *diffColl
 func (collector *diffCollector) addNode(detail domain.WorkflowNodeDiff, changes int) {
 	collector.result.Summary.Nodes += changes
 	collector.result.Summary.Total += changes
+	remaining := maxWorkflowDiffDetails - collector.details
+	if remaining <= 0 {
+		collector.result.Truncated = true
+		return
+	}
+	if detail.Kind == domain.WorkflowDiffAdded || detail.Kind == domain.WorkflowDiffRemoved {
+		collector.details++
+		collector.result.Groups.Nodes = append(collector.result.Groups.Nodes, detail)
+		return
+	}
+	typeChanged := detail.BeforeType != nil && detail.AfterType != nil &&
+		(detail.BeforeType.Type != detail.AfterType.Type || detail.BeforeType.Version != detail.AfterType.Version)
+	consumed := 0
+	if typeChanged && remaining > 0 {
+		consumed++
+		remaining--
+	}
+	if len(detail.Config) > remaining {
+		detail.Config = detail.Config[:remaining]
+		collector.result.Truncated = true
+	}
+	consumed += len(detail.Config)
+	if consumed == 0 {
+		collector.result.Truncated = true
+		return
+	}
+	collector.details += consumed
 	collector.result.Groups.Nodes = append(collector.result.Groups.Nodes, detail)
 }
 
 func (collector *diffCollector) addStartParameter(detail domain.WorkflowStartParameterDiff, changes int) {
 	collector.result.Summary.StartParameters += changes
 	collector.result.Summary.Total += changes
+	remaining := maxWorkflowDiffDetails - collector.details
+	if remaining <= 0 {
+		collector.result.Truncated = true
+		return
+	}
+	consumed := 1
+	if len(detail.Changes) > 0 {
+		if len(detail.Changes) > remaining {
+			detail.Changes = detail.Changes[:remaining]
+			collector.result.Truncated = true
+		}
+		consumed = len(detail.Changes)
+	}
+	collector.details += consumed
 	collector.result.Groups.StartParameters = append(collector.result.Groups.StartParameters, detail)
 }
 
 func (collector *diffCollector) addConnection(detail domain.WorkflowConnectionDiff) {
 	collector.result.Summary.Connections++
 	collector.result.Summary.Total++
+	if collector.details >= maxWorkflowDiffDetails {
+		collector.result.Truncated = true
+		return
+	}
+	collector.details++
 	collector.result.Groups.Connections = append(collector.result.Groups.Connections, detail)
 }
 
 func (collector *diffCollector) addPresentation(detail domain.WorkflowPresentationDiff) {
 	collector.result.Summary.AgentPresentation++
 	collector.result.Summary.Total++
+	if collector.details >= maxWorkflowDiffDetails {
+		collector.result.Truncated = true
+		return
+	}
+	collector.details++
 	collector.result.Groups.AgentPresentation = append(collector.result.Groups.AgentPresentation, detail)
 }
 
 func (collector *diffCollector) addLayout(detail domain.WorkflowLayoutDiff) {
 	collector.result.Summary.Layout++
 	collector.result.Summary.Total++
+	if collector.details >= maxWorkflowDiffDetails {
+		collector.result.Truncated = true
+		return
+	}
+	collector.details++
 	collector.result.Groups.Layout = append(collector.result.Groups.Layout, detail)
 }
 
@@ -128,7 +192,21 @@ func (engine *SemanticDiffEngine) diffNodes(collector *diffCollector, base, comp
 		if after.Type == "start" {
 			afterConfig = withoutObjectField(afterConfig, "fields")
 		}
-		detail.Config = append(detail.Config, diffJSONValues("/config", beforeConfig, true, afterConfig, true)...)
+		if !equalSnapshotJSON(beforeConfig, afterConfig) {
+			beforeDefinition, beforeAvailable := engine.definitions[before.Type+"@"+before.TypeVersion]
+			afterDefinition, afterAvailable := engine.definitions[after.Type+"@"+after.TypeVersion]
+			if !beforeAvailable || !afterAvailable {
+				detail.Config = append(detail.Config, omittedValueDiff(
+					"/config", domain.WorkflowDiffModified, domain.WorkflowDiffDefinitionUnavailable,
+				))
+			} else {
+				secrets, err := combinedSecretPointers(before, beforeDefinition, after, afterDefinition)
+				if err != nil {
+					return err
+				}
+				detail.Config = append(detail.Config, diffJSONValues("/config", beforeConfig, true, afterConfig, true, secrets)...)
+			}
+		}
 		changes += len(detail.Config)
 		if changes > 0 {
 			collector.addNode(detail, changes)
@@ -346,7 +424,7 @@ func quantizedPosition(position domain.Position) domain.Position {
 	return domain.Position{X: math.Round(position.X*10) / 10, Y: math.Round(position.Y*10) / 10}
 }
 
-func diffJSONValues(path string, before any, beforeExists bool, after any, afterExists bool) []domain.WorkflowValueDiff {
+func diffJSONValues(path string, before any, beforeExists bool, after any, afterExists bool, secrets map[string]struct{}) []domain.WorkflowValueDiff {
 	if equalOptionalJSON(before, beforeExists, after, afterExists) {
 		return nil
 	}
@@ -357,7 +435,7 @@ func diffJSONValues(path string, before any, beforeExists bool, after any, after
 		for _, key := range unionSortedKeys(beforeObject, afterObject) {
 			beforeValue, beforeHas := beforeObject[key]
 			afterValue, afterHas := afterObject[key]
-			changes = append(changes, diffJSONValues(path+"/"+escapeJSONPointerToken(key), beforeValue, beforeHas, afterValue, afterHas)...)
+			changes = append(changes, diffJSONValues(path+"/"+escapeJSONPointerToken(key), beforeValue, beforeHas, afterValue, afterHas, secrets)...)
 		}
 		return changes
 	}
@@ -375,9 +453,18 @@ func diffJSONValues(path string, before any, beforeExists bool, after any, after
 			if afterHas {
 				afterValue = afterArray[index]
 			}
-			changes = append(changes, diffJSONValues(path+"/"+strconv.Itoa(index), beforeValue, beforeHas, afterValue, afterHas)...)
+			changes = append(changes, diffJSONValues(path+"/"+strconv.Itoa(index), beforeValue, beforeHas, afterValue, afterHas, secrets)...)
 		}
 		return changes
+	}
+	if isSecretPointer(path, secrets) {
+		kind := domain.WorkflowDiffModified
+		if !beforeExists {
+			kind = domain.WorkflowDiffAdded
+		} else if !afterExists {
+			kind = domain.WorkflowDiffRemoved
+		}
+		return []domain.WorkflowValueDiff{omittedValueDiff(path, kind, domain.WorkflowDiffSecret)}
 	}
 	return []domain.WorkflowValueDiff{newValueDiff(path, before, beforeExists, after, afterExists)}
 }
@@ -389,22 +476,72 @@ func newValueDiff(path string, before any, beforeExists bool, after any, afterEx
 	} else if !afterExists {
 		kind = domain.WorkflowDiffRemoved
 	}
+	beforeRaw, beforeOmission := encodeDiffValue(before, beforeExists)
+	afterRaw, afterOmission := encodeDiffValue(after, afterExists)
+	if beforeOmission != nil || afterOmission != nil {
+		return omittedValueDiff(path, kind, domain.WorkflowDiffTooLarge)
+	}
 	return domain.WorkflowValueDiff{
 		Path: path, Kind: kind,
-		Before: rawDiffValue(before, beforeExists), After: rawDiffValue(after, afterExists),
+		Before: beforeRaw, After: afterRaw,
 	}
 }
 
-func rawDiffValue(value any, exists bool) *json.RawMessage {
+func encodeDiffValue(value any, exists bool) (*json.RawMessage, *domain.WorkflowDiffValueOmission) {
 	if !exists {
-		return nil
+		return nil, nil
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return nil
+		omission := domain.WorkflowDiffTooLarge
+		return nil, &omission
+	}
+	if len(encoded) > maxWorkflowDiffValueBytes {
+		omission := domain.WorkflowDiffTooLarge
+		return nil, &omission
 	}
 	raw := json.RawMessage(encoded)
-	return &raw
+	return &raw, nil
+}
+
+func omittedValueDiff(path string, kind domain.WorkflowDiffKind, omission domain.WorkflowDiffValueOmission) domain.WorkflowValueDiff {
+	return domain.WorkflowValueDiff{Path: path, Kind: kind, ValueOmitted: &omission}
+}
+
+func combinedSecretPointers(before domain.Node, beforeDefinition agentnode.Definition, after domain.Node, afterDefinition agentnode.Definition) (map[string]struct{}, error) {
+	secrets, err := secretPointers(before, beforeDefinition)
+	if err != nil {
+		return nil, err
+	}
+	afterSecrets, err := secretPointers(after, afterDefinition)
+	if err != nil {
+		return nil, err
+	}
+	for pointer := range afterSecrets {
+		secrets[pointer] = struct{}{}
+	}
+	return secrets, nil
+}
+
+func secretPointers(node domain.Node, definition agentnode.Definition) (map[string]struct{}, error) {
+	matches, err := nodesecurity.InspectConfig(node.Type, node.TypeVersion, node.Config, definition.ConfigSchema)
+	if err != nil {
+		return nil, fmt.Errorf("inspect node config secrecy: %w", err)
+	}
+	pointers := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		pointers["/config"+match.Pointer] = struct{}{}
+	}
+	return pointers, nil
+}
+
+func isSecretPointer(path string, secrets map[string]struct{}) bool {
+	for pointer := range secrets {
+		if path == pointer || strings.HasPrefix(path, pointer+"/") || strings.HasPrefix(pointer, path+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func equalOptionalJSON(before any, beforeExists bool, after any, afterExists bool) bool {

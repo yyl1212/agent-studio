@@ -1,14 +1,91 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
+
+func TestSemanticDiffOmitsSecretValuesFromBothSides(t *testing.T) {
+	definitions := []agentnode.Definition{{
+		Type: "secure", Version: "1", Title: "安全节点",
+		ConfigSchema: json.RawMessage(`{
+          "type":"object",
+          "properties":{
+            "token":{"type":"string","writeOnly":true},
+            "credential":{"type":"object","writeOnly":true},
+            "label":{"type":"string"}
+          }
+        }`),
+	}}
+	base := diffSnapshotWithNodeConfig(t, "secure", "1", `{"token":"before-secret","credential":{"value":"before-parent"},"label":"old"}`)
+	compare := diffSnapshotWithNodeConfig(t, "secure", "1", `{"token":"after-secret","credential":{"value":"after-parent"},"label":"new"}`)
+	got, err := newSemanticDiffEngine(definitions).Diff(base, compare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, secret := range []string{"before-secret", "after-secret", "before-parent", "after-parent"} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("secret leaked: %s", encoded)
+		}
+	}
+	if len(got.Groups.Nodes) != 1 || len(got.Groups.Nodes[0].Config) != 3 {
+		t.Fatalf("nodes=%+v", got.Groups.Nodes)
+	}
+	for _, path := range []string{"/config/credential/value", "/config/token"} {
+		change := findConfigChange(t, got.Groups.Nodes[0].Config, path)
+		if change.ValueOmitted == nil || *change.ValueOmitted != domain.WorkflowDiffSecret || change.Before != nil || change.After != nil {
+			t.Fatalf("secret diff=%+v", change)
+		}
+	}
+}
+
+func TestSemanticDiffFailsClosedWhenDefinitionUnavailable(t *testing.T) {
+	base := diffSnapshotWithNodeConfig(t, "missing", "1", `{"value":"before"}`)
+	compare := diffSnapshotWithNodeConfig(t, "missing", "1", `{"value":"after"}`)
+	got, err := newSemanticDiffEngine(nil).Diff(base, compare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Summary.Nodes != 1 || len(got.Groups.Nodes) != 1 || len(got.Groups.Nodes[0].Config) != 1 {
+		t.Fatalf("diff=%+v", got)
+	}
+	change := got.Groups.Nodes[0].Config[0]
+	if change.Path != "/config" || change.ValueOmitted == nil || *change.ValueOmitted != domain.WorkflowDiffDefinitionUnavailable || change.Before != nil || change.After != nil {
+		t.Fatalf("change=%+v", change)
+	}
+}
+
+func TestSemanticDiffBudgetsDetailsAndLargeValues(t *testing.T) {
+	baseConfig := make(map[string]any, 502)
+	compareConfig := make(map[string]any, 502)
+	baseConfig["a_large"], compareConfig["a_large"] = strings.Repeat("a", 4097), strings.Repeat("b", 4097)
+	for index := 0; index < 501; index++ {
+		key := fmt.Sprintf("f%03d", index)
+		baseConfig[key], compareConfig[key] = index, index+1
+	}
+	base := diffSnapshotWithConfigValue(t, baseConfig)
+	compare := diffSnapshotWithConfigValue(t, compareConfig)
+	got, err := newSemanticDiffEngine(diffDefinitions()).Diff(base, compare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Summary.Nodes != 502 || got.Summary.Total != 502 || !got.Truncated || len(got.Groups.Nodes) != 1 || len(got.Groups.Nodes[0].Config) != 500 {
+		t.Fatalf("summary=%+v truncated=%v details=%d", got.Summary, got.Truncated, len(got.Groups.Nodes[0].Config))
+	}
+	large := findConfigChange(t, got.Groups.Nodes[0].Config, "/config/a_large")
+	if large.ValueOmitted == nil || *large.ValueOmitted != domain.WorkflowDiffTooLarge || large.Before != nil || large.After != nil {
+		t.Fatalf("large=%+v", large)
+	}
+}
 
 func TestVersionGovernanceDiffLoadsExactSnapshots(t *testing.T) {
 	graph := snapshotGraph("text", "null")
@@ -164,4 +241,47 @@ func diffDefinitions() []agentnode.Definition {
 		{Type: "template", Version: "1", Title: "模板", ConfigSchema: json.RawMessage(`{"type":"object"}`)},
 		{Type: "end", Version: "1", Title: "结束", ConfigSchema: json.RawMessage(`{"type":"object"}`)},
 	}
+}
+
+func diffSnapshotWithNodeConfig(t *testing.T, nodeType, version, config string) workflowSnapshot {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal([]byte(config), &value); err != nil {
+		t.Fatal(err)
+	}
+	return diffSnapshotWithNode(t, nodeType, version, value)
+}
+
+func diffSnapshotWithConfigValue(t *testing.T, config any) workflowSnapshot {
+	t.Helper()
+	return diffSnapshotWithNode(t, "template", "1", config)
+}
+
+func diffSnapshotWithNode(t *testing.T, nodeType, version string, config any) workflowSnapshot {
+	t.Helper()
+	rawConfig, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := domain.Graph{SchemaVersion: 1, Nodes: []domain.Node{{
+		ID: "n", Type: nodeType, TypeVersion: version, Position: domain.Position{}, Config: rawConfig,
+	}}, Edges: []domain.Edge{}}
+	return workflowSnapshot{
+		Descriptor: domain.WorkflowSnapshotDescriptor{Kind: domain.WorkflowSnapshotDraft},
+		Graph:      graph,
+		Presentation: domain.AgentPresentation{
+			Title: "Agent", Accent: domain.AgentAccentIndigo, SubmitLabel: "运行", ResultMode: domain.AgentResultModeAuto,
+		},
+	}
+}
+
+func findConfigChange(t *testing.T, changes []domain.WorkflowValueDiff, path string) domain.WorkflowValueDiff {
+	t.Helper()
+	for _, change := range changes {
+		if change.Path == path {
+			return change
+		}
+	}
+	t.Fatalf("config change %s not found in %+v", path, changes)
+	return domain.WorkflowValueDiff{}
 }
