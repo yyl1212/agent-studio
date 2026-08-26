@@ -44,6 +44,7 @@ type Run struct {
 	SourceNodeID       *string         `json:"sourceNodeId,omitempty"`
 	RetryOfRunID       *string         `json:"retryOfRunId,omitempty"`
 	RetryKey           *string         `json:"-"`
+	AgentRequestKey    *string         `json:"-"`
 	Mode               RunMode         `json:"mode"`
 	Status             RunStatus       `json:"status"`
 	Input              json.RawMessage `json:"input"`

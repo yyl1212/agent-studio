@@ -51,3 +51,20 @@ func TestLoadResolvesNodeIndexCacheDir(t *testing.T) {
 		t.Fatal("expected relative node index cache dir to be rejected")
 	}
 }
+
+func TestLoadValidatesMaxActiveAgentRuns(t *testing.T) {
+	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+	t.Setenv("MODEL_PROVIDER", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("MAX_ACTIVE_AGENT_RUNS", "")
+	cfg, err := Load()
+	if err != nil || cfg.MaxActiveAgentRuns != 8 {
+		t.Fatalf("config=%+v error=%v", cfg, err)
+	}
+	for _, value := range []string{"0", "129", "bad"} {
+		t.Setenv("MAX_ACTIVE_AGENT_RUNS", value)
+		if _, err := Load(); err == nil {
+			t.Fatalf("MAX_ACTIVE_AGENT_RUNS=%q should fail", value)
+		}
+	}
+}
