@@ -27,6 +27,63 @@ type failingRunEngine struct {
 	err error
 }
 
+type terminalEchoEngine struct {
+	secret string
+}
+
+type coordinatorContextKey struct{}
+
+type contextValueCoordinator struct {
+	released int
+}
+
+func (coordinator *contextValueCoordinator) Register(parent context.Context, _ string) (context.Context, func()) {
+	return context.WithValue(parent, coordinatorContextKey{}, "coordinated"), func() { coordinator.released++ }
+}
+
+type coordinatorAwareEngine struct {
+	sawValue bool
+}
+
+func (runtime *coordinatorAwareEngine) Run(ctx context.Context, runID string, _ *engine.Plan, _ map[string]any, observer engine.Observer) (engine.RunResult, error) {
+	runtime.sawValue = ctx.Value(coordinatorContextKey{}) == "coordinated"
+	now := time.Now().UTC()
+	if err := observer.Observe(ctx, engine.Event{RunID: runID, Sequence: 1, Type: "run.completed", Timestamp: now}); err != nil {
+		return engine.RunResult{RunID: runID, EndedAt: now}, err
+	}
+	return engine.RunResult{RunID: runID, EndedAt: now}, nil
+}
+
+func (runtime *coordinatorAwareEngine) RunWithScope(ctx context.Context, runID string, plan *engine.Plan, input map[string]any, observer engine.Observer, _ engine.ExecutionScope) (engine.RunResult, error) {
+	return runtime.Run(ctx, runID, plan, input, observer)
+}
+
+type contextValueObserver struct {
+	sawValue bool
+}
+
+func (observer *contextValueObserver) Observe(ctx context.Context, _ engine.Event) error {
+	observer.sawValue = ctx.Value(coordinatorContextKey{}) == "coordinated"
+	return nil
+}
+
+func (runtime terminalEchoEngine) Run(ctx context.Context, runID string, _ *engine.Plan, _ map[string]any, observer engine.Observer) (engine.RunResult, error) {
+	startedAt := time.Now().UTC()
+	if err := observer.Observe(ctx, engine.Event{Sequence: 1, Type: "run.started", RunID: runID, Timestamp: startedAt}); err != nil {
+		return engine.RunResult{RunID: runID, EndedAt: time.Now().UTC()}, err
+	}
+	output := map[string]any{"result": runtime.secret, "nested": map[string]any{runtime.secret: "value"}}
+	endedAt := time.Now().UTC()
+	if err := observer.Observe(ctx, engine.Event{Sequence: 2, Type: "run.completed", RunID: runID, Output: output, ActivePorts: []string{"result"}, Timestamp: endedAt}); err != nil {
+		return engine.RunResult{RunID: runID, Output: output, EndedAt: endedAt}, err
+	}
+	return engine.RunResult{RunID: runID, Output: output, EndedAt: endedAt}, nil
+}
+
+func (runtime terminalEchoEngine) RunWithScope(ctx context.Context, runID string, plan *engine.Plan, input map[string]any, observer engine.Observer, _ engine.ExecutionScope) (engine.RunResult, error) {
+	return runtime.Run(ctx, runID, plan, input, observer)
+}
+
 func (runtime failingRunEngine) Run(_ context.Context, runID string, _ *engine.Plan, _ map[string]any, _ engine.Observer) (engine.RunResult, error) {
 	return engine.RunResult{RunID: runID, EndedAt: time.Now().UTC()}, runtime.err
 }
@@ -88,6 +145,118 @@ func TestPersistenceObserverCommitsRedactedEventBeforeDownstream(t *testing.T) {
 	}
 }
 
+func TestRunServiceBindsEngineAndObserversToCoordinatorContext(t *testing.T) {
+	store := newFakeStore(t)
+	const runID = "run-coordinated"
+	store.runs = append(store.runs, domain.Run{ID: runID, WorkflowID: store.workflow.ID, Status: domain.RunRunning})
+	coordinator := &contextValueCoordinator{}
+	runtime := &coordinatorAwareEngine{}
+	downstream := &contextValueObserver{}
+	service := NewRunService(store, nil, runtime, WithRunCoordinator(coordinator))
+	if _, err := service.Execute(context.Background(), &PreparedRun{RunID: runID, Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{}}}, downstream); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.sawValue || !downstream.sawValue || coordinator.released != 1 {
+		t.Fatalf("engine context=%v downstream context=%v releases=%d", runtime.sawValue, downstream.sawValue, coordinator.released)
+	}
+}
+
+func TestTerminalEventWaitsForFinalizationAndUsesCommittedSafeEvent(t *testing.T) {
+	store := newFakeStore(t)
+	const runID = "run-terminal"
+	const secret = "do-not-persist"
+	store.runs = append(store.runs, domain.Run{ID: runID, WorkflowID: store.workflow.ID, Status: domain.RunRunning})
+	report := RedactWithReport(map[string]any{"webhookToken": secret})
+	prepared := &PreparedRun{
+		RunID: runID, Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{}}, Input: map[string]any{},
+		secretRedactor: NewSecretRedactor(report.SecretValues),
+	}
+	downstream := &recordingObserver{}
+	store.beforeFinalize = func() {
+		if hasTerminalRunEvent(store.runEvents) || hasTerminalEngineEvent(downstream.events) {
+			t.Fatal("terminal event became visible before FinalizeRun committed")
+		}
+	}
+	service := NewRunService(store, nil, terminalEchoEngine{secret: secret})
+	if _, err := service.Execute(context.Background(), prepared, downstream); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.finalizations) != 1 || !hasExactlyOneTerminalRunEvent(store.runEvents) || !hasExactlyOneTerminalEngineEvent(downstream.events) {
+		t.Fatalf("finalizations=%d stored=%+v downstream=%+v", len(store.finalizations), store.runEvents, downstream.events)
+	}
+	storedBytes, _ := json.Marshal(store.finalizations[0])
+	downstreamBytes, _ := json.Marshal(downstream.events)
+	if bytes.Contains(storedBytes, []byte(secret)) || bytes.Contains(downstreamBytes, []byte(secret)) || bytes.Contains(store.LastRun().Output, []byte(secret)) {
+		t.Fatalf("secret leaked: finalization=%s downstream=%s run=%s", storedBytes, downstreamBytes, store.LastRun().Output)
+	}
+	lastDownstream := &downstream.events[len(downstream.events)-1]
+	lastStored := store.runEvents[len(store.runEvents)-1]
+	lastDownstream.ActivePorts[0] = "mutated"
+	lastDownstream.OutputRedactedPaths[0] = "mutated"
+	lastDownstream.Output.(map[string]any)["result"] = "mutated"
+	if lastStored.ActivePorts[0] != "result" || lastStored.OutputRedactedPaths[0] == "mutated" || bytes.Contains(lastStored.Output, []byte("mutated")) {
+		t.Fatalf("downstream mutated stored terminal event: %+v", lastStored)
+	}
+}
+
+func TestPersistenceObserverRejectsSecondTerminalEvent(t *testing.T) {
+	store := newFakeStore(t)
+	observer := &persistenceObserver{
+		store: store, prepared: &PreparedRun{RunID: "run-duplicate-terminal", Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{}}},
+		started: make(map[string]time.Time),
+	}
+	first := engine.Event{RunID: "run-duplicate-terminal", Sequence: 1, Type: "run.completed", Timestamp: time.Now().UTC()}
+	if err := observer.Observe(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	first.Sequence = 2
+	first.Type = "run.failed"
+	if err := observer.Observe(context.Background(), first); err == nil || err.Error() != "duplicate run terminal event" {
+		t.Fatalf("duplicate terminal error=%v", err)
+	}
+	if len(store.runEvents) != 0 {
+		t.Fatalf("terminal events persisted before finalization: %+v", store.runEvents)
+	}
+}
+
+func hasTerminalRunEvent(events []domain.RunEvent) bool {
+	for _, event := range events {
+		if isRunTerminal(event.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTerminalEngineEvent(events []engine.Event) bool {
+	for _, event := range events {
+		if isRunTerminal(event.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExactlyOneTerminalRunEvent(events []domain.RunEvent) bool {
+	count := 0
+	for _, event := range events {
+		if isRunTerminal(event.Type) {
+			count++
+		}
+	}
+	return count == 1
+}
+
+func hasExactlyOneTerminalEngineEvent(events []engine.Event) bool {
+	count := 0
+	for _, event := range events {
+		if isRunTerminal(event.Type) {
+			count++
+		}
+	}
+	return count == 1
+}
+
 func TestRunEventBudgetsRejectOffendingEventWithoutDownstreamDelivery(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -132,7 +301,7 @@ func TestRunEventCountAndTotalBudgetsKeepPreviouslyCommittedEvents(t *testing.T)
 				t.Fatal(err)
 			}
 		}
-		if err := observer.Observe(context.Background(), engine.Event{Sequence: 5, RunID: "run-count", Type: "run.completed", Timestamp: time.Now().UTC()}); !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
+		if err := observer.Observe(context.Background(), engine.Event{Sequence: 5, RunID: "run-count", Type: "run.started", Timestamp: time.Now().UTC()}); !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
 			t.Fatalf("error=%v", err)
 		}
 		if len(store.runEvents) != 4 || len(downstream.events) != 4 {
@@ -325,6 +494,68 @@ func TestPreparePersistsRedactedInputAndCancellationFinishesRun(t *testing.T) {
 	}
 }
 
+func TestPrepareDraftAndAgentPersistInputRedactedPathsFromSameReport(t *testing.T) {
+	service, store := newRunServiceFixture(t)
+	graph := graphReturningWithOptionalToken(t)
+	store.workflow.DraftGraph = graph
+	input := map[string]any{"topic": "公开值", "webhookToken": "do-not-persist"}
+
+	draft, err := service.PrepareDraft(context.Background(), store.workflow.ID, store.workflow.DraftRevision, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedInputRedaction(t, store.LastRun(), draft, []string{"/webhookToken"})
+
+	schema, err := inputSchemaForGraph(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := store.AddVersion(graph, schema)
+	store.SetCurrentVersion(version)
+	agent, err := service.PrepareAgent(context.Background(), store.workflow.Slug, version.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedInputRedaction(t, store.LastRun(), agent, []string{"/webhookToken"})
+
+	withoutSecret, err := service.PrepareAgent(context.Background(), store.workflow.Slug, version.ID, map[string]any{"topic": "公开值"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedInputRedaction(t, store.LastRun(), withoutSecret, []string{})
+}
+
+func assertPreparedInputRedaction(t *testing.T, run domain.Run, prepared *PreparedRun, wantPaths []string) {
+	t.Helper()
+	if bytes.Contains(run.Input, []byte("do-not-persist")) || !reflect.DeepEqual(run.InputRedactedPaths, wantPaths) {
+		t.Fatalf("persisted input=%s paths=%v, want paths=%v", run.Input, run.InputRedactedPaths, wantPaths)
+	}
+	if run.InputRedactedPaths == nil || prepared.secretRedactor == nil {
+		t.Fatalf("redaction state missing: run=%+v prepared=%+v", run, prepared)
+	}
+}
+
+func graphReturningWithOptionalToken(t *testing.T) json.RawMessage {
+	t.Helper()
+	graph := domain.Graph{
+		SchemaVersion: 1,
+		Nodes: []domain.Node{
+			{ID: "start", Type: "start", TypeVersion: "1", Config: json.RawMessage(`{"fields":[{"key":"topic","label":"主题","type":"text","required":true},{"key":"webhookToken","label":"令牌","type":"text","required":false}]}`)},
+			{ID: "template", Type: "template", TypeVersion: "1", Config: json.RawMessage(`{"template":"{{topic}}"}`)},
+			{ID: "end", Type: "end", TypeVersion: "1", Config: json.RawMessage(`{}`)},
+		},
+		Edges: []domain.Edge{
+			{ID: "e1", Source: "start", SourcePort: "topic", Target: "template", TargetPort: "topic"},
+			{ID: "e2", Source: "template", SourcePort: "text", Target: "end", TargetPort: "result"},
+		},
+	}
+	raw, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 	store := newFakeStore(t)
 	const runID = "run-structured-error"
@@ -337,14 +568,18 @@ func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 		errors.New("top-secret cause"),
 		map[string]any{
 			"Authorization": "Bearer top-secret",
-			"field":         "prompt",
+			"field":         "top-secret",
+			"nested":        map[string]any{"top-secret": "value"},
 		},
 	)
 	runErr := &engine.NodeExecutionError{NodeID: "llm-1", NodeType: "llm", Err: nodeErr}
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	service := NewRunService(store, newRealCompiler(t), failingRunEngine{err: runErr}, WithLogger(logger))
-	_, err := service.Execute(context.Background(), &PreparedRun{RunID: runID, Plan: &engine.Plan{}}, &recordingObserver{})
+	report := RedactWithReport(map[string]any{"token": "top-secret"})
+	_, err := service.Execute(context.Background(), &PreparedRun{
+		RunID: runID, Plan: &engine.Plan{}, secretRedactor: NewSecretRedactor(report.SecretValues),
+	}, &recordingObserver{})
 	if !errors.Is(err, nodeErr) {
 		t.Fatalf("execute error = %v", err)
 	}
@@ -370,7 +605,8 @@ func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 		}
 	}
 	details, ok := record["error_details"].(map[string]any)
-	if !ok || details["Authorization"] != "[REDACTED]" || details["field"] != "prompt" {
+	nested, nestedOK := details["nested"].(map[string]any)
+	if !ok || details["Authorization"] != "[REDACTED]" || details["field"] != "[REDACTED]" || !nestedOK || nested["[REDACTED]"] != "value" {
 		t.Fatalf("redacted details = %#v", record["error_details"])
 	}
 	causes, ok := record["error_causes"].([]any)

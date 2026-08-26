@@ -63,6 +63,7 @@ func TestRunSummaryQueryPlansUseBoundedManagementIndexes(t *testing.T) {
 		{name: "recent", query: workflowservice.RunSummaryStoreQuery{Limit: 50}, index: "runs_started_at_id_idx"},
 		{name: "workflow", query: workflowservice.RunSummaryStoreQuery{WorkflowID: firstWorkflowID, Limit: 50}, index: "runs_workflow_started_at_id_idx"},
 		{name: "status", query: workflowservice.RunSummaryStoreQuery{Statuses: []domain.RunStatus{domain.RunFailed}, Limit: 50}, index: "runs_status_started_at_id_idx"},
+		{name: "cancelling status", query: workflowservice.RunSummaryStoreQuery{Statuses: []domain.RunStatus{domain.RunCancelling}, Limit: 50}, index: "runs_status_started_at_id_idx"},
 		{name: "mode", query: workflowservice.RunSummaryStoreQuery{Modes: []domain.RunMode{domain.RunModePublished}, Limit: 50}, index: "runs_mode_started_at_id_idx"},
 		{name: "workflow and status", query: workflowservice.RunSummaryStoreQuery{WorkflowID: firstWorkflowID, Statuses: []domain.RunStatus{domain.RunFailed}, Limit: 50}, index: "runs_workflow_status_started_at_id_idx"},
 		{name: "workflow and mode", query: workflowservice.RunSummaryStoreQuery{WorkflowID: firstWorkflowID, Modes: []domain.RunMode{domain.RunModePublished}, Limit: 50}, index: "runs_workflow_mode_started_at_id_idx"},

@@ -20,7 +20,29 @@ describe('API client', () => {
     )
   })
 
-  it('运行接口保留原始流式 Response', async () => {
+	it('错误详情只保留规范 UUID runId', async () => {
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({
+				code: 'RUN_RETRY_ALREADY_CREATED', message: '已创建',
+				details: { runId: '55555555-5555-4555-8555-555555555555', secret: 'must-drop' },
+			}), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({
+				code: 'RUN_RETRY_ALREADY_CREATED', message: '已创建', details: { runId: 'not-a-uuid', secret: 'must-drop' },
+			}), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+		vi.stubGlobal('fetch', fetchMock)
+
+		await expect(api.previewRunRetry('run/1')).rejects.toEqual(expect.objectContaining<Partial<APIError>>({
+			details: { runId: '55555555-5555-4555-8555-555555555555' },
+		}))
+		try {
+			await api.previewRunRetry('run/1')
+		} catch (error) {
+			expect((error as APIError).details).toBeUndefined()
+			expect(JSON.stringify(error)).not.toContain('must-drop')
+		}
+	})
+
+	it('运行接口保留原始流式 Response', async () => {
     const response = new Response('{"type":"run.started"}\n', { status: 200 })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
     await expect(api.runAgent('demo', { workflowVersionId: 'v1', input: {} })).resolves.toBe(response)
@@ -48,6 +70,32 @@ describe('API client', () => {
 			method: 'POST', signal: controller.signal,
 			body: JSON.stringify({ entryInput: { in: ['edited'] }, confirmSideEffects: true }),
 		}))
+	})
+
+	it('运行恢复客户端编码路径、幂等 Header 并保留流响应', async () => {
+		const controller = new AbortController()
+		const stream = new Response('{"type":"run.started"}\n', { status: 200 })
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(jsonResponse({ id: 'run/1', status: 'cancelling' }))
+			.mockResolvedValueOnce(jsonResponse({ source: {}, retryOfRunId: 'run/1', input: {}, inputRedactedPaths: [], inputSchema: {} }))
+			.mockResolvedValueOnce(stream)
+		vi.stubGlobal('fetch', fetchMock)
+
+		await api.cancelRun('run/1', controller.signal)
+		await api.previewRunRetry('run/1', controller.signal)
+		await expect(api.retryRun('run/1', '33333333-3333-4333-8333-333333333333', { secretValues: { '/token': 'secret' } }, controller.signal)).resolves.toBe(stream)
+
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/runs/run%2F1/cancel', expect.objectContaining({ method: 'POST', signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/runs/run%2F1/retry-preview', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/runs/run%2F1/retries', expect.objectContaining({
+			method: 'POST', signal: controller.signal,
+			body: JSON.stringify({ secretValues: { '/token': 'secret' } }),
+			headers: expect.any(Headers),
+		}))
+		const retryHeaders = fetchMock.mock.calls[2]?.[1]?.headers as Headers
+		expect(retryHeaders.get('Idempotency-Key')).toBe('33333333-3333-4333-8333-333333333333')
+		expect(String(fetchMock.mock.calls[2]?.[0])).not.toContain('33333333-3333-4333-8333-333333333333')
+		expect(String(fetchMock.mock.calls[2]?.[1]?.body)).not.toContain('33333333-3333-4333-8333-333333333333')
 	})
 
 	it('编码节点包筛选和包含斜杠的模块名', async () => {

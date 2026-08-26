@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,6 +17,40 @@ import (
 	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
+
+type recordingShutdownCoordinator struct {
+	events *[]string
+}
+
+func (coordinator recordingShutdownCoordinator) BeginShutdown() {
+	*coordinator.events = append(*coordinator.events, "coordinator-begin")
+}
+
+func TestShutdownRuntimeCancelsRunsBeforeHTTPAndStopsLoopLast(t *testing.T) {
+	events := []string{}
+	done := make(chan error, 1)
+	stop := func() {
+		events = append(events, "coordinator-stop")
+		done <- nil
+	}
+	shutdownHTTP := func(context.Context) error {
+		events = append(events, "http-shutdown")
+		return nil
+	}
+	err := shutdownRuntime(context.Background(), recordingShutdownCoordinator{events: &events}, shutdownHTTP, stop, done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"coordinator-begin", "http-shutdown", "coordinator-stop"}
+	if len(events) != len(want) {
+		t.Fatalf("shutdown events=%v", events)
+	}
+	for index := range want {
+		if events[index] != want[index] {
+			t.Fatalf("shutdown events=%v, want %v", events, want)
+		}
+	}
+}
 
 func TestNodeIndexCatalogStartsFromEmbeddedWhenCacheIsMissing(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "missing")

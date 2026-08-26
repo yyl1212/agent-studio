@@ -29,6 +29,12 @@
 .inline-notice { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--as-info) 24%, var(--as-border)); border-radius: var(--as-radius-sm); color: var(--as-info); background: color-mix(in srgb, var(--as-info) 7%, var(--as-surface)); font-weight: 700; }
 .management-page > section > button { margin-top: 14px; }
 .run-detail-content { display: grid; gap: 16px; }
+.run-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.run-detail-actions span { color: var(--as-text-muted); font-size: 13px; }
+.workbench-panel .schema-form { display: grid; gap: 14px; min-width: 0; }
+.workbench-panel .schema-object, .workbench-panel .schema-array { min-width: 0; }
+.workbench-panel .schema-field :where(input, textarea, select) { max-width: 100%; }
+.workbench-panel .schema-field :read-only { color: var(--as-text-muted); background: var(--as-surface-muted); }
 .run-detail-content dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
 .run-detail-content dl div, .run-detail-content article { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface-muted); }
 .run-detail-content dt, .run-detail-content article span { color: var(--as-text-muted); font-size: 12px; }

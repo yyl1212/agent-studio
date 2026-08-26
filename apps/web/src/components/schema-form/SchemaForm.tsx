@@ -3,7 +3,7 @@ import Ajv2020 from 'ajv/dist/2020.js'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 
 import { Field } from './Field'
-import type { FormValue, JSONSchema } from './types'
+import { pointerChild, type FormValue, type JSONSchema } from './types'
 
 const ajv = new Ajv2020({ allErrors: true, strict: false, useDefaults: true })
 const validators = new WeakMap<object, ValidateFunction>()
@@ -23,15 +23,17 @@ interface SchemaFormProps {
   disabled?: boolean
   groupOptional?: boolean
   onValidationChange?: (validation: FormValidation) => void
+  editablePaths?: ReadonlySet<string>
+  requiredPaths?: ReadonlySet<string>
 }
 
-export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, disabled, groupOptional, onValidationChange }: SchemaFormProps) {
+export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, disabled, groupOptional, onValidationChange, editablePaths, requiredPaths }: SchemaFormProps) {
   const [draft, setDraft] = useState<FormValue>(value)
   const [errors, setErrors] = useState<Record<string, string>>({})
   useEffect(() => setDraft(value), [value])
   const properties = schema.properties ?? {}
   const order = [...(schema['x-ui-order'] ?? []), ...Object.keys(properties).filter((key) => !schema['x-ui-order']?.includes(key))]
-  const validation = useMemo(() => validateFormValue(schema, draft), [draft, schema])
+  const validation = useMemo(() => validateFormValue(schema, draft, requiredPaths), [draft, schema, requiredPaths])
   useEffect(() => onValidationChange?.(validation), [onValidationChange, validation])
 
   const update = (name: string, nextValue: unknown) => {
@@ -39,7 +41,7 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
     setDraft(next)
     setErrors((current) => {
       const nextErrors = { ...current }
-      delete nextErrors[`/${name}`]
+      delete nextErrors[pointerChild('', name)]
       return nextErrors
     })
     onChange(next)
@@ -60,11 +62,12 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
   const renderField = (name: string) => {
     const fieldSchema = properties[name]
     if (!fieldSchema) return null
-    return <Field key={name} path={name} name={name} schema={fieldSchema} value={draft[name]} required={schema.required?.includes(name) ?? false} errors={errors} onChange={(next) => update(name, next)} onBlur={(path) => setErrors((current) => {
+    return <Field key={name} path={pointerChild('', name)} name={name} schema={fieldSchema} value={draft[name]} required={schema.required?.includes(name) ?? false} errors={errors}
+      isPathEditable={editablePaths ? (path) => editablePaths.has(path) : undefined} requiredPaths={requiredPaths} lockArrayShape={editablePaths !== undefined}
+      autoFocusPath={editablePaths?.values().next().value} onChange={(next) => update(name, next)} onBlur={(path) => setErrors((current) => {
       const nextErrors = { ...current }
-      const pathKey = `/${path}`
-      if (validation.errors[pathKey]) nextErrors[pathKey] = validation.errors[pathKey]
-      else delete nextErrors[pathKey]
+      if (validation.errors[path]) nextErrors[path] = validation.errors[path]
+      else delete nextErrors[path]
       return nextErrors
     })} />
   }
@@ -85,7 +88,7 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
   )
 }
 
-export function validateFormValue(schema: JSONSchema, value: FormValue): FormValidation {
+export function validateFormValue(schema: JSONSchema, value: FormValue, requiredPaths?: ReadonlySet<string>): FormValidation {
   const normalized = structuredClone(value)
   const jsonErrors: Record<string, string> = {}
   normalizeJSONWidgets(schema, normalized, [], jsonErrors)
@@ -97,6 +100,13 @@ export function validateFormValue(schema: JSONSchema, value: FormValue): FormVal
   }
   const valid = validate(normalized)
   const errors = valid ? {} : mapErrors(validate.errors ?? [], schema)
+  for (const path of requiredPaths ?? []) {
+    if (isPathValueEmpty(pointerValue(normalized, path))) {
+      const tokens = decodePointer(path)
+      const title = schemaAtPath(schema, tokens)?.title ?? tokens.at(-1) ?? ''
+      if (!errors[path]) errors[path] = `${title}为必填项`
+    }
+  }
   return { normalized, errors, valid: valid && Object.keys(errors).length === 0 }
 }
 
@@ -106,7 +116,7 @@ function normalizeJSONWidgets(schema: JSONSchema, value: unknown, path: string[]
   for (const [name, child] of Object.entries(schema.properties ?? {})) {
     const childPath = [...path, name]
     if (child['x-ui-widget'] === 'json' && typeof object[name] === 'string') {
-      try { object[name] = JSON.parse(object[name] as string) as unknown } catch { errors[`/${childPath.join('/')}`] = `${child.title ?? name}必须是合法 JSON` }
+      try { object[name] = JSON.parse(object[name] as string) as unknown } catch { errors[childPath.reduce(pointerChild, '')] = `${child.title ?? name}必须是合法 JSON` }
     } else if (child.type === 'object') normalizeJSONWidgets(child, object[name], childPath, errors)
   }
 }
@@ -117,7 +127,7 @@ function mapErrors(errors: ErrorObject[], rootSchema: JSONSchema) {
     const requiredName = error.keyword === 'required' ? String(error.params.missingProperty) : undefined
     const tokens = decodePointer(error.instancePath)
     if (requiredName !== undefined) tokens.push(requiredName)
-    const path = `/${tokens.join('/')}`
+    const path = tokens.length > 0 ? tokens.reduce(pointerChild, '') : '/'
     const name = tokens.at(-1) ?? ''
     const title = schemaAtPath(rootSchema, tokens)?.title ?? name
     if (!mapped[path]) {
@@ -133,6 +143,22 @@ function mapErrors(errors: ErrorObject[], rootSchema: JSONSchema) {
     }
   }
   return mapped
+}
+
+function pointerValue(value: unknown, pointer: string): unknown {
+  let current = value
+  for (const token of decodePointer(pointer)) {
+    if (Array.isArray(current)) {
+      if (!/^0$|^[1-9]\d*$/.test(token)) return undefined
+      current = current[Number(token)]
+    } else if (current && typeof current === 'object') current = (current as Record<string, unknown>)[token]
+    else return undefined
+  }
+  return current
+}
+
+function isPathValueEmpty(value: unknown): boolean {
+  return value === undefined || value === null || value === '' || value === '[REDACTED]'
 }
 
 function decodePointer(path: string): string[] {

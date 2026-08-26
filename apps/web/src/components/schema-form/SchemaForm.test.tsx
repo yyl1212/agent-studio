@@ -183,4 +183,38 @@ describe('SchemaForm', () => {
     expect(screen.getByText('文档标识长度不能少于 1 个字符')).toBeInTheDocument()
     expect(screen.getByText('文档内容长度不能少于 1 个字符')).toBeInTheDocument()
   })
+
+	it('按 RFC 6901 实例路径限制编辑与必填且锁定数组形状', async () => {
+		const pathSchema = {
+			type: 'object' as const,
+			properties: {
+				credentials: { type: 'object' as const, title: '凭据', properties: {
+					token: { type: 'string' as const, title: '令牌' }, note: { type: 'string' as const, title: '说明' },
+				} },
+				items: { type: 'array' as const, title: '账户', items: { type: 'object' as const, properties: {
+					password: { type: 'string' as const, title: '密码' }, label: { type: 'string' as const, title: '名称' },
+				} } },
+			},
+		}
+		const onSubmit = vi.fn()
+		render(<SchemaForm schema={pathSchema} value={{ credentials: { token: '', note: '只读说明' }, items: [{ password: '', label: '首项' }, { password: '', label: '次项' }] }}
+			onChange={vi.fn()} onSubmit={onSubmit} submitLabel="重新运行"
+			editablePaths={new Set(['/credentials/token', '/items/0/password'])}
+			requiredPaths={new Set(['/credentials/token', '/items/0/password'])} />)
+
+		const passwords = screen.getAllByLabelText('密码')
+		expect(screen.getByLabelText('令牌')).toHaveFocus()
+		expect(screen.getByLabelText('令牌')).toBeRequired()
+		expect(screen.getByLabelText('说明')).toHaveAttribute('readonly')
+		expect(passwords[0]).toBeRequired()
+		expect(passwords[0]).not.toHaveAttribute('readonly')
+		expect(passwords[1]).not.toBeRequired()
+		expect(passwords[1]).toHaveAttribute('readonly')
+		expect(screen.getByRole('button', { name: '添加一项' })).toBeDisabled()
+		for (const button of screen.getAllByRole('button', { name: /移除账户/ })) expect(button).toBeDisabled()
+
+		await userEvent.click(screen.getByRole('button', { name: '重新运行' }))
+		expect(screen.getAllByText(/为必填项/)).toHaveLength(2)
+		expect(onSubmit).not.toHaveBeenCalled()
+	})
 })

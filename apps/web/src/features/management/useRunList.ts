@@ -15,27 +15,74 @@ export function useRunList(query: RunSummaryQuery): RunListState {
   const [error, setError] = useState('')
   const [reloadGeneration, setReloadGeneration] = useState(0)
   const generation = useRef(0)
+	const pageGeneration = useRef(0)
+	const inFlight = useRef<AbortController | undefined>(undefined)
+
+	const requestPage = useCallback((target: RunSummaryQuery, mine: number, background: boolean) => {
+		if (inFlight.current) return
+		const controller = new AbortController()
+		inFlight.current = controller
+		if (!background) {
+			setLoading(true)
+			setError('')
+		}
+		api.listRunSummaries(target, controller.signal).then((nextPage) => {
+			if (generation.current !== mine || controller.signal.aborted) return
+			pageGeneration.current = mine
+			setPage(nextPage)
+			setError('')
+		}).catch((cause: unknown) => {
+			if (generation.current === mine && !controller.signal.aborted && !isAbort(cause)) setError(publicError(cause))
+		}).finally(() => {
+			if (inFlight.current === controller) inFlight.current = undefined
+			if (!background && generation.current === mine && !controller.signal.aborted) setLoading(false)
+		})
+	}, [])
 
   useEffect(() => {
     const mine = ++generation.current
-    let active = true
-    const controller = new AbortController()
-    setLoading(true)
-    setError('')
-    api.listRunSummaries(query, controller.signal).then((nextPage) => {
-      if (active && generation.current === mine && !controller.signal.aborted) setPage(nextPage)
-    }).catch((cause: unknown) => {
-      if (active && generation.current === mine && !isAbort(cause)) setError(publicError(cause))
-    }).finally(() => {
-      if (active && generation.current === mine) setLoading(false)
-    })
+		inFlight.current?.abort()
+		inFlight.current = undefined
+		requestPage(cloneQuery(query), mine, false)
     return () => {
-      active = false
-      controller.abort()
+			if (generation.current === mine) {
+				inFlight.current?.abort()
+				inFlight.current = undefined
+			}
     }
-  }, [query.workflowId, query.statuses.join(','), query.modes.join(','), query.startedAfter, query.startedBefore, query.runId, query.cursor, query.limit, reloadGeneration])
+	}, [query.workflowId, query.statuses.join(','), query.modes.join(','), query.startedAfter, query.startedBefore, query.runId, query.cursor, query.limit, reloadGeneration, requestPage])
 
-  return { page, loading, error, reload: useCallback(() => setReloadGeneration((value) => value + 1), []) }
+	useEffect(() => {
+		const eligible = !query.cursor && pageGeneration.current === generation.current && page?.items.some((run) => run.status === 'running' || run.status === 'cancelling')
+		if (!eligible) return
+		const mine = generation.current
+		const refresh = () => {
+			if (document.visibilityState === 'hidden') return
+			requestPage({ ...cloneQuery(query), cursor: undefined }, mine, true)
+		}
+		const interval = window.setInterval(refresh, 3000)
+		const visibilityChanged = () => {
+			if (document.visibilityState === 'visible') refresh()
+		}
+		document.addEventListener('visibilitychange', visibilityChanged)
+		return () => {
+			window.clearInterval(interval)
+			document.removeEventListener('visibilitychange', visibilityChanged)
+		}
+	}, [page, query.workflowId, query.statuses.join(','), query.modes.join(','), query.startedAfter, query.startedBefore, query.runId, query.cursor, query.limit, requestPage])
+
+	return {
+		page, loading, error,
+		reload: useCallback(() => {
+			inFlight.current?.abort()
+			inFlight.current = undefined
+			setReloadGeneration((value) => value + 1)
+		}, []),
+	}
+}
+
+function cloneQuery(query: RunSummaryQuery): RunSummaryQuery {
+	return { ...query, statuses: [...query.statuses], modes: [...query.modes] }
 }
 
 function isAbort(error: unknown) { return error instanceof DOMException && error.name === 'AbortError' }

@@ -174,5 +174,5 @@ export function DebugPage() {
 }
 
 function modeLabel(mode: DebugOverview['run']['mode']) { return { test: '草稿测试', published: '已发布', debug: '局部调试' }[mode] }
-function runStatusLabel(status: DebugOverview['run']['status']) { return { running: '◌ 运行中', completed: '✓ 已完成', failed: '× 失败', cancelled: '— 已取消' }[status] }
+function runStatusLabel(status: DebugOverview['run']['status']) { return { running: '◌ 运行中', cancelling: '◌ 取消中', completed: '✓ 已完成', failed: '× 失败', cancelled: '— 已取消' }[status] }
 function debugMessage(error: unknown) { return error instanceof APIError ? error.message : '加载调试回放失败' }

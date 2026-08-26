@@ -25,6 +25,75 @@ func (handler *handler) listRunSummaries(writer http.ResponseWriter, request *ht
 	writeJSON(writer, http.StatusOK, page)
 }
 
+func (handler *handler) cancelRun(writer http.ResponseWriter, request *http.Request) {
+	runID, err := parsePathUUID(request, "id")
+	if err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	summary, err := handler.dependencies.RunManagement.Cancel(request.Context(), runID)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, summary)
+}
+
+func (handler *handler) previewRunRetry(writer http.ResponseWriter, request *http.Request) {
+	runID, err := parsePathUUID(request, "id")
+	if err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	preview, err := handler.dependencies.RunManagement.RetryPreview(request.Context(), runID)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, preview)
+}
+
+func (handler *handler) retryRun(writer http.ResponseWriter, request *http.Request) {
+	runID, err := parsePathUUID(request, "id")
+	if err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	keys := request.Header.Values("Idempotency-Key")
+	if len(keys) != 1 {
+		writeRequestError(writer, request, errInvalidManagementRequest)
+		return
+	}
+	parsedKey, err := uuid.Parse(keys[0])
+	if err != nil || parsedKey.String() != keys[0] {
+		writeRequestError(writer, request, errInvalidManagementRequest)
+		return
+	}
+	var body workflow.RunRetryRequest
+	if err := decodeJSON(writer, request, &body); err != nil || body.SecretValues == nil || !validRetrySecretValues(body.SecretValues) {
+		writeRequestError(writer, request, errInvalidManagementRequest)
+		return
+	}
+	prepared, err := handler.dependencies.RunManagement.PrepareRetry(request.Context(), runID, keys[0], body)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	handler.streamRun(writer, request, prepared)
+}
+
+func validRetrySecretValues(values map[string]any) bool {
+	if len(values) > 256 {
+		return false
+	}
+	for path := range values {
+		if len(path) > 1024 {
+			return false
+		}
+	}
+	return true
+}
+
 func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, error) {
 	allowed := map[string]bool{
 		"workflowId": true, "runId": true, "status": true, "mode": true,
@@ -40,7 +109,7 @@ func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, erro
 			return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 		}
 	}
-	if len(values["status"]) > 4 || len(values["mode"]) > 3 || len([]byte(values.Get("cursor"))) > 512 {
+	if len(values["status"]) > 5 || len(values["mode"]) > 3 || len([]byte(values.Get("cursor"))) > 512 {
 		return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 	}
 	input := workflow.RunSummaryRequest{Cursor: values.Get("cursor")}
@@ -53,7 +122,7 @@ func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, erro
 	}
 	for _, raw := range values["status"] {
 		status := domain.RunStatus(raw)
-		if status != domain.RunRunning && status != domain.RunCompleted && status != domain.RunFailed && status != domain.RunCancelled {
+		if status != domain.RunRunning && status != domain.RunCancelling && status != domain.RunCompleted && status != domain.RunFailed && status != domain.RunCancelled {
 			return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 		}
 		input.Statuses = append(input.Statuses, status)

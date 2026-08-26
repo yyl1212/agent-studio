@@ -24,3 +24,7 @@ export interface JSONSchema {
 }
 
 export type FormValue = Record<string, unknown>
+
+export function pointerChild(path: string, token: string): string {
+  return `${path}/${token.replace(/~/g, '~0').replace(/\//g, '~1')}`
+}

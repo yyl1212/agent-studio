@@ -598,10 +598,10 @@ paths:
           explode: true
           schema:
             type: array
-            maxItems: 4
+            maxItems: 5
             items:
               type: string
-              enum: [running, completed, failed, cancelled]
+              enum: [running, cancelling, completed, failed, cancelled]
         - name: mode
           in: query
           style: form
@@ -675,6 +675,97 @@ paths:
                     items:
                       $ref: "#/components/schemas/NodeRun"
         "404":
+          $ref: "#/components/responses/Error"
+  /api/runs/{id}/cancel:
+    post:
+      operationId: cancelRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 已请求取消的运行摘要
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummary"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/runs/{id}/retry-preview:
+    get:
+      operationId: previewRunRetry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 完整重试的安全预览
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunRetryPreview"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/runs/{id}/retries:
+    post:
+      operationId: retryRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRetryRequest"
+      responses:
+        "200":
+          description: 完整重试运行事件流
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
           $ref: "#/components/responses/Error"
   /api/runs/{id}/debug:
     get:
@@ -1654,7 +1745,7 @@ components:
           additionalProperties: true
     Run:
       type: object
-      required: [id, workflowId, mode, status, input, startedAt]
+      required: [id, workflowId, mode, status, input, inputRedactedPaths, startedAt]
       properties:
         id:
           type: string
@@ -1673,6 +1764,9 @@ components:
           format: uuid
         sourceNodeId:
           type: [string, "null"]
+        retryOfRunId:
+          type: [string, "null"]
+          format: uuid
         graphSnapshot:
           oneOf:
             - $ref: "#/components/schemas/Graph"
@@ -1682,13 +1776,20 @@ components:
           enum: [test, published, debug]
         status:
           type: string
-          enum: [running, completed, failed, cancelled]
+          enum: [running, cancelling, completed, failed, cancelled]
         input: {}
+        inputRedactedPaths:
+          type: array
+          items:
+            type: string
         output: {}
         error:
           oneOf:
             - $ref: "#/components/schemas/PublicError"
             - type: "null"
+        cancelRequestedAt:
+          type: [string, "null"]
+          format: date-time
         startedAt:
           type: string
           format: date-time
@@ -1723,12 +1824,18 @@ components:
           format: uuid
         sourceNodeId:
           type: [string, "null"]
+        retryOfRunId:
+          type: [string, "null"]
+          format: uuid
         mode:
           type: string
           enum: [test, published, debug]
         status:
           type: string
-          enum: [running, completed, failed, cancelled]
+          enum: [running, cancelling, completed, failed, cancelled]
+        cancelRequestedAt:
+          type: [string, "null"]
+          format: date-time
         startedAt:
           type: string
           format: date-time
@@ -1747,6 +1854,39 @@ components:
         nextCursor:
           type: [string, "null"]
           maxLength: 512
+    RunRetryPreview:
+      type: object
+      additionalProperties: false
+      required: [source, retryOfRunId, input, inputRedactedPaths, inputSchema]
+      properties:
+        source:
+          $ref: "#/components/schemas/RunSummary"
+        retryOfRunId:
+          type: string
+          format: uuid
+        input:
+          type: object
+          additionalProperties: true
+        inputRedactedPaths:
+          type: array
+          maxItems: 256
+          items:
+            type: string
+            maxLength: 1024
+        inputSchema:
+          type: object
+          additionalProperties: true
+    RunRetryRequest:
+      type: object
+      additionalProperties: false
+      required: [secretValues]
+      properties:
+        secretValues:
+          type: object
+          maxProperties: 256
+          propertyNames:
+            maxLength: 1024
+          additionalProperties: true
     NodeRun:
       type: object
       required: [id, runId, nodeId, nodeType, status]
@@ -1960,6 +2100,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ValidationIssue"
+        details:
+          oneOf:
+            - $ref: "#/components/schemas/ErrorDetails"
+            - type: "null"
+    ErrorDetails:
+      type: object
+      additionalProperties: false
+      properties:
+        runId:
+          type: string
+          format: uuid
     CreateWorkflowRequest:
       type: object
       additionalProperties: false

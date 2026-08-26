@@ -22,28 +22,9 @@ func (store *Store) ListRunSummaries(ctx context.Context, query workflowservice.
 	defer rows.Close()
 	summaries := make([]domain.RunSummary, 0)
 	for rows.Next() {
-		var summary domain.RunSummary
-		if err := rows.Scan(
-			&summary.ID,
-			&summary.WorkflowID,
-			&summary.WorkflowName,
-			&summary.WorkflowSlug,
-			&summary.WorkflowVersionID,
-			&summary.WorkflowVersion,
-			&summary.DraftRevision,
-			&summary.SourceRunID,
-			&summary.SourceNodeID,
-			&summary.Mode,
-			&summary.Status,
-			&summary.StartedAt,
-			&summary.EndedAt,
-		); err != nil {
+		summary, err := scanRunSummary(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan run summary: %w", err)
-		}
-		summary.StartedAt = summary.StartedAt.UTC()
-		if summary.EndedAt != nil {
-			endedAt := summary.EndedAt.UTC()
-			summary.EndedAt = &endedAt
 		}
 		summaries = append(summaries, summary)
 	}
@@ -51,6 +32,28 @@ func (store *Store) ListRunSummaries(ctx context.Context, query workflowservice.
 		return nil, fmt.Errorf("list run summaries: %w", err)
 	}
 	return summaries, nil
+}
+
+func scanRunSummary(row runScanner) (domain.RunSummary, error) {
+	var summary domain.RunSummary
+	if err := row.Scan(
+		&summary.ID, &summary.WorkflowID, &summary.WorkflowName, &summary.WorkflowSlug,
+		&summary.WorkflowVersionID, &summary.WorkflowVersion, &summary.DraftRevision,
+		&summary.SourceRunID, &summary.SourceNodeID, &summary.RetryOfRunID,
+		&summary.Mode, &summary.Status, &summary.CancelRequestedAt, &summary.StartedAt, &summary.EndedAt,
+	); err != nil {
+		return domain.RunSummary{}, err
+	}
+	summary.StartedAt = summary.StartedAt.UTC()
+	if summary.CancelRequestedAt != nil {
+		cancelRequestedAt := summary.CancelRequestedAt.UTC()
+		summary.CancelRequestedAt = &cancelRequestedAt
+	}
+	if summary.EndedAt != nil {
+		endedAt := summary.EndedAt.UTC()
+		summary.EndedAt = &endedAt
+	}
+	return summary, nil
 }
 
 func buildRunSummaryQuery(query workflowservice.RunSummaryStoreQuery) (string, []any, error) {
@@ -77,9 +80,7 @@ func buildRunSummaryQuery(query workflowservice.RunSummaryStoreQuery) (string, [
 	}
 
 	statement := strings.Builder{}
-	statement.WriteString(`SELECT r.id::text,r.workflow_id::text,w.name,w.slug,r.workflow_version_id::text,
-       rv.version,r.draft_revision,r.source_run_id::text,r.source_node_id,r.mode,r.status,
-       r.started_at,r.ended_at
+	statement.WriteString(`SELECT ` + runSummarySelectColumns + `
 FROM runs r
 JOIN workflows w ON w.id=r.workflow_id
 LEFT JOIN workflow_versions rv ON rv.id=r.workflow_version_id AND rv.workflow_id=r.workflow_id
@@ -118,6 +119,10 @@ WHERE true`)
 	return statement.String(), arguments, nil
 }
 
+const runSummarySelectColumns = `r.id::text,r.workflow_id::text,w.name,w.slug,r.workflow_version_id::text,
+       rv.version,r.draft_revision,r.source_run_id::text,r.source_node_id,r.retry_of_run_id::text,r.mode,r.status,
+       r.cancel_requested_at,r.started_at,r.ended_at`
+
 func canonicalStoreUUID(value string) (string, error) {
 	if value == "" {
 		return "", nil
@@ -132,7 +137,7 @@ func canonicalStoreUUID(value string) (string, error) {
 func storeRunStatuses(values []domain.RunStatus) ([]string, error) {
 	result := make([]string, len(values))
 	for index, value := range values {
-		if value != domain.RunRunning && value != domain.RunCompleted && value != domain.RunFailed && value != domain.RunCancelled {
+		if value != domain.RunRunning && value != domain.RunCancelling && value != domain.RunCompleted && value != domain.RunFailed && value != domain.RunCancelled {
 			return nil, workflowservice.ErrInvalidWorkflowInput
 		}
 		result[index] = string(value)

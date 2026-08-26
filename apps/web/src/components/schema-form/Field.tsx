@@ -1,5 +1,5 @@
 import { ArrayField } from './ArrayField'
-import type { JSONSchema } from './types'
+import { pointerChild, type JSONSchema } from './types'
 
 interface FieldProps {
   path: string
@@ -10,26 +10,33 @@ interface FieldProps {
   errors: Record<string, string>
   onChange: (value: unknown) => void
   onBlur?: (path: string) => void
+  isPathEditable?: (pointer: string) => boolean
+  requiredPaths?: ReadonlySet<string>
+  lockArrayShape?: boolean
+  autoFocusPath?: string
 }
 
-export function Field({ path, name, schema, value, required, errors, onChange, onBlur }: FieldProps) {
+export function Field({ path, name, schema, value, required, errors, onChange, onBlur, isPathEditable, requiredPaths, lockArrayShape, autoFocusPath }: FieldProps) {
   const label = schema.title ?? name
-  const id = `field-${path.replace(/[^a-zA-Z0-9_-]/g, '-')}`
-  const error = errors[`/${path}`]
+  const id = `field-${path.slice(1).replace(/[^a-zA-Z0-9_-]/g, '-')}`
+  const error = errors[path]
   const errorID = error ? `${id}-error` : undefined
   const descriptionID = schema.description ? `${id}-description` : undefined
   const common = {
     id,
-    required,
+    required: required || requiredPaths?.has(path),
+    autoFocus: path === autoFocusPath,
     'aria-invalid': Boolean(error),
     'aria-describedby': [descriptionID, errorID].filter(Boolean).join(' ') || undefined,
   }
+  const editable = isPathEditable?.(path) ?? true
 
   let control
   if (schema.type === 'boolean') {
-    control = <input {...common} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.currentTarget.checked)} onBlur={() => onBlur?.(path)} />
+    control = <input {...common} type="checkbox" checked={Boolean(value)} readOnly={!editable} onChange={(event) => { if (editable) onChange(event.currentTarget.checked) }} onBlur={() => onBlur?.(path)} />
   } else if (schema.type === 'array') {
-    return <ArrayField id={path} label={label} description={schema.description} schema={schema} value={Array.isArray(value) ? value : []} onChange={onChange} onBlur={onBlur} errors={errors} />
+    return <ArrayField id={path} label={label} description={schema.description} schema={schema} value={Array.isArray(value) ? value : []} onChange={onChange} onBlur={onBlur} errors={errors}
+      isPathEditable={isPathEditable} requiredPaths={requiredPaths} lockArrayShape={lockArrayShape} autoFocusPath={autoFocusPath} />
   } else if (schema.type === 'object' && schema['x-ui-widget'] !== 'json') {
     const objectValue = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
     const properties = schema.properties ?? {}
@@ -41,7 +48,7 @@ export function Field({ path, name, schema, value, required, errors, onChange, o
         {order.map((childName) => properties[childName] && (
           <Field
             key={childName}
-            path={`${path}/${childName}`}
+            path={pointerChild(path, childName)}
             name={childName}
             schema={properties[childName]}
             value={objectValue[childName]}
@@ -49,13 +56,17 @@ export function Field({ path, name, schema, value, required, errors, onChange, o
             errors={errors}
             onChange={(childValue) => onChange({ ...objectValue, [childName]: childValue })}
             onBlur={onBlur}
+            isPathEditable={isPathEditable}
+            requiredPaths={requiredPaths}
+            lockArrayShape={lockArrayShape}
+            autoFocusPath={autoFocusPath}
           />
         ))}
       </fieldset>
     )
   } else if (schema.enum || schema['x-ui-widget'] === 'select') {
     control = (
-      <select {...common} value={String(value ?? '')} onChange={(event) => onChange(schema.enum?.find((option) => String(option) === event.currentTarget.value) ?? event.currentTarget.value)} onBlur={() => onBlur?.(path)}>
+      <select {...common} aria-readonly={!editable} value={String(value ?? '')} onMouseDown={(event) => { if (!editable) event.preventDefault() }} onKeyDown={(event) => { if (!editable) event.preventDefault() }} onChange={(event) => { if (editable) onChange(schema.enum?.find((option) => String(option) === event.currentTarget.value) ?? event.currentTarget.value) }} onBlur={() => onBlur?.(path)}>
         <option value="">请选择</option>
         {(schema.enum ?? []).map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
       </select>
@@ -67,6 +78,7 @@ export function Field({ path, name, schema, value, required, errors, onChange, o
         {...common}
         data-widget={schema['x-ui-widget']}
         value={text}
+        readOnly={!editable}
         placeholder={schema['x-ui-placeholder']}
         onChange={(event) => onChange(event.currentTarget.value)}
         onBlur={(event) => {
@@ -84,6 +96,7 @@ export function Field({ path, name, schema, value, required, errors, onChange, o
         {...common}
         type={numeric ? 'number' : 'text'}
         value={value === undefined || value === null ? '' : String(value)}
+        readOnly={!editable}
         placeholder={schema['x-ui-placeholder']}
         min={schema.minimum}
         max={schema.maximum}

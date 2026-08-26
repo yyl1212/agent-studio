@@ -3,15 +3,19 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	workflowservice "github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 )
 
 const runSelectColumns = `id::text,workflow_id::text,workflow_version_id::text,draft_revision,
-    graph_snapshot,source_run_id::text,source_node_id,mode,status,input,output,error,started_at,ended_at`
+    graph_snapshot,source_run_id::text,source_node_id,retry_of_run_id::text,retry_key::text,
+    mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at`
 
 func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	errorJSON, err := marshalOptional(run.Error)
@@ -30,11 +34,17 @@ func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	if archivedAt != nil {
 		return domain.ErrWorkflowArchived
 	}
+	inputPaths := run.InputRedactedPaths
+	if inputPaths == nil {
+		inputPaths = []string{}
+	}
 	_, err = transaction.Exec(ctx, `INSERT INTO runs(
-        id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,mode,status,input,output,error,started_at,ended_at
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,
+		retry_of_run_id,retry_key,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		run.ID, run.WorkflowID, run.WorkflowVersionID, run.DraftRevision, nullableRaw(run.GraphSnapshot),
-		run.SourceRunID, run.SourceNodeID, run.Mode, run.Status, run.Input, nullableRaw(run.Output), errorJSON, run.StartedAt, run.EndedAt,
+		run.SourceRunID, run.SourceNodeID, run.RetryOfRunID, run.RetryKey, run.Mode, run.Status, run.Input, inputPaths,
+		nullableRaw(run.Output), errorJSON, run.CancelRequestedAt, run.HeartbeatAt, run.StartedAt, run.EndedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
@@ -43,6 +53,69 @@ func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 		return fmt.Errorf("commit create run: %w", err)
 	}
 	return nil
+}
+
+func (store *Store) CreateRetryRun(ctx context.Context, run domain.Run) (string, error) {
+	if run.RetryOfRunID == nil || run.RetryKey == nil {
+		return "", workflowservice.ErrInvalidWorkflowInput
+	}
+	errorJSON, err := marshalOptional(run.Error)
+	if err != nil {
+		return "", fmt.Errorf("encode retry run error: %w", err)
+	}
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin create retry run: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+
+	var sourceWorkflowID string
+	var sourceMode domain.RunMode
+	var sourceStatus domain.RunStatus
+	if err := transaction.QueryRow(ctx, `SELECT workflow_id::text,mode,status FROM runs WHERE id=$1 FOR UPDATE`, *run.RetryOfRunID).
+		Scan(&sourceWorkflowID, &sourceMode, &sourceStatus); err != nil {
+		return "", fmt.Errorf("lock retry source run: %w", mapNotFound(err))
+	}
+	if sourceWorkflowID != run.WorkflowID || sourceMode != run.Mode || (sourceStatus != domain.RunFailed && sourceStatus != domain.RunCancelled) {
+		return "", workflowservice.ErrRunNotRetryable
+	}
+	var archivedAt *time.Time
+	if err := transaction.QueryRow(ctx, "SELECT archived_at FROM workflows WHERE id=$1 FOR UPDATE", sourceWorkflowID).Scan(&archivedAt); err != nil {
+		return "", fmt.Errorf("lock retry workflow: %w", mapNotFound(err))
+	}
+	if archivedAt != nil {
+		return "", domain.ErrWorkflowArchived
+	}
+	inputPaths := run.InputRedactedPaths
+	if inputPaths == nil {
+		inputPaths = []string{}
+	}
+	_, err = transaction.Exec(ctx, `INSERT INTO runs(
+		id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,
+		retry_of_run_id,retry_key,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		run.ID, run.WorkflowID, run.WorkflowVersionID, run.DraftRevision, nullableRaw(run.GraphSnapshot),
+		run.SourceRunID, run.SourceNodeID, run.RetryOfRunID, run.RetryKey, run.Mode, run.Status, run.Input, inputPaths,
+		nullableRaw(run.Output), errorJSON, run.CancelRequestedAt, run.HeartbeatAt, run.StartedAt, run.EndedAt,
+	)
+	if err != nil {
+		var databaseError *pgconn.PgError
+		if errors.As(err, &databaseError) && databaseError.Code == "23505" && databaseError.ConstraintName == "runs_retry_key_unique_idx" {
+			if rollbackErr := transaction.Rollback(ctx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+				return "", fmt.Errorf("rollback duplicate retry run: %w", rollbackErr)
+			}
+			var existingID string
+			if queryErr := store.pool.QueryRow(ctx, `SELECT id::text FROM runs WHERE retry_of_run_id=$1 AND retry_key=$2`, *run.RetryOfRunID, *run.RetryKey).Scan(&existingID); queryErr != nil {
+				return "", fmt.Errorf("load existing retry run: %w", queryErr)
+			}
+			return "", &workflowservice.RunRetryAlreadyCreatedError{RunID: existingID}
+		}
+		return "", fmt.Errorf("create retry run: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit create retry run: %w", err)
+	}
+	return run.ID, nil
 }
 
 func (store *Store) UpsertNodeRun(ctx context.Context, nodeRun domain.NodeRun) error {
@@ -193,23 +266,173 @@ func scanRunEvent(row runScanner) (domain.RunEvent, error) {
 	return event, nil
 }
 
-func (store *Store) FinishRun(ctx context.Context, runID string, status domain.RunStatus, output any, publicError *domain.PublicError, endedAt time.Time) error {
+func (store *Store) FinalizeRun(ctx context.Context, finalization workflowservice.RunFinalization) (domain.RunEvent, error) {
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return domain.RunEvent{}, fmt.Errorf("begin finalize run: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+	event, err := store.finalizeRunTx(ctx, transaction, finalization)
+	if err != nil {
+		return domain.RunEvent{}, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("commit run finalization: %w", err)
+	}
+	return event, nil
+}
+
+func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, finalization workflowservice.RunFinalization) (domain.RunEvent, error) {
+	var status domain.RunStatus
+	var cancelRequestedAt *time.Time
+	if err := transaction.QueryRow(ctx, "SELECT status,cancel_requested_at FROM runs WHERE id=$1 FOR UPDATE", finalization.RunID).Scan(&status, &cancelRequestedAt); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("lock run for finalization: %w", mapNotFound(err))
+	}
+	if isTerminalRunStatus(status) {
+		event, err := existingTerminalEvent(ctx, transaction, finalization.RunID, status)
+		if err != nil {
+			return domain.RunEvent{}, err
+		}
+		return event, nil
+	}
+	if status != domain.RunRunning && status != domain.RunCancelling {
+		return domain.RunEvent{}, fmt.Errorf("invalid active run status %q", status)
+	}
+	terminal := cloneStoredRunEvent(finalization.TerminalEvent)
+	chosenStatus := finalization.Status
+	output := finalization.Output
+	publicError := finalization.Error
+	cancellationWins := status == domain.RunCancelling || cancelRequestedAt != nil
+	if cancellationWins {
+		chosenStatus = domain.RunCancelled
+		if publicError == nil || publicError.Code != "RUN_INTERRUPTED" {
+			publicError = domain.NewPublicRunError(context.Canceled)
+		}
+	}
+	if chosenStatus == domain.RunCancelled {
+		output = nil
+		if publicError == nil {
+			publicError = domain.NewPublicRunError(context.Canceled)
+		}
+		terminal.Type = "run.cancelled"
+		terminal.Output = nil
+		terminal.Error = publicError
+	}
+	if !isTerminalRunStatus(chosenStatus) || terminal.Type != terminalEventType(chosenStatus) {
+		return domain.RunEvent{}, fmt.Errorf("terminal event %q does not match status %q", terminal.Type, chosenStatus)
+	}
+	terminal.RunID = finalization.RunID
+	terminal.Timestamp = finalization.EndedAt
+	terminal.ActivePorts = nonNilStrings(terminal.ActivePorts)
+	terminal.InputRedactedPaths = nonNilStrings(terminal.InputRedactedPaths)
+	terminal.OutputRedactedPaths = nonNilStrings(terminal.OutputRedactedPaths)
+	terminalErrorJSON, err := marshalOptional(terminal.Error)
+	if err != nil {
+		return domain.RunEvent{}, fmt.Errorf("encode terminal error: %w", err)
+	}
+	activePortsJSON, _ := json.Marshal(terminal.ActivePorts)
+	inputPathsJSON, _ := json.Marshal(terminal.InputRedactedPaths)
+	outputPathsJSON, _ := json.Marshal(terminal.OutputRedactedPaths)
+	terminal.DataBytes = int64(len(terminal.Input) + len(terminal.Output) + len(terminalErrorJSON) + len(activePortsJSON) + len(inputPathsJSON) + len(outputPathsJSON))
+	var count int
+	var maxSequence, totalDataBytes int64
+	if err := transaction.QueryRow(ctx, `SELECT count(*),COALESCE(max(sequence),0),COALESCE(sum(data_bytes),0)
+		FROM run_events WHERE run_id=$1`, finalization.RunID).Scan(&count, &maxSequence, &totalDataBytes); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("read terminal event budget: %w", err)
+	}
+	if terminal.Sequence != maxSequence+1 {
+		return domain.RunEvent{}, fmt.Errorf("%w: sequence %d follows %d", domain.ErrRunEventSequence, terminal.Sequence, maxSequence)
+	}
+	if count >= finalization.Budget.MaxEvents || terminal.DataBytes < 0 || terminal.DataBytes > finalization.Budget.MaxTotalDataBytes-totalDataBytes {
+		return domain.RunEvent{}, fmt.Errorf("%w: events=%d bytes=%d", domain.ErrRunEventBudgetExceeded, count, totalDataBytes)
+	}
 	outputJSON, err := marshalOptional(output)
 	if err != nil {
-		return fmt.Errorf("encode run output: %w", err)
+		return domain.RunEvent{}, fmt.Errorf("encode run output: %w", err)
 	}
 	errorJSON, err := marshalOptional(publicError)
 	if err != nil {
-		return fmt.Errorf("encode run error: %w", err)
+		return domain.RunEvent{}, fmt.Errorf("encode run error: %w", err)
 	}
-	command, err := store.pool.Exec(ctx, `UPDATE runs SET status=$2,output=$3,error=$4,ended_at=$5 WHERE id=$1`, runID, status, outputJSON, errorJSON, endedAt)
+	if _, err := transaction.Exec(ctx, `UPDATE runs SET status=$2,output=$3,error=$4,ended_at=$5 WHERE id=$1`,
+		finalization.RunID, chosenStatus, outputJSON, errorJSON, finalization.EndedAt); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("update finalized run: %w", err)
+	}
+	if chosenStatus == domain.RunCancelled {
+		if _, err := transaction.Exec(ctx, `UPDATE node_runs SET status='cancelled',ended_at=COALESCE(ended_at,$2)
+			WHERE run_id=$1 AND status='running'`, finalization.RunID, finalization.EndedAt); err != nil {
+			return domain.RunEvent{}, fmt.Errorf("cancel active node runs: %w", err)
+		}
+	}
+	if _, err := transaction.Exec(ctx, `INSERT INTO run_events(
+		run_id,sequence,type,node_id,status,input,output,active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		terminal.RunID, terminal.Sequence, terminal.Type, nullableString(terminal.NodeID), nullableNodeStatus(terminal.Status),
+		nullableRaw(terminal.Input), nullableRaw(terminal.Output), terminal.ActivePorts, terminalErrorJSON,
+		terminal.InputRedactedPaths, terminal.OutputRedactedPaths, terminal.DataBytes, terminal.Timestamp,
+	); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("insert terminal run event: %w", err)
+	}
+	return terminal, nil
+}
+
+func existingTerminalEvent(ctx context.Context, transaction pgx.Tx, runID string, status domain.RunStatus) (domain.RunEvent, error) {
+	var count int
+	if err := transaction.QueryRow(ctx, `SELECT count(*) FROM run_events
+		WHERE run_id=$1 AND type IN ('run.completed','run.failed','run.cancelled')`, runID).Scan(&count); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("count existing terminal events: %w", err)
+	}
+	if count != 1 {
+		return domain.RunEvent{}, fmt.Errorf("finalized run has %d terminal events", count)
+	}
+	event, err := scanRunEvent(transaction.QueryRow(ctx, `SELECT run_id::text,sequence,type,node_id,status,input,output,
+		active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
+		FROM run_events WHERE run_id=$1 ORDER BY sequence DESC LIMIT 1`, runID))
 	if err != nil {
-		return fmt.Errorf("finish run: %w", err)
+		return domain.RunEvent{}, fmt.Errorf("read existing terminal event: %w", err)
 	}
-	if command.RowsAffected() == 0 {
-		return ErrNotFound
+	if event.Type != terminalEventType(status) {
+		return domain.RunEvent{}, fmt.Errorf("finalized run status %q mismatches terminal event %q", status, event.Type)
 	}
-	return nil
+	return event, nil
+}
+
+func isTerminalRunStatus(status domain.RunStatus) bool {
+	return status == domain.RunCompleted || status == domain.RunFailed || status == domain.RunCancelled
+}
+
+func terminalEventType(status domain.RunStatus) string {
+	switch status {
+	case domain.RunCompleted:
+		return "run.completed"
+	case domain.RunFailed:
+		return "run.failed"
+	case domain.RunCancelled:
+		return "run.cancelled"
+	default:
+		return ""
+	}
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return append([]string{}, values...)
+}
+
+func cloneStoredRunEvent(event domain.RunEvent) domain.RunEvent {
+	cloned := event
+	cloned.Input = append(json.RawMessage(nil), event.Input...)
+	cloned.Output = append(json.RawMessage(nil), event.Output...)
+	cloned.ActivePorts = nonNilStrings(event.ActivePorts)
+	cloned.InputRedactedPaths = nonNilStrings(event.InputRedactedPaths)
+	cloned.OutputRedactedPaths = nonNilStrings(event.OutputRedactedPaths)
+	if event.Error != nil {
+		errorCopy := *event.Error
+		cloned.Error = &errorCopy
+	}
+	return cloned
 }
 
 func (store *Store) GetRun(ctx context.Context, runID string) (domain.Run, []domain.NodeRun, error) {
@@ -273,7 +496,9 @@ func scanRun(row runScanner) (domain.Run, error) {
 	var graphSnapshot, input, output, errorJSON []byte
 	if err := row.Scan(
 		&run.ID, &run.WorkflowID, &run.WorkflowVersionID, &run.DraftRevision,
-		&graphSnapshot, &run.SourceRunID, &run.SourceNodeID, &run.Mode, &run.Status, &input, &output, &errorJSON,
+		&graphSnapshot, &run.SourceRunID, &run.SourceNodeID, &run.RetryOfRunID, &run.RetryKey,
+		&run.Mode, &run.Status, &input, &run.InputRedactedPaths, &output, &errorJSON,
+		&run.CancelRequestedAt, &run.HeartbeatAt,
 		&run.StartedAt, &run.EndedAt,
 	); err != nil {
 		return domain.Run{}, err
@@ -281,6 +506,9 @@ func scanRun(row runScanner) (domain.Run, error) {
 	run.GraphSnapshot = json.RawMessage(graphSnapshot)
 	run.Input = json.RawMessage(input)
 	run.Output = json.RawMessage(output)
+	if run.InputRedactedPaths == nil {
+		run.InputRedactedPaths = []string{}
+	}
 	if len(errorJSON) > 0 {
 		if err := json.Unmarshal(errorJSON, &run.Error); err != nil {
 			return domain.Run{}, fmt.Errorf("decode run error: %w", err)

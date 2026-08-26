@@ -9,7 +9,7 @@ export interface ParsedManagementSearch<T> {
 const workflowKeys = new Set(['q', 'state', 'cursor', 'limit'])
 const runKeys = new Set(['workflowId', 'status', 'mode', 'startedAfter', 'startedBefore', 'runId', 'cursor', 'limit'])
 const workflowStates = new Set<WorkflowSummaryQuery['state']>(['active', 'archived', 'all'])
-const runStatuses = new Set<Run['status']>(['running', 'completed', 'failed', 'cancelled'])
+const runStatuses = new Set<Run['status']>(['running', 'cancelling', 'completed', 'failed', 'cancelled'])
 const runModes = new Set<Run['mode']>(['test', 'published', 'debug'])
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const rfc3339Pattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/
@@ -64,7 +64,7 @@ export function readRunSearch(params: URLSearchParams): ParsedManagementSearch<R
   const runID = readUUID(params, 'runId')
   hadInvalid ||= workflowID.invalid || runID.invalid
 
-  const statuses = readEnums(params, 'status', runStatuses, 4)
+  const statuses = readEnums(params, 'status', runStatuses, 5)
   const modes = readEnums(params, 'mode', runModes, 3)
   hadInvalid ||= statuses.invalid || modes.invalid
 

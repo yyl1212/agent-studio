@@ -18,7 +18,7 @@ const definition = (type: string, title: string): NodeDefinition => ({
 })
 
 const overview = (replayAvailable = true): DebugOverview => ({
-	run: { id: 'r1', workflowId: 'w1', mode: 'test', status: 'completed', input: {}, startedAt: '2026-08-25T00:00:00Z', endedAt: '2026-08-25T00:00:02Z' },
+	run: { id: 'r1', workflowId: 'w1', mode: 'test', status: 'completed', input: {}, inputRedactedPaths: [], startedAt: '2026-08-25T00:00:00Z', endedAt: '2026-08-25T00:00:02Z' },
 	graph: {
 		schemaVersion: 1,
 		nodes: [

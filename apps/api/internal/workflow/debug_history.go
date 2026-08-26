@@ -76,6 +76,15 @@ func (service *DebugService) loadRunGraph(ctx context.Context, run domain.Run) (
 }
 
 func (service *DebugService) loadRunGraphData(ctx context.Context, run domain.Run) (json.RawMessage, domain.Graph, *engine.Plan, error) {
+	return loadRunGraphData(ctx, service.store, service.compiler, run)
+}
+
+type runSnapshotStore interface {
+	GetWorkflow(context.Context, string) (domain.Workflow, error)
+	GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error)
+}
+
+func loadRunGraphData(ctx context.Context, store runSnapshotStore, compiler Compiler, run domain.Run) (json.RawMessage, domain.Graph, *engine.Plan, error) {
 	var raw json.RawMessage
 	switch run.Mode {
 	case domain.RunModeTest, domain.RunModeDebug:
@@ -84,11 +93,11 @@ func (service *DebugService) loadRunGraphData(ctx context.Context, run domain.Ru
 		if run.WorkflowVersionID == nil {
 			return nil, domain.Graph{}, nil, ErrRunSnapshotUnsupported
 		}
-		workflow, err := service.store.GetWorkflow(ctx, run.WorkflowID)
+		workflow, err := store.GetWorkflow(ctx, run.WorkflowID)
 		if err != nil {
 			return nil, domain.Graph{}, nil, fmt.Errorf("%w: load workflow: %v", ErrRunSnapshotUnsupported, err)
 		}
-		_, version, err := service.store.GetAgentVersion(ctx, workflow.Slug, *run.WorkflowVersionID)
+		_, version, err := store.GetAgentVersion(ctx, workflow.Slug, *run.WorkflowVersionID)
 		if err != nil {
 			return nil, domain.Graph{}, nil, fmt.Errorf("%w: load workflow version: %v", ErrRunSnapshotUnsupported, err)
 		}
@@ -100,7 +109,7 @@ func (service *DebugService) loadRunGraphData(ctx context.Context, run domain.Ru
 	if len(raw) == 0 || json.Unmarshal(raw, &graph) != nil {
 		return nil, domain.Graph{}, nil, ErrRunSnapshotUnsupported
 	}
-	plan, issues := service.compiler.Compile(graph)
+	plan, issues := compiler.Compile(graph)
 	if len(issues) > 0 || plan == nil {
 		return nil, domain.Graph{}, nil, ErrRunSnapshotUnsupported
 	}
