@@ -13,7 +13,8 @@ type Store interface {
 	CreateWorkflow(context.Context, domain.Workflow) (domain.Workflow, error)
 	GetWorkflow(context.Context, string) (domain.Workflow, error)
 	UpdateDraft(context.Context, string, int64, json.RawMessage) (domain.Workflow, error)
-	Publish(context.Context, string, int64, json.RawMessage, json.RawMessage) (domain.WorkflowVersion, error)
+	UpdateAgentPresentation(context.Context, string, int64, domain.AgentPresentation) (domain.Workflow, error)
+	Publish(context.Context, string, int64, json.RawMessage, json.RawMessage, domain.AgentPresentation) (domain.WorkflowVersion, error)
 	GetCurrentAgentVersion(context.Context, string) (domain.Workflow, domain.WorkflowVersion, error)
 	GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error)
 	CreateRun(context.Context, domain.Run) error

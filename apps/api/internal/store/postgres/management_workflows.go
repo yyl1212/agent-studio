@@ -121,7 +121,7 @@ func (store *Store) UpdateWorkflowMetadata(ctx context.Context, id, name, descri
     UPDATE workflows SET name=$2,description=$3,updated_at=now()
     WHERE id=$1 AND archived_at IS NULL RETURNING *
 )
-SELECT u.id::text,u.name,u.slug,u.description,u.draft_graph,u.draft_revision,
+SELECT u.id::text,u.name,u.slug,u.description,u.agent_presentation,u.draft_graph,u.draft_revision,
        u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
 FROM updated u
 LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`, id, name, description)
@@ -142,7 +142,7 @@ func (store *Store) ArchiveWorkflow(ctx context.Context, id string) (domain.Work
       updated_at=CASE WHEN archived_at IS NULL THEN now() ELSE updated_at END
     WHERE id=$1 RETURNING *
 )
-SELECT u.id::text,u.name,u.slug,u.description,u.draft_graph,u.draft_revision,
+SELECT u.id::text,u.name,u.slug,u.description,u.agent_presentation,u.draft_graph,u.draft_revision,
        u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
 FROM updated u
 LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`, id)
@@ -160,7 +160,7 @@ func (store *Store) RestoreWorkflow(ctx context.Context, id string) (domain.Work
       updated_at=CASE WHEN archived_at IS NOT NULL THEN now() ELSE updated_at END
     WHERE id=$1 RETURNING *
 )
-SELECT u.id::text,u.name,u.slug,u.description,u.draft_graph,u.draft_revision,
+SELECT u.id::text,u.name,u.slug,u.description,u.agent_presentation,u.draft_graph,u.draft_revision,
        u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
 FROM updated u
 LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`, id)

@@ -256,7 +256,7 @@ func (service *Service) Publish(ctx context.Context, id string, revision int64) 
 	if err != nil {
 		return domain.WorkflowVersion{}, fmt.Errorf("encode published graph: %w", err)
 	}
-	return service.store.Publish(ctx, id, revision, graphJSON, inputSchema)
+	return service.store.Publish(ctx, id, revision, graphJSON, inputSchema, workflow.AgentPresentation)
 }
 
 func (service *Service) AgentManifest(ctx context.Context, slug string) (AgentManifest, error) {

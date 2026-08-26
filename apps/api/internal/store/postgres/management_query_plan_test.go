@@ -24,12 +24,14 @@ func TestRunSummaryQueryPlansUseBoundedManagementIndexes(t *testing.T) {
 	const secondWorkflowID = "10000000-0000-4000-8000-000000000002"
 	const firstVersionID = "20000000-0000-4000-8000-000000000001"
 	const secondVersionID = "20000000-0000-4000-8000-000000000002"
-	if _, err := tx.Exec(ctx, `INSERT INTO workflows(id,name,slug,draft_graph,draft_revision)
-		VALUES ($1,'一号','query-plan-one','{}',1),($2,'二号','query-plan-two','{}',1)`, firstWorkflowID, secondWorkflowID); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO workflows(id,name,slug,agent_presentation,draft_graph,draft_revision)
+		VALUES ($1,'一号','query-plan-one','{"title":"一号","description":"","accent":"indigo","submitLabel":"运行 Agent","resultMode":"auto"}','{}',1),
+		       ($2,'二号','query-plan-two','{"title":"二号","description":"","accent":"indigo","submitLabel":"运行 Agent","resultMode":"auto"}','{}',1)`, firstWorkflowID, secondWorkflowID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO workflow_versions(id,workflow_id,version,graph,input_schema)
-		VALUES ($1,$2,1,'{}','{}'),($3,$4,1,'{}','{}')`, firstVersionID, firstWorkflowID, secondVersionID, secondWorkflowID); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO workflow_versions(id,workflow_id,version,graph,input_schema,agent_presentation)
+		VALUES ($1,$2,1,'{}','{}','{"title":"一号","description":"","accent":"indigo","submitLabel":"运行 Agent","resultMode":"auto"}'),
+		       ($3,$4,1,'{}','{}','{"title":"二号","description":"","accent":"indigo","submitLabel":"运行 Agent","resultMode":"auto"}')`, firstVersionID, firstWorkflowID, secondVersionID, secondWorkflowID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO runs(

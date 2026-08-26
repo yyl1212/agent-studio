@@ -84,12 +84,26 @@ func (store *fakeStore) UpdateDraft(_ context.Context, id string, revision int64
 	return store.workflow, nil
 }
 
-func (store *fakeStore) Publish(_ context.Context, id string, revision int64, graph, inputSchema json.RawMessage) (domain.WorkflowVersion, error) {
+func (store *fakeStore) UpdateAgentPresentation(_ context.Context, id string, revision int64, presentation domain.AgentPresentation) (domain.Workflow, error) {
+	if id != store.workflow.ID {
+		return domain.Workflow{}, domain.ErrNotFound
+	}
+	if revision != store.workflow.DraftRevision {
+		return domain.Workflow{}, domain.ErrRevisionConflict
+	}
+	store.workflow.AgentPresentation = presentation
+	store.workflow.DraftRevision++
+	return store.workflow, nil
+}
+
+func (store *fakeStore) Publish(_ context.Context, id string, revision int64, graph, inputSchema json.RawMessage, presentation domain.AgentPresentation) (domain.WorkflowVersion, error) {
 	store.publishCalls++
 	if id != store.workflow.ID || revision != store.workflow.DraftRevision {
 		return domain.WorkflowVersion{}, domain.ErrRevisionConflict
 	}
 	version := store.AddVersion(graph, inputSchema)
+	version.AgentPresentation = presentation
+	store.versions[version.ID] = version
 	store.SetCurrentVersion(version)
 	return version, nil
 }

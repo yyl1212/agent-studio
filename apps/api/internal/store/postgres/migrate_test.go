@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -68,8 +69,8 @@ func TestMigrateUpgradesPreviousSchemaWithRunRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 4 {
-		t.Fatalf("migration files=%d, want 4", len(files))
+	if len(files) != 5 {
+		t.Fatalf("migration files=%d, want 5", len(files))
 	}
 	if err := store.applyMigration(ctx, files[0]); err != nil {
 		t.Fatal(err)
@@ -91,6 +92,7 @@ func TestMigrateUpgradesPreviousSchemaWithRunRecovery(t *testing.T) {
 	const workflowID = "00000000-0000-0000-0000-000000000101"
 	const otherWorkflowID = "00000000-0000-0000-0000-000000000102"
 	const historicalRunID = "00000000-0000-0000-0000-000000000201"
+	const historicalVersionID = "00000000-0000-0000-0000-000000000401"
 	if _, err := store.pool.Exec(ctx, `INSERT INTO workflows(id,name,slug,draft_graph)
 		VALUES($1,'Historical','historical','{}'::jsonb),($2,'Other','other','{}'::jsonb)`, workflowID, otherWorkflowID); err != nil {
 		t.Fatal(err)
@@ -100,9 +102,32 @@ func TestMigrateUpgradesPreviousSchemaWithRunRecovery(t *testing.T) {
 	) VALUES($1,$2,1,'{}'::jsonb,'test','running','{}'::jsonb,now())`, historicalRunID, workflowID); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.applyMigration(ctx, files[3]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `INSERT INTO workflow_versions(id,workflow_id,version,graph,input_schema)
+		VALUES($1,$2,1,'{}'::jsonb,'{"type":"object"}'::jsonb)`, historicalVersionID, workflowID); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	var workflowPresentation, versionPresentation []byte
+	if err := store.pool.QueryRow(ctx, "SELECT agent_presentation FROM workflows WHERE id=$1", workflowID).Scan(&workflowPresentation); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, "SELECT agent_presentation FROM workflow_versions WHERE id=$1", historicalVersionID).Scan(&versionPresentation); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range [][]byte{workflowPresentation, versionPresentation} {
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil || got["title"] != "Historical" || got["description"] != "" || got["accent"] != "indigo" || got["submitLabel"] != "运行 Agent" || got["resultMode"] != "auto" {
+			t.Fatalf("presentation=%s error=%v", raw, err)
+		}
+	}
+	assertColumnExists(t, store.pool, "runs", "agent_request_key")
+	assertConstraintExists(t, store.pool, "runs_agent_request_key_mode_check")
+	assertIndexExists(t, store.pool, "runs_agent_request_key_unique_idx")
 	for _, column := range []string{
 		"retry_of_run_id", "retry_key", "input_redacted_paths", "cancel_requested_at", "heartbeat_at",
 	} {

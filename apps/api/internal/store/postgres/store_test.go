@@ -32,7 +32,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 4 {
+	if count != 5 {
 		t.Fatalf("migration count=%d", count)
 	}
 }
@@ -233,7 +233,7 @@ func TestArchivedWorkflowStoreRejectsDraftPublishAndRun(t *testing.T) {
 	if _, err := store.UpdateDraft(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph); !errors.Is(err, domain.ErrWorkflowArchived) {
 		t.Fatalf("update error=%v", err)
 	}
-	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`)); !errors.Is(err, domain.ErrWorkflowArchived) {
+	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`), workflow.AgentPresentation); !errors.Is(err, domain.ErrWorkflowArchived) {
 		t.Fatalf("publish error=%v", err)
 	}
 	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
@@ -294,7 +294,7 @@ func TestCreateRunWaitsForConcurrentArchiveDecision(t *testing.T) {
 func TestPublishPreservesVersionAndTestSnapshot(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "publish")
-	version, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`))
+	version, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`), workflow.AgentPresentation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestWorkflowLookupKeepsPublishedVersionsImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	versionTwo, err := store.Publish(context.Background(), workflow.ID, updated.DraftRevision, updated.DraftGraph, json.RawMessage(`{"type":"object"}`))
+	versionTwo, err := store.Publish(context.Background(), workflow.ID, updated.DraftRevision, updated.DraftGraph, json.RawMessage(`{"type":"object"}`), updated.AgentPresentation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestUpdateDraftUsesRevisionAndPublishRollsBackOnConflict(t *testing.T) {
 	if _, err := store.UpdateDraft(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("revision error=%v", err)
 	}
-	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`)); !errors.Is(err, ErrRevisionConflict) {
+	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`), workflow.AgentPresentation); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("publish error=%v", err)
 	}
 	var count int
@@ -528,6 +528,35 @@ func TestUpdateDraftUsesRevisionAndPublishRollsBackOnConflict(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("conflicting publish inserted %d versions", count)
+	}
+}
+
+func TestAgentPresentationSaveAndPublishSnapshot(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "presentation")
+	staleRevision := workflow.DraftRevision
+	next := domain.AgentPresentation{
+		Title: "公开助手", Description: "公开说明", Accent: domain.AgentAccentTeal,
+		SubmitLabel: "开始", ResultMode: domain.AgentResultModeJSON,
+	}
+	updated, err := store.UpdateAgentPresentation(context.Background(), workflow.ID, workflow.DraftRevision, next)
+	if err != nil || updated.DraftRevision != workflow.DraftRevision+1 || updated.AgentPresentation != next {
+		t.Fatalf("updated=%+v error=%v", updated, err)
+	}
+	if _, err := store.Publish(context.Background(), updated.ID, staleRevision, updated.DraftGraph, json.RawMessage(`{"type":"object"}`), updated.AgentPresentation); !errors.Is(err, domain.ErrRevisionConflict) {
+		t.Fatalf("stale publish error=%v", err)
+	}
+	var count int
+	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM workflow_versions WHERE workflow_id=$1", workflow.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("version count=%d error=%v", count, err)
+	}
+	version, err := store.Publish(context.Background(), updated.ID, updated.DraftRevision, updated.DraftGraph, json.RawMessage(`{"type":"object"}`), updated.AgentPresentation)
+	if err != nil || version.AgentPresentation != next {
+		t.Fatalf("version=%+v error=%v", version, err)
+	}
+	loaded, loadedVersion, err := store.GetCurrentAgentVersion(context.Background(), updated.Slug)
+	if err != nil || loaded.AgentPresentation != next || loadedVersion.AgentPresentation != next {
+		t.Fatalf("loaded=%+v version=%+v error=%v", loaded, loadedVersion, err)
 	}
 }
 
@@ -968,12 +997,13 @@ func createWorkflowFixture(t *testing.T, store *Store, suffix string) domain.Wor
 	t.Helper()
 	sequence := fixtureSequence.Add(1)
 	workflow, err := store.CreateWorkflow(context.Background(), domain.Workflow{
-		ID:            fixtureUUID(),
-		Name:          "测试工作流 " + suffix,
-		Slug:          fmt.Sprintf("workflow-%s-%d", suffix, sequence),
-		Description:   "集成测试",
-		DraftGraph:    json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[]}`),
-		DraftRevision: 1,
+		ID:                fixtureUUID(),
+		Name:              "测试工作流 " + suffix,
+		Slug:              fmt.Sprintf("workflow-%s-%d", suffix, sequence),
+		Description:       "集成测试",
+		AgentPresentation: workflowservice.DefaultAgentPresentation("测试工作流 "+suffix, "集成测试"),
+		DraftGraph:        json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[]}`),
+		DraftRevision:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -983,7 +1013,7 @@ func createWorkflowFixture(t *testing.T, store *Store, suffix string) domain.Wor
 
 func publishFixture(t *testing.T, store *Store, workflow domain.Workflow) domain.WorkflowVersion {
 	t.Helper()
-	version, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`))
+	version, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`), workflow.AgentPresentation)
 	if err != nil {
 		t.Fatal(err)
 	}
