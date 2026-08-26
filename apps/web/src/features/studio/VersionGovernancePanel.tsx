@@ -1,6 +1,6 @@
-import type { ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 
-import type { WorkflowSnapshotRef } from '../../lib/api/client'
+import type { WorkflowDiff, WorkflowSnapshotRef } from '../../lib/api/client'
 import { RollbackDialog } from './RollbackDialog'
 import { VersionDiffView } from './VersionDiffView'
 import { useVersionGovernance, type UseVersionGovernanceOptions } from './useVersionGovernance'
@@ -11,11 +11,21 @@ interface VersionGovernancePanelProps extends UseVersionGovernanceOptions {
 
 export function VersionGovernancePanel({ titleId, ...options }: VersionGovernancePanelProps) {
 	const model = useVersionGovernance(options)
+	const headingRef = useRef<HTMLHeadingElement>(null)
+	const [rollbackSummary, setRollbackSummary] = useState<WorkflowDiff['summary']>()
+
+	useEffect(() => {
+		headingRef.current?.focus()
+	}, [])
+	useEffect(() => {
+		if (model.rollbackTarget === undefined) setRollbackSummary(undefined)
+	}, [model.rollbackTarget])
+
 	const rollbackVersion = model.base?.kind === 'version' ? model.base.version : undefined
 	const rollbackEnabled = !options.archived && options.saveState === 'saved' && !model.diffLoading
 		&& model.diff !== undefined && model.diff.summary.total > 0
 		&& model.base?.kind === 'version' && model.compare?.kind === 'draft' && !model.mutating
-	const controlsDisabled = model.mutating
+	const controlsDisabled = model.mutating || model.rollbackTarget !== undefined
 	const select = (setter: (ref: WorkflowSnapshotRef) => void) => (event: ChangeEvent<HTMLSelectElement>) => {
 		const [kind, rawValue] = event.target.value.split(':')
 		const value = Number(rawValue)
@@ -25,7 +35,7 @@ export function VersionGovernancePanel({ titleId, ...options }: VersionGovernanc
 	return (
 		<section className="version-governance version-governance-panel" aria-labelledby={titleId}>
 			<header className="version-governance-heading">
-				<div><span className="node-category">工作流治理</span><h2 id={titleId}>版本历史</h2></div>
+				<div><span className="node-category">工作流治理</span><h2 ref={headingRef} id={titleId} tabIndex={-1}>版本历史</h2></div>
 				{model.loading && <span role="status">正在加载版本…</span>}
 			</header>
 			{model.notice && <p className="form-success" role="status">{model.notice}</p>}
@@ -52,14 +62,21 @@ export function VersionGovernancePanel({ titleId, ...options }: VersionGovernanc
 			{model.diffLoading ? <p role="status">正在计算差异…</p> : model.diff ? <VersionDiffView diff={model.diff} /> : !model.loading && model.versions.length > 0 ? <p className="empty-state">请选择两个快照进行比较</p> : null}
 
 			<div className="version-governance-actions">
-				{options.archived ? <p>请先恢复工作流</p> : rollbackVersion !== undefined && <button type="button" className="danger-button" disabled={!rollbackEnabled} onClick={() => model.openRollback(rollbackVersion)}>恢复 v{rollbackVersion} 为草稿</button>}
+				{options.archived ? <p>请先恢复工作流</p> : rollbackVersion !== undefined && <button type="button" className="danger-button" disabled={!rollbackEnabled} onClick={() => {
+					if (!model.diff) return
+					setRollbackSummary(model.diff.summary)
+					model.openRollback(rollbackVersion)
+				}}>恢复 v{rollbackVersion} 为草稿</button>}
 				{model.checkpoint && !options.archived && <button type="button" disabled={controlsDisabled} onClick={() => void model.undoRollback()}>{model.mutating ? '撤销中…' : '撤销回滚'}</button>}
 			</div>
 
-			{model.rollbackTarget !== undefined && model.diff && <RollbackDialog
+			{model.rollbackTarget !== undefined && rollbackSummary && <RollbackDialog
 				open targetVersion={model.rollbackTarget} draftRevision={options.workflow.draftRevision}
-				summary={model.diff.summary} submitting={model.mutating} error={model.error}
-				onConfirm={() => void model.confirmRollback()} onCancel={model.closeRollback}
+				summary={rollbackSummary} submitting={model.mutating} error={model.error}
+				onConfirm={() => void model.confirmRollback()} onCancel={() => {
+					setRollbackSummary(undefined)
+					model.closeRollback()
+				}}
 			/>}
 		</section>
 	)

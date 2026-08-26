@@ -14,14 +14,23 @@ interface RollbackDialogProps {
 }
 
 export function RollbackDialog(props: RollbackDialogProps) {
+	const dialogRef = useRef<HTMLDialogElement>(null)
 	const confirmRef = useRef<HTMLButtonElement>(null)
 	const restoreFocus = useRef<HTMLElement | null>(null)
 
 	useEffect(() => {
 		if (!props.open) return
+		const dialog = dialogRef.current
+		if (!dialog) return
 		restoreFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+		if (typeof dialog.showModal === 'function') dialog.showModal()
+		else dialog.setAttribute('open', '')
 		confirmRef.current?.focus()
-		return () => restoreFocus.current?.focus()
+		return () => {
+			if (dialog.open && typeof dialog.close === 'function') dialog.close()
+			else dialog.removeAttribute('open')
+			restoreFocus.current?.focus()
+		}
 	}, [props.open])
 
 	useEffect(() => {
@@ -39,7 +48,7 @@ export function RollbackDialog(props: RollbackDialogProps) {
 	if (!props.open) return null
 	return (
 		<div className="dialog-backdrop">
-			<dialog open aria-modal="true" aria-labelledby="rollback-dialog-title" className="rollback-dialog">
+			<dialog ref={dialogRef} aria-modal="true" aria-labelledby="rollback-dialog-title" className="rollback-dialog">
 				<h2 id="rollback-dialog-title">恢复 v{props.targetVersion} 为草稿？</h2>
 				<p>将用 v{props.targetVersion} 覆盖当前草稿 r{props.draftRevision}，并自动保存一个回滚前草稿检查点。</p>
 				<p>此操作不会改变线上 Agent、历史版本或历史运行。</p>

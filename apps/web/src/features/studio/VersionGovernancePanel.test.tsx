@@ -42,7 +42,7 @@ describe('VersionGovernancePanel', () => {
 		const current = model()
 		useVersionGovernanceMock.mockReturnValue(current)
 		render(<VersionGovernancePanel {...props} />)
-		expect(screen.getByRole('heading', { name: '版本历史' })).toBeInTheDocument()
+		expect(screen.getByRole('heading', { name: '版本历史' })).toHaveFocus()
 		expect(screen.getAllByRole('option', { name: 'v2 · 当前发布' })).toHaveLength(2)
 		expect(screen.getAllByRole('option', { name: '当前草稿 r8' })).toHaveLength(2)
 		expect(screen.getByRole('status')).toHaveTextContent('仅展示前 500 项详细差异')
@@ -60,6 +60,30 @@ describe('VersionGovernancePanel', () => {
 		expect(current.setBase).toHaveBeenCalledWith({ kind: 'version', version: 2 })
 		await userEvent.click(screen.getByRole('button', { name: '撤销回滚' }))
 		expect(current.undoRollback).toHaveBeenCalled()
+	})
+
+	it('回滚确认期间冻结差异摘要并禁用底层治理控件', async () => {
+		const current = {
+			...model(),
+			checkpoint: { sourceRevision: 7, restoredRevision: 8, restoredFromVersion: 1, createdAt: '2026-08-27T03:00:00Z' },
+		}
+		useVersionGovernanceMock.mockReturnValue(current)
+		const { rerender } = render(<VersionGovernancePanel {...props} />)
+
+		await userEvent.click(screen.getByRole('button', { name: '恢复 v1 为草稿' }))
+		expect(current.openRollback).toHaveBeenCalledWith(1)
+
+		useVersionGovernanceMock.mockReturnValue({ ...current, rollbackTarget: 1, diff: undefined })
+		rerender(<VersionGovernancePanel {...props} />)
+
+		const dialog = screen.getByRole('dialog', { name: '恢复 v1 为草稿？' })
+		expect(dialog).toHaveTextContent('节点 1')
+		expect(screen.getByLabelText('比较起点')).toBeDisabled()
+		expect(screen.getByLabelText('比较终点')).toBeDisabled()
+		expect(screen.getByRole('button', { name: '加载更多版本' })).toBeDisabled()
+		expect(screen.getByRole('button', { name: '撤销回滚' })).toBeDisabled()
+		expect(screen.getAllByRole('button', { name: /^v/ })).not.toHaveLength(0)
+		for (const versionButton of screen.getAllByRole('button', { name: /^v/ })) expect(versionButton).toBeDisabled()
 	})
 
 	it('覆盖未发布、加载失败、归档和不可恢复状态', async () => {

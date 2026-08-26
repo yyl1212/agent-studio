@@ -207,6 +207,7 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
   await page.goto(workflowURL)
   await expect(page.getByText('已保存')).toBeVisible()
   await page.getByRole('button', { name: '版本历史' }).click()
+  await expect(page.getByRole('heading', { name: '版本历史' })).toBeFocused()
   await page.getByLabel('比较起点').selectOption('version:1')
   await page.getByLabel('比较终点').selectOption('version:2')
   await expect(page.getByRole('button', { name: /节点 · [1-9]/ })).toBeVisible()
@@ -220,6 +221,10 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
   await expect(page.locator('.version-diff-view')).toContainText('Draft：{{topic}}')
 
   await page.getByRole('button', { name: '恢复 v1 为草稿' }).click()
+  const rollbackDialog = page.getByRole('dialog', { name: '恢复 v1 为草稿？' })
+  await expect(rollbackDialog).toBeVisible()
+  expect(await rollbackDialog.evaluate((element) => (element as HTMLDialogElement).matches(':modal'))).toBe(true)
+  await expect(page.getByLabel('比较起点')).toBeDisabled()
   await page.getByRole('button', { name: '确认恢复' }).click()
   await expect(page.getByText('已回滚到版本 1')).toBeVisible()
   await expect(page.getByRole('button', { name: '撤销回滚' })).toBeVisible()
@@ -229,7 +234,9 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
   const historicalRun = await (await page.request.get(`http://127.0.0.1:8080/api/runs/${runID}`)).json() as { run: { workflowVersionId: string } }
   expect(historicalRun.run.workflowVersionId).toBe(v2.id)
 
+  const versionHistoryButton = page.getByRole('button', { name: '版本历史' })
   await page.getByRole('button', { name: '关闭工作台' }).click()
+  await expect(versionHistoryButton).toBeFocused()
   await page.getByTestId('node-template').click()
   await expect(page.getByLabel('模板', { exact: true })).toHaveValue('V1：{{topic}}')
   await page.getByRole('button', { name: '版本历史' }).click()

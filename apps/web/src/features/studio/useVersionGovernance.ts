@@ -251,8 +251,9 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 		setMutating(true)
 		setError('')
 		setNotice('')
+		const submittedRevision = revision.current
 		try {
-			const nextWorkflow = await api.undoWorkflowRollback(options.workflow.id, { expectedDraftRevision: revision.current }, controller.signal)
+			const nextWorkflow = await api.undoWorkflowRollback(options.workflow.id, { expectedDraftRevision: submittedRevision }, controller.signal)
 			if (controller.signal.aborted) return
 			await options.onApplyWorkflow(nextWorkflow)
 			revision.current = nextWorkflow.draftRevision
@@ -263,7 +264,31 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 			setListRefresh((value) => value + 1)
 			setDiffRefresh((value) => value + 1)
 		} catch (cause) {
-			if (!isAbort(cause)) setError(publicError(cause, '撤销回滚失败，请稍后重试'))
+			if (isAbort(cause)) return
+			let recovered = false
+			if (!(cause instanceof APIError)) {
+				try {
+					const [freshWorkflow, freshPage] = await Promise.all([
+						api.getWorkflow(options.workflow.id, controller.signal),
+						api.listWorkflowVersions(options.workflow.id, { limit: 20 }, controller.signal),
+					])
+					recovered = freshWorkflow.draftRevision > submittedRevision && freshPage.rollbackCheckpoint === null
+					if (recovered) {
+						await options.onApplyWorkflow(freshWorkflow)
+						revision.current = freshWorkflow.draftRevision
+						setVersions(sortAndDeduplicate(freshPage.items))
+						setNextCursor(freshPage.nextCursor ?? undefined)
+						setCompare({ kind: 'draft', draftRevision: freshWorkflow.draftRevision })
+						setCheckpoint(undefined)
+						checkpointEditSerial.current = undefined
+						setNotice('撤销回滚已完成，状态已刷新')
+						setDiffRefresh((value) => value + 1)
+					}
+				} catch (recoveryCause) {
+					if (isAbort(recoveryCause)) return
+				}
+			}
+			if (!recovered) setError(publicError(cause, '撤销回滚失败，请稍后重试'))
 		} finally {
 			if (!controller.signal.aborted) setMutating(false)
 		}
