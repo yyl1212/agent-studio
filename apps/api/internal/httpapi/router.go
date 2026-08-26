@@ -56,6 +56,13 @@ type WorkflowManager interface {
 	Restore(context.Context, string) (domain.Workflow, error)
 }
 
+type VersionGovernance interface {
+	List(context.Context, string, workflow.WorkflowVersionListRequest) (domain.WorkflowVersionPage, error)
+	Diff(context.Context, string, workflow.WorkflowDiffRequest) (domain.WorkflowDiff, error)
+	Rollback(context.Context, string, workflow.WorkflowRollbackInput) (workflow.WorkflowRollbackResult, error)
+	Undo(context.Context, string, int64) (domain.Workflow, error)
+}
+
 type RunManager interface {
 	List(context.Context, workflow.RunSummaryRequest) (workflow.RunSummaryPage, error)
 	Cancel(context.Context, string) (domain.RunSummary, error)
@@ -84,6 +91,7 @@ type Dependencies struct {
 	Registry           *nodes.Registry
 	Workflows          WorkflowService
 	WorkflowManagement WorkflowManager
+	VersionGovernance  VersionGovernance
 	Runner             Runner
 	Runs               RunReader
 	AgentRuns          AgentRunAPI
@@ -126,6 +134,10 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Post("/workflows/{id}/copies", handler.copyWorkflow)
 		api.Post("/workflows/{id}/archive", handler.archiveWorkflow)
 		api.Post("/workflows/{id}/restore", handler.restoreWorkflow)
+		api.Get("/workflows/{id}/versions", handler.listWorkflowVersions)
+		api.Post("/workflows/{id}/version-diffs", handler.diffWorkflowVersions)
+		api.Post("/workflows/{id}/rollbacks", handler.rollbackWorkflow)
+		api.Post("/workflows/{id}/rollback-undo", handler.undoWorkflowRollback)
 		api.Get("/workflows/{id}/template", handler.exportWorkflowTemplate)
 		api.Put("/workflows/{id}", handler.saveWorkflow)
 		api.Put("/workflows/{id}/agent-presentation", handler.saveAgentPresentation)

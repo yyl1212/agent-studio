@@ -44,6 +44,12 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 		status, response.Code, response.Message = http.StatusNotFound, string(nodeindex.CodeNotFound), "节点包不存在"
 	case nodeindex.CodeOf(err) == nodeindex.CodeContentInvalid:
 		status, response.Code, response.Message = http.StatusBadRequest, "REQUEST_INVALID", "请求内容无效"
+	case errors.Is(err, domain.ErrWorkflowVersionNotFound):
+		status, response.Code, response.Message = http.StatusNotFound, "WORKFLOW_VERSION_NOT_FOUND", "工作流版本不存在"
+	case errors.Is(err, domain.ErrWorkflowSnapshotUnsupported):
+		status, response.Code, response.Message = http.StatusUnprocessableEntity, "WORKFLOW_SNAPSHOT_UNSUPPORTED", "当前工作流版本快照不受支持"
+	case errors.Is(err, domain.ErrRollbackUndoUnavailable):
+		status, response.Code, response.Message = http.StatusConflict, "ROLLBACK_UNDO_UNAVAILABLE", "当前回滚已无法撤销"
 	case errors.Is(err, domain.ErrNotFound):
 		status, response.Code, response.Message = http.StatusNotFound, "NOT_FOUND", "资源不存在"
 	case errors.Is(err, domain.ErrRevisionConflict):

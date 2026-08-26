@@ -84,6 +84,7 @@ func run(logger *slog.Logger) error {
 	runCoordinator := workflow.NewRunCoordinator(store, workflow.WithCoordinatorLogger(logger))
 	workflowService := workflow.NewService(store, compiler, registry)
 	workflowManagement := workflow.NewWorkflowManagementService(store)
+	versionGovernance := workflow.NewVersionGovernanceService(store, compiler, registry)
 	runService := workflow.NewRunService(store, compiler, runtime, workflow.WithLogger(logger), workflow.WithRunCoordinator(runCoordinator))
 	agentRunSupervisor := workflow.NewAgentRunSupervisor(processContext, cfg.MaxActiveAgentRuns, runService, workflow.WithAgentRunSupervisorLogger(logger))
 	agentRunService := workflow.NewAgentRunService(runService, store, agentRunSupervisor, runCoordinator)
@@ -93,6 +94,7 @@ func run(logger *slog.Logger) error {
 		Registry:           registry,
 		Workflows:          workflowService,
 		WorkflowManagement: workflowManagement,
+		VersionGovernance:  versionGovernance,
 		Runner:             runService,
 		Runs:               store,
 		AgentRuns:          agentRunService,

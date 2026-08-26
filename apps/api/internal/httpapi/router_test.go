@@ -183,6 +183,39 @@ type fixtureWorkflowManager struct {
 	copy     workflow.CopyWorkflowInput
 }
 
+type fixtureVersionGovernance struct {
+	operation     string
+	workflowID    string
+	listRequest   workflow.WorkflowVersionListRequest
+	diffRequest   workflow.WorkflowDiffRequest
+	rollbackInput workflow.WorkflowRollbackInput
+	undoRevision  int64
+	err           error
+}
+
+func (governance *fixtureVersionGovernance) List(_ context.Context, workflowID string, request workflow.WorkflowVersionListRequest) (domain.WorkflowVersionPage, error) {
+	governance.operation, governance.workflowID, governance.listRequest = "list", workflowID, request
+	return domain.WorkflowVersionPage{Items: []domain.WorkflowVersionSummary{}}, governance.err
+}
+
+func (governance *fixtureVersionGovernance) Diff(_ context.Context, workflowID string, request workflow.WorkflowDiffRequest) (domain.WorkflowDiff, error) {
+	governance.operation, governance.workflowID, governance.diffRequest = "diff", workflowID, request
+	return domain.WorkflowDiff{Groups: domain.WorkflowDiffGroups{
+		Nodes: []domain.WorkflowNodeDiff{}, StartParameters: []domain.WorkflowStartParameterDiff{},
+		Connections: []domain.WorkflowConnectionDiff{}, AgentPresentation: []domain.WorkflowPresentationDiff{}, Layout: []domain.WorkflowLayoutDiff{},
+	}}, governance.err
+}
+
+func (governance *fixtureVersionGovernance) Rollback(_ context.Context, workflowID string, input workflow.WorkflowRollbackInput) (workflow.WorkflowRollbackResult, error) {
+	governance.operation, governance.workflowID, governance.rollbackInput = "rollback", workflowID, input
+	return workflow.WorkflowRollbackResult{}, governance.err
+}
+
+func (governance *fixtureVersionGovernance) Undo(_ context.Context, workflowID string, revision int64) (domain.Workflow, error) {
+	governance.operation, governance.workflowID, governance.undoRevision = "undo", workflowID, revision
+	return domain.Workflow{}, governance.err
+}
+
 func (manager *fixtureWorkflowManager) List(_ context.Context, request workflow.WorkflowSummaryRequest) (workflow.WorkflowSummaryPage, error) {
 	manager.request = request
 	return workflow.WorkflowSummaryPage{Items: []domain.WorkflowSummary{}}, manager.err
@@ -510,6 +543,98 @@ func TestManagementErrorsUseStableCodes(t *testing.T) {
 	dependencies.RunManagement.(*fixtureRunManager).err = workflow.ErrCursorInvalid
 	recorder = performRequest(NewRouter(dependencies), http.MethodGet, "/api/runs", "")
 	assertJSONError(t, recorder, http.StatusBadRequest, "CURSOR_INVALID")
+}
+
+func TestVersionGovernanceRoutes(t *testing.T) {
+	const workflowID = "11111111-1111-4111-8111-111111111111"
+	tests := []struct {
+		method    string
+		path      string
+		body      string
+		operation string
+	}{
+		{method: http.MethodGet, path: "/api/workflows/" + workflowID + "/versions?limit=20", operation: "list"},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/version-diffs", body: `{"base":{"kind":"version","version":1},"compare":{"kind":"draft","draftRevision":7}}`, operation: "diff"},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/rollbacks", body: `{"targetVersion":1,"expectedDraftRevision":7}`, operation: "rollback"},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/rollback-undo", body: `{"expectedDraftRevision":8}`, operation: "undo"},
+	}
+	for _, test := range tests {
+		t.Run(test.operation, func(t *testing.T) {
+			dependencies := fixtureDeps()
+			governance := dependencies.VersionGovernance.(*fixtureVersionGovernance)
+			recorder := performRequest(NewRouter(dependencies), test.method, test.path, test.body)
+			if recorder.Code != http.StatusOK || governance.operation != test.operation || governance.workflowID != workflowID {
+				t.Fatalf("%s %s status=%d operation=%q workflow=%q body=%s", test.method, test.path, recorder.Code, governance.operation, governance.workflowID, recorder.Body.String())
+			}
+			if test.operation == "diff" && recorder.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("diff headers=%v", recorder.Header())
+			}
+			if test.operation == "list" && governance.listRequest.Limit != 20 {
+				t.Fatalf("list request=%+v", governance.listRequest)
+			}
+		})
+	}
+}
+
+func TestVersionGovernanceRoutesRejectInvalidRequestsBeforeService(t *testing.T) {
+	const workflowID = "11111111-1111-4111-8111-111111111111"
+	tests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/workflows/not-a-uuid/versions"},
+		{method: http.MethodGet, path: "/api/workflows/11111111-1111-4111-8111-AAAAAAAAAAAA/versions"},
+		{method: http.MethodGet, path: "/api/workflows/" + workflowID + "/versions?limit=0"},
+		{method: http.MethodGet, path: "/api/workflows/" + workflowID + "/versions?limit=101"},
+		{method: http.MethodGet, path: "/api/workflows/" + workflowID + "/versions?cursor=a&cursor=b"},
+		{method: http.MethodGet, path: "/api/workflows/" + workflowID + "/versions?cursor=" + strings.Repeat("a", 513)},
+		{method: http.MethodGet, path: "/api/workflows/" + workflowID + "/versions?unknown=true"},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/version-diffs", body: `{"base":{"kind":"version","version":0},"compare":{"kind":"draft","draftRevision":7}}`},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/version-diffs", body: `{"base":{"kind":"version","version":1,"draftRevision":7},"compare":{"kind":"draft","draftRevision":7}}`},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/version-diffs", body: `{"base":{"kind":"version","version":1},"compare":{"kind":"draft","draftRevision":7},"unknown":true}`},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/rollbacks", body: `{"targetVersion":0,"expectedDraftRevision":7}`},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/rollbacks", body: `{"targetVersion":1,"expectedDraftRevision":0}`},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/rollbacks", body: `{"targetVersion":1,"expectedDraftRevision":7,"unknown":true}`},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/rollback-undo", body: `{"expectedDraftRevision":0}`},
+		{method: http.MethodPost, path: "/api/workflows/" + workflowID + "/rollback-undo", body: `{"expectedDraftRevision":8,"unknown":true}`},
+	}
+	for _, test := range tests {
+		dependencies := fixtureDeps()
+		governance := dependencies.VersionGovernance.(*fixtureVersionGovernance)
+		recorder := performRequest(NewRouter(dependencies), test.method, test.path, test.body)
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+		if governance.operation != "" {
+			t.Fatalf("invalid request reached service: %s %s operation=%q", test.method, test.path, governance.operation)
+		}
+	}
+}
+
+func TestWorkflowVersionErrorsUseStableCodes(t *testing.T) {
+	const path = "/api/workflows/11111111-1111-4111-8111-111111111111/versions"
+	tests := []struct {
+		err     error
+		status  int
+		code    string
+		message string
+	}{
+		{err: domain.ErrWorkflowVersionNotFound, status: http.StatusNotFound, code: "WORKFLOW_VERSION_NOT_FOUND", message: "工作流版本不存在"},
+		{err: domain.ErrWorkflowSnapshotUnsupported, status: http.StatusUnprocessableEntity, code: "WORKFLOW_SNAPSHOT_UNSUPPORTED", message: "当前工作流版本快照不受支持"},
+		{err: domain.ErrRollbackUndoUnavailable, status: http.StatusConflict, code: "ROLLBACK_UNDO_UNAVAILABLE", message: "当前回滚已无法撤销"},
+		{err: domain.ErrRevisionConflict, status: http.StatusConflict, code: "WORKFLOW_REVISION_CONFLICT", message: "草稿版本已变化，请刷新后重试"},
+		{err: domain.ErrWorkflowArchived, status: http.StatusConflict, code: "WORKFLOW_ARCHIVED", message: "工作流已归档，请先恢复后再操作"},
+		{err: workflow.ErrCursorInvalid, status: http.StatusBadRequest, code: "CURSOR_INVALID", message: "分页游标无效，请刷新后重试"},
+	}
+	for _, test := range tests {
+		dependencies := fixtureDeps()
+		dependencies.VersionGovernance.(*fixtureVersionGovernance).err = test.err
+		recorder := performRequest(NewRouter(dependencies), http.MethodGet, path, "")
+		assertJSONError(t, recorder, test.status, test.code)
+		var response ErrorResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Message != test.message {
+			t.Fatalf("response=%+v err=%v", response, err)
+		}
+	}
 }
 
 func TestRouterRejectsUnknownJSONAndAppliesCORS(t *testing.T) {
@@ -1161,10 +1286,11 @@ func fixtureDeps() Dependencies {
 		WorkflowManagement: &fixtureWorkflowManager{
 			workflow: domain.Workflow{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Name: "演示"},
 		},
-		RunManagement: &fixtureRunManager{},
-		Debugger:      &fixtureDebugger{},
-		Readiness:     fixtureReady{},
-		WebOrigin:     "http://localhost:5173",
+		VersionGovernance: &fixtureVersionGovernance{},
+		RunManagement:     &fixtureRunManager{},
+		Debugger:          &fixtureDebugger{},
+		Readiness:         fixtureReady{},
+		WebOrigin:         "http://localhost:5173",
 	}
 }
 

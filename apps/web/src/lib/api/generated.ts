@@ -184,6 +184,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get: operations["listWorkflowVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{id}/version-diffs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["diffWorkflowVersions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{id}/rollbacks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rollbackWorkflow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{id}/rollback-undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["undoWorkflowRollback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{id}/copies": {
         parameters: {
             query?: never;
@@ -610,6 +682,143 @@ export interface components {
             schemaVersion: 1;
             nodes: components["schemas"]["Node"][];
             edges: components["schemas"]["Edge"][];
+        };
+        WorkflowSnapshotRef: {
+            /** @constant */
+            kind: "draft";
+            /** Format: int64 */
+            draftRevision: number;
+        } | {
+            /** @constant */
+            kind: "version";
+            version: number;
+        };
+        WorkflowSnapshotDescriptor: {
+            /** @constant */
+            kind: "draft";
+            /** Format: int64 */
+            draftRevision: number;
+        } | {
+            /** @constant */
+            kind: "version";
+            version: number;
+            /** Format: uuid */
+            versionId: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        WorkflowVersionSummary: {
+            /** Format: uuid */
+            id: string;
+            version: number;
+            current: boolean;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        RollbackCheckpointSummary: {
+            /** Format: int64 */
+            sourceRevision: number;
+            /** Format: int64 */
+            restoredRevision: number;
+            restoredFromVersion: number;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        WorkflowVersionPage: {
+            items: components["schemas"]["WorkflowVersionSummary"][];
+            nextCursor: string | null;
+            rollbackCheckpoint: components["schemas"]["RollbackCheckpointSummary"] | null;
+        };
+        WorkflowDiffRequest: {
+            base: components["schemas"]["WorkflowSnapshotRef"];
+            compare: components["schemas"]["WorkflowSnapshotRef"];
+        };
+        WorkflowValueDiff: {
+            path: string;
+            /** @enum {string} */
+            kind: "added" | "removed" | "modified" | "reordered";
+            before?: unknown;
+            after?: unknown;
+            /** @enum {string} */
+            valueOmitted?: "secret" | "definition_unavailable" | "too_large";
+        };
+        WorkflowNodeTypeSummary: {
+            type: string;
+            version: string;
+            title: string;
+        };
+        WorkflowNodeDiff: {
+            nodeId: string;
+            title: string;
+            /** @enum {string} */
+            kind: "added" | "removed" | "modified" | "reordered";
+            beforeType?: components["schemas"]["WorkflowNodeTypeSummary"];
+            afterType?: components["schemas"]["WorkflowNodeTypeSummary"];
+            config: components["schemas"]["WorkflowValueDiff"][];
+        };
+        WorkflowStartParameterDiff: {
+            key: string;
+            /** @enum {string} */
+            kind: "added" | "removed" | "modified" | "reordered";
+            beforeOrder?: number;
+            afterOrder?: number;
+            changes: components["schemas"]["WorkflowValueDiff"][];
+        };
+        WorkflowConnectionSummary: {
+            source: string;
+            sourcePort: string;
+            target: string;
+            targetPort: string;
+        };
+        WorkflowConnectionDiff: {
+            /** @enum {string} */
+            kind: "added" | "removed" | "modified" | "reordered";
+            connection: components["schemas"]["WorkflowConnectionSummary"];
+        };
+        WorkflowPresentationDiff: {
+            field: string;
+            change: components["schemas"]["WorkflowValueDiff"];
+        };
+        WorkflowLayoutDiff: {
+            nodeId: string;
+            title: string;
+            before: components["schemas"]["Position"];
+            after: components["schemas"]["Position"];
+        };
+        WorkflowDiffSummary: {
+            total: number;
+            nodes: number;
+            startParameters: number;
+            connections: number;
+            agentPresentation: number;
+            layout: number;
+        };
+        WorkflowDiffGroups: {
+            nodes: components["schemas"]["WorkflowNodeDiff"][];
+            startParameters: components["schemas"]["WorkflowStartParameterDiff"][];
+            connections: components["schemas"]["WorkflowConnectionDiff"][];
+            agentPresentation: components["schemas"]["WorkflowPresentationDiff"][];
+            layout: components["schemas"]["WorkflowLayoutDiff"][];
+        };
+        WorkflowDiff: {
+            base: components["schemas"]["WorkflowSnapshotDescriptor"];
+            compare: components["schemas"]["WorkflowSnapshotDescriptor"];
+            summary: components["schemas"]["WorkflowDiffSummary"];
+            truncated: boolean;
+            groups: components["schemas"]["WorkflowDiffGroups"];
+        };
+        WorkflowRollbackRequest: {
+            targetVersion: number;
+            /** Format: int64 */
+            expectedDraftRevision: number;
+        };
+        WorkflowRollbackResult: {
+            workflow: components["schemas"]["Workflow"];
+            rollbackCheckpoint: components["schemas"]["RollbackCheckpointSummary"];
+        };
+        WorkflowRollbackUndoRequest: {
+            /** Format: int64 */
+            expectedDraftRevision: number;
         };
         PortDefinition: {
             key: string;
@@ -1563,6 +1772,126 @@ export interface operations {
         };
         responses: {
             /** @description 已保存 Agent 页面配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workflow"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    listWorkflowVersions: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 工作流版本页与当前可撤销检查点 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowVersionPage"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    diffWorkflowVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowDiffRequest"];
+            };
+        };
+        responses: {
+            /** @description 已按语义分组且脱敏的工作流差异 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowDiff"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    rollbackWorkflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowRollbackRequest"];
+            };
+        };
+        responses: {
+            /** @description 已将目标版本恢复为新的草稿修订 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowRollbackResult"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    undoWorkflowRollback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowRollbackUndoRequest"];
+            };
+        };
+        responses: {
+            /** @description 已撤销最近一次未被编辑的草稿回滚 */
             200: {
                 headers: {
                     [name: string]: unknown;
