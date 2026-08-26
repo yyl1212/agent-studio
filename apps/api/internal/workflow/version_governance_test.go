@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/internal/nodepackage"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
@@ -71,14 +72,97 @@ func TestVersionGovernanceListDefaultsAndRejectsInvalidRequestsBeforeStore(t *te
 	}
 }
 
+func TestVersionGovernanceRollbackCompilesTargetBeforeStoreMutation(t *testing.T) {
+	store := snapshotFixtureStore(snapshotGraph("text", "null"), snapshotTextInputSchema())
+	compiler := &versionGovernanceFixtureCompiler{issues: []domain.ValidationIssue{{Code: "NODE_TYPE_NOT_FOUND", NodeID: "old"}}}
+	service := NewVersionGovernanceService(store, compiler, emptyVersionCatalog{})
+
+	_, err := service.Rollback(context.Background(), store.workflow.ID, WorkflowRollbackInput{
+		TargetVersion: 1, ExpectedDraftRevision: store.workflow.DraftRevision,
+	})
+	if !errors.Is(err, domain.ErrWorkflowSnapshotUnsupported) || store.rollbackCalls != 0 || compiler.calls != 1 {
+		t.Fatalf("err=%v rollbackCalls=%d compilerCalls=%d", err, store.rollbackCalls, compiler.calls)
+	}
+}
+
+func TestVersionGovernanceRollbackUsesVersionIDAndReturnsCheckpoint(t *testing.T) {
+	store := snapshotFixtureStore(snapshotGraph("text", "null"), snapshotTextInputSchema())
+	checkpoint := domain.RollbackCheckpointSummary{SourceRevision: 8, RestoredRevision: 9, RestoredFromVersion: 1}
+	store.rollbackWorkflow = domain.Workflow{ID: store.workflow.ID, DraftRevision: 9}
+	store.rollbackCheckpoint = checkpoint
+	compiler := &versionGovernanceFixtureCompiler{}
+
+	result, err := NewVersionGovernanceService(store, compiler, emptyVersionCatalog{}).Rollback(
+		context.Background(), store.workflow.ID,
+		WorkflowRollbackInput{TargetVersion: 1, ExpectedDraftRevision: store.workflow.DraftRevision},
+	)
+	if err != nil || result.Workflow.DraftRevision != 9 || result.RollbackCheckpoint != checkpoint {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if store.rollbackVersionID != store.version.ID || store.rollbackRevision != store.workflow.DraftRevision || compiler.calls != 1 {
+		t.Fatalf("versionID=%q revision=%d compilerCalls=%d", store.rollbackVersionID, store.rollbackRevision, compiler.calls)
+	}
+}
+
+func TestVersionGovernanceRollbackAndUndoValidateAndPreserveStoreErrors(t *testing.T) {
+	store := snapshotFixtureStore(snapshotGraph("text", "null"), snapshotTextInputSchema())
+	service := NewVersionGovernanceService(store, &versionGovernanceFixtureCompiler{}, emptyVersionCatalog{})
+	for _, input := range []WorkflowRollbackInput{
+		{TargetVersion: 0, ExpectedDraftRevision: store.workflow.DraftRevision},
+		{TargetVersion: 1, ExpectedDraftRevision: 0},
+	} {
+		getCalls, rollbackCalls := store.getVersionCalls, store.rollbackCalls
+		if _, err := service.Rollback(context.Background(), store.workflow.ID, input); !errors.Is(err, ErrInvalidWorkflowInput) {
+			t.Fatalf("input=%+v err=%v", input, err)
+		}
+		if store.getVersionCalls != getCalls || store.rollbackCalls != rollbackCalls {
+			t.Fatalf("invalid input reached store: %+v", input)
+		}
+	}
+	if _, err := service.Rollback(context.Background(), store.workflow.ID, WorkflowRollbackInput{
+		TargetVersion: 2, ExpectedDraftRevision: store.workflow.DraftRevision,
+	}); !errors.Is(err, domain.ErrWorkflowVersionNotFound) {
+		t.Fatalf("missing version err=%v", err)
+	}
+
+	store.rollbackErr = domain.ErrWorkflowArchived
+	if _, err := service.Rollback(context.Background(), store.workflow.ID, WorkflowRollbackInput{
+		TargetVersion: 1, ExpectedDraftRevision: store.workflow.DraftRevision,
+	}); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("archived rollback err=%v", err)
+	}
+	store.undoErr = domain.ErrRollbackUndoUnavailable
+	if _, err := service.Undo(context.Background(), store.workflow.ID, store.workflow.DraftRevision); !errors.Is(err, domain.ErrRollbackUndoUnavailable) {
+		t.Fatalf("undo err=%v", err)
+	}
+	if store.undoRevision != store.workflow.DraftRevision {
+		t.Fatalf("undo revision=%d", store.undoRevision)
+	}
+	undoCalls := store.undoCalls
+	if _, err := service.Undo(context.Background(), store.workflow.ID, 0); !errors.Is(err, ErrInvalidWorkflowInput) || store.undoCalls != undoCalls {
+		t.Fatalf("invalid undo err=%v calls=%d", err, store.undoCalls)
+	}
+}
+
 type versionGovernanceFixtureStore struct {
-	workflow      domain.Workflow
-	version       domain.WorkflowVersion
-	versions      []domain.WorkflowVersionSummary
-	checkpoint    *domain.RollbackCheckpointSummary
-	beforeVersion int
-	limit         int
-	listCalls     int
+	workflow           domain.Workflow
+	version            domain.WorkflowVersion
+	versions           []domain.WorkflowVersionSummary
+	checkpoint         *domain.RollbackCheckpointSummary
+	beforeVersion      int
+	limit              int
+	listCalls          int
+	getVersionCalls    int
+	rollbackCalls      int
+	rollbackVersionID  string
+	rollbackRevision   int64
+	rollbackWorkflow   domain.Workflow
+	rollbackCheckpoint domain.RollbackCheckpointSummary
+	rollbackErr        error
+	undoCalls          int
+	undoRevision       int64
+	undoWorkflow       domain.Workflow
+	undoErr            error
 }
 
 func (store *versionGovernanceFixtureStore) GetWorkflow(context.Context, string) (domain.Workflow, error) {
@@ -86,6 +170,7 @@ func (store *versionGovernanceFixtureStore) GetWorkflow(context.Context, string)
 }
 
 func (store *versionGovernanceFixtureStore) GetWorkflowVersionByNumber(_ context.Context, workflowID string, version int) (domain.WorkflowVersion, error) {
+	store.getVersionCalls++
 	if store.version.WorkflowID != workflowID || store.version.Version != version {
 		return domain.WorkflowVersion{}, domain.ErrWorkflowVersionNotFound
 	}
@@ -109,12 +194,29 @@ func (store *versionGovernanceFixtureStore) ListWorkflowVersions(_ context.Conte
 	return VersionListRows{Items: items, Checkpoint: store.checkpoint}, nil
 }
 
-func (store *versionGovernanceFixtureStore) RollbackWorkflowDraft(context.Context, string, string, int64) (domain.Workflow, domain.RollbackCheckpointSummary, error) {
-	return domain.Workflow{}, domain.RollbackCheckpointSummary{}, errors.New("not implemented")
+func (store *versionGovernanceFixtureStore) RollbackWorkflowDraft(_ context.Context, _ string, versionID string, revision int64) (domain.Workflow, domain.RollbackCheckpointSummary, error) {
+	store.rollbackCalls++
+	store.rollbackVersionID = versionID
+	store.rollbackRevision = revision
+	return store.rollbackWorkflow, store.rollbackCheckpoint, store.rollbackErr
 }
 
-func (store *versionGovernanceFixtureStore) UndoWorkflowDraftRollback(context.Context, string, int64) (domain.Workflow, error) {
-	return domain.Workflow{}, errors.New("not implemented")
+func (store *versionGovernanceFixtureStore) UndoWorkflowDraftRollback(_ context.Context, _ string, revision int64) (domain.Workflow, error) {
+	store.undoCalls++
+	store.undoRevision = revision
+	return store.undoWorkflow, store.undoErr
+}
+
+type versionGovernanceFixtureCompiler struct {
+	calls  int
+	graph  domain.Graph
+	issues []domain.ValidationIssue
+}
+
+func (compiler *versionGovernanceFixtureCompiler) Compile(graph domain.Graph) (*engine.Plan, []domain.ValidationIssue) {
+	compiler.calls++
+	compiler.graph = graph
+	return nil, compiler.issues
 }
 
 type emptyVersionCatalog struct{}

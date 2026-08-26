@@ -18,6 +18,20 @@ type WorkflowDiffRequest struct {
 	Compare domain.WorkflowSnapshotRef `json:"compare"`
 }
 
+type WorkflowRollbackInput struct {
+	TargetVersion         int   `json:"targetVersion"`
+	ExpectedDraftRevision int64 `json:"expectedDraftRevision"`
+}
+
+type WorkflowRollbackResult struct {
+	Workflow           domain.Workflow                  `json:"workflow"`
+	RollbackCheckpoint domain.RollbackCheckpointSummary `json:"rollbackCheckpoint"`
+}
+
+type WorkflowRollbackUndoInput struct {
+	ExpectedDraftRevision int64 `json:"expectedDraftRevision"`
+}
+
 type VersionListRows struct {
 	Items      []domain.WorkflowVersionSummary
 	Checkpoint *domain.RollbackCheckpointSummary
@@ -93,4 +107,40 @@ func (service *VersionGovernanceService) Diff(ctx context.Context, workflowID st
 		return domain.WorkflowDiff{}, err
 	}
 	return newSemanticDiffEngine(service.definitions).Diff(base, compare)
+}
+
+func (service *VersionGovernanceService) Rollback(ctx context.Context, workflowID string, input WorkflowRollbackInput) (WorkflowRollbackResult, error) {
+	if input.TargetVersion <= 0 || input.ExpectedDraftRevision <= 0 {
+		return WorkflowRollbackResult{}, ErrInvalidWorkflowInput
+	}
+	targetVersion := input.TargetVersion
+	snapshot, err := service.loadSnapshot(ctx, workflowID, domain.WorkflowSnapshotRef{
+		Kind: domain.WorkflowSnapshotVersion, Version: &targetVersion,
+	})
+	if err != nil {
+		return WorkflowRollbackResult{}, err
+	}
+	if service.compiler == nil {
+		return WorkflowRollbackResult{}, domain.ErrWorkflowSnapshotUnsupported
+	}
+	if _, issues := service.compiler.Compile(snapshot.Graph); len(issues) > 0 {
+		return WorkflowRollbackResult{}, domain.ErrWorkflowSnapshotUnsupported
+	}
+	if snapshot.Descriptor.VersionID == nil {
+		return WorkflowRollbackResult{}, domain.ErrWorkflowSnapshotUnsupported
+	}
+	workflow, checkpoint, err := service.store.RollbackWorkflowDraft(
+		ctx, workflowID, *snapshot.Descriptor.VersionID, input.ExpectedDraftRevision,
+	)
+	if err != nil {
+		return WorkflowRollbackResult{}, err
+	}
+	return WorkflowRollbackResult{Workflow: workflow, RollbackCheckpoint: checkpoint}, nil
+}
+
+func (service *VersionGovernanceService) Undo(ctx context.Context, workflowID string, expectedRevision int64) (domain.Workflow, error) {
+	if expectedRevision <= 0 {
+		return domain.Workflow{}, ErrInvalidWorkflowInput
+	}
+	return service.store.UndoWorkflowDraftRollback(ctx, workflowID, expectedRevision)
 }
