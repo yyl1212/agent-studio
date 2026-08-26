@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestMigrateUpgradesPreviousSchemaWithRunRecovery(t *testing.T) {
+func TestMigrateUpgradesPreviousSchemaWithVersionGovernance(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
@@ -69,8 +69,8 @@ func TestMigrateUpgradesPreviousSchemaWithRunRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 5 {
-		t.Fatalf("migration files=%d, want 5", len(files))
+	if len(files) != 6 {
+		t.Fatalf("migration files=%d, want 6", len(files))
 	}
 	if err := store.applyMigration(ctx, files[0]); err != nil {
 		t.Fatal(err)
@@ -137,6 +137,14 @@ func TestMigrateUpgradesPreviousSchemaWithRunRecovery(t *testing.T) {
 	assertConstraintExists(t, store.pool, "runs_retry_workflow_fk")
 	assertIndexExists(t, store.pool, "runs_retry_key_unique_idx")
 	assertIndexExists(t, store.pool, "runs_active_heartbeat_idx")
+	assertTableExists(t, store.pool, "workflow_draft_checkpoints")
+	for _, column := range []string{
+		"workflow_id", "source_revision", "restored_revision", "graph",
+		"agent_presentation", "restored_from_version_id", "created_at",
+	} {
+		assertColumnExists(t, store.pool, "workflow_draft_checkpoints", column)
+	}
+	assertConstraintExists(t, store.pool, "workflow_draft_checkpoints_version_fk")
 	var inputPaths []string
 	if err := store.pool.QueryRow(ctx, "SELECT input_redacted_paths FROM runs WHERE id=$1", historicalRunID).Scan(&inputPaths); err != nil {
 		t.Fatal(err)
@@ -173,6 +181,17 @@ func TestMigrateUpgradesPreviousSchemaWithRunRecovery(t *testing.T) {
 		"runs_workflow_mode_started_at_id_idx",
 	} {
 		assertIndexExists(t, store.pool, indexName)
+	}
+}
+
+func assertTableExists(t *testing.T, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, name string) {
+	t.Helper()
+	var table *string
+	err := pool.QueryRow(context.Background(), "SELECT to_regclass($1)::text", name).Scan(&table)
+	if err != nil || table == nil || *table != name {
+		t.Fatalf("table %s=%v err=%v", name, table, err)
 	}
 }
 

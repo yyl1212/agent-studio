@@ -8,12 +8,15 @@ import (
 )
 
 var (
-	ErrNotFound               = errors.New("record not found")
-	ErrRevisionConflict       = errors.New("workflow revision conflict")
-	ErrSlugConflict           = errors.New("workflow slug conflict")
-	ErrWorkflowArchived       = errors.New("workflow archived")
-	ErrRunEventSequence       = errors.New("run event sequence invalid")
-	ErrRunEventBudgetExceeded = errors.New("run event budget exceeded")
+	ErrNotFound                    = errors.New("record not found")
+	ErrRevisionConflict            = errors.New("workflow revision conflict")
+	ErrSlugConflict                = errors.New("workflow slug conflict")
+	ErrWorkflowArchived            = errors.New("workflow archived")
+	ErrWorkflowVersionNotFound     = errors.New("workflow version not found")
+	ErrWorkflowSnapshotUnsupported = errors.New("workflow snapshot unsupported")
+	ErrRollbackUndoUnavailable     = errors.New("workflow rollback undo unavailable")
+	ErrRunEventSequence            = errors.New("run event sequence invalid")
+	ErrRunEventBudgetExceeded      = errors.New("run event budget exceeded")
 )
 
 type PublicError struct {
