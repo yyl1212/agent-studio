@@ -582,6 +582,18 @@ paths:
       - $ref: "#/components/parameters/AgentSlug"
     post:
       operationId: runAgent
+      parameters:
+        - name: Prefer
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -596,6 +608,17 @@ paths:
               schema:
                 type: string
                 description: 每行符合 RunEvent Schema。
+        "202":
+          description: 已接受异步 Agent 运行
+          headers:
+            Preference-Applied:
+              schema:
+                type: string
+                const: respond-async
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRunPublicSummary"
         "400":
           $ref: "#/components/responses/Error"
         "404":
@@ -603,6 +626,67 @@ paths:
         "409":
           $ref: "#/components/responses/Error"
         "422":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /api/agents/{slug}/runs/{runID}:
+    parameters:
+      - $ref: "#/components/parameters/AgentSlug"
+      - name: runID
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getAgentRun
+      parameters:
+        - name: afterSequence
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Agent 运行公开快照与增量事件
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRunPublicView"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/agents/{slug}/runs/{runID}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/AgentSlug"
+      - name: runID
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: cancelAgentRun
+      responses:
+        "200":
+          description: Agent 运行最新公开摘要
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRunPublicSummary"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "500":
           $ref: "#/components/responses/Error"
   /api/runs:
     get:
@@ -1799,6 +1883,82 @@ components:
           additionalProperties: true
         presentation:
           $ref: "#/components/schemas/AgentPresentation"
+    AgentRunPublicError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        kind:
+          type: string
+          enum: [config, input, temporary, canceled, internal]
+        message:
+          type: string
+    AgentRunPublicSummary:
+      type: object
+      additionalProperties: false
+      required: [runId, workflowVersionId, version, status, startedAt, endedAt, output, error]
+      properties:
+        runId:
+          type: string
+          format: uuid
+        workflowVersionId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [running, cancelling, completed, failed, cancelled]
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: [string, "null"]
+          format: date-time
+        output: {}
+        error:
+          oneOf:
+            - $ref: "#/components/schemas/AgentRunPublicError"
+            - type: "null"
+    AgentRunPublicEvent:
+      type: object
+      additionalProperties: false
+      required: [sequence, type, timestamp]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+          minimum: 1
+        type:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, skipped, cancelled]
+        timestamp:
+          type: string
+          format: date-time
+    AgentRunPublicView:
+      type: object
+      additionalProperties: false
+      required: [run, presentation, events, nextSequence, hasMore]
+      properties:
+        run:
+          $ref: "#/components/schemas/AgentRunPublicSummary"
+        presentation:
+          $ref: "#/components/schemas/AgentPresentation"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRunPublicEvent"
+        nextSequence:
+          type: integer
+          format: int64
+          minimum: 0
+        hasMore:
+          type: boolean
     Run:
       type: object
       required: [id, workflowId, mode, status, input, inputRedactedPaths, startedAt]

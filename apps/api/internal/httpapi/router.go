@@ -42,6 +42,12 @@ type RunReader interface {
 	ListRuns(context.Context, string, int) ([]domain.Run, error)
 }
 
+type AgentRunAPI interface {
+	Start(context.Context, string, workflow.StartAgentRunInput) (workflow.AgentRunPublicSummary, bool, error)
+	View(context.Context, string, string, int64) (workflow.AgentRunPublicView, error)
+	Cancel(context.Context, string, string) (workflow.AgentRunPublicSummary, error)
+}
+
 type WorkflowManager interface {
 	List(context.Context, workflow.WorkflowSummaryRequest) (workflow.WorkflowSummaryPage, error)
 	Update(context.Context, string, workflow.UpdateWorkflowInput) (domain.Workflow, error)
@@ -80,6 +86,7 @@ type Dependencies struct {
 	WorkflowManagement WorkflowManager
 	Runner             Runner
 	Runs               RunReader
+	AgentRuns          AgentRunAPI
 	RunManagement      RunManager
 	Debugger           Debugger
 	Readiness          Readiness
@@ -130,6 +137,8 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Post("/workflow-templates/import", handler.importWorkflowTemplate)
 		api.Get("/agents/{slug}", handler.getAgentManifest)
 		api.Post("/agents/{slug}/runs", handler.runAgent)
+		api.Get("/agents/{slug}/runs/{runID}", handler.getAgentRun)
+		api.Post("/agents/{slug}/runs/{runID}/cancel", handler.cancelAgentRun)
 		api.Get("/runs/{id}", handler.getRun)
 		api.Get("/runs", handler.listRunSummaries)
 		api.Post("/runs/{id}/cancel", handler.cancelRun)

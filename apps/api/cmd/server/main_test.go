@@ -22,6 +22,19 @@ type recordingShutdownCoordinator struct {
 	events *[]string
 }
 
+type recordingShutdownSupervisor struct {
+	events *[]string
+}
+
+func (supervisor recordingShutdownSupervisor) BeginShutdown() {
+	*supervisor.events = append(*supervisor.events, "supervisor-begin")
+}
+
+func (supervisor recordingShutdownSupervisor) Wait(context.Context) error {
+	*supervisor.events = append(*supervisor.events, "supervisor-wait")
+	return nil
+}
+
 func (coordinator recordingShutdownCoordinator) BeginShutdown() {
 	*coordinator.events = append(*coordinator.events, "coordinator-begin")
 }
@@ -37,11 +50,16 @@ func TestShutdownRuntimeCancelsRunsBeforeHTTPAndStopsLoopLast(t *testing.T) {
 		events = append(events, "http-shutdown")
 		return nil
 	}
-	err := shutdownRuntime(context.Background(), recordingShutdownCoordinator{events: &events}, shutdownHTTP, stop, done)
+	err := shutdownRuntime(
+		context.Background(),
+		recordingShutdownSupervisor{events: &events},
+		recordingShutdownCoordinator{events: &events},
+		shutdownHTTP, stop, done,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"coordinator-begin", "http-shutdown", "coordinator-stop"}
+	want := []string{"supervisor-begin", "coordinator-begin", "http-shutdown", "supervisor-wait", "coordinator-stop"}
 	if len(events) != len(want) {
 		t.Fatalf("shutdown events=%v", events)
 	}

@@ -94,3 +94,27 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 	}
 	writeJSON(writer, status, response)
 }
+
+func writeAgentError(writer http.ResponseWriter, request *http.Request, err error) {
+	setAgentPublicHeaders(writer)
+	response := ErrorResponse{RequestID: chimiddleware.GetReqID(request.Context())}
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		status, response.Code, response.Message = http.StatusNotFound, "AGENT_NOT_FOUND", "Agent 或运行不存在"
+	case errors.Is(err, domain.ErrWorkflowArchived):
+		status, response.Code, response.Message = http.StatusConflict, "WORKFLOW_ARCHIVED", "该 Agent 已归档，暂时不能运行"
+	case errors.Is(err, workflow.ErrInputValidation):
+		status, response.Code, response.Message = http.StatusUnprocessableEntity, "INPUT_VALIDATION_FAILED", "输入内容不符合要求"
+	case errors.Is(err, workflow.ErrAgentRunCapacity):
+		status, response.Code, response.Message = http.StatusTooManyRequests, "RUN_CAPACITY_EXCEEDED", "当前运行较多，请稍后重试"
+		writer.Header().Set("Retry-After", "2")
+	case errors.Is(err, workflow.ErrAgentRunUnavailable):
+		status, response.Code, response.Message = http.StatusServiceUnavailable, "RUN_START_UNAVAILABLE", "服务正在关闭，暂时不能启动运行"
+	case errors.Is(err, workflow.ErrInvalidWorkflowInput):
+		status, response.Code, response.Message = http.StatusBadRequest, "REQUEST_INVALID", "请求内容无效"
+	default:
+		response.Code, response.Message = "INTERNAL_ERROR", "内部错误"
+	}
+	writeJSON(writer, status, response)
+}

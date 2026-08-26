@@ -141,6 +141,38 @@ func (fixtureRunReader) ListRuns(context.Context, string, int) ([]domain.Run, er
 	return []domain.Run{}, nil
 }
 
+type fixtureAgentRuns struct {
+	summary       workflow.AgentRunPublicSummary
+	view          workflow.AgentRunPublicView
+	err           error
+	created       bool
+	startCalls    int
+	viewCalls     int
+	cancelCalls   int
+	slug          string
+	runID         string
+	afterSequence int64
+	startInput    workflow.StartAgentRunInput
+}
+
+func (runs *fixtureAgentRuns) Start(_ context.Context, slug string, input workflow.StartAgentRunInput) (workflow.AgentRunPublicSummary, bool, error) {
+	runs.startCalls++
+	runs.slug, runs.startInput = slug, input
+	return runs.summary, runs.created, runs.err
+}
+
+func (runs *fixtureAgentRuns) View(_ context.Context, slug, runID string, afterSequence int64) (workflow.AgentRunPublicView, error) {
+	runs.viewCalls++
+	runs.slug, runs.runID, runs.afterSequence = slug, runID, afterSequence
+	return runs.view, runs.err
+}
+
+func (runs *fixtureAgentRuns) Cancel(_ context.Context, slug, runID string) (workflow.AgentRunPublicSummary, error) {
+	runs.cancelCalls++
+	runs.slug, runs.runID = slug, runID
+	return runs.summary, runs.err
+}
+
 type fixtureWorkflowManager struct {
 	request  workflow.WorkflowSummaryRequest
 	workflow domain.Workflow
@@ -979,6 +1011,139 @@ func TestNodeAPIRejectsUnsafeOfficialExtensionConfigWithoutLeaks(t *testing.T) {
 	}
 }
 
+func TestAgentRunAsyncPreferenceReturnsAcceptedPublicSummary(t *testing.T) {
+	dependencies := fixtureDeps()
+	runs := dependencies.AgentRuns.(*fixtureAgentRuns)
+	runs.created = true
+	request := httptest.NewRequest(http.MethodPost, "/api/agents/demo/runs", strings.NewReader(`{"workflowVersionId":"00000000-0000-4000-8000-000000000910","input":{"topic":"x"}}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Prefer", "Respond-Async, wait=5")
+	request.Header.Set("Idempotency-Key", "00000000-0000-4000-8000-000000000909")
+	recorder := httptest.NewRecorder()
+	NewRouter(dependencies).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || recorder.Header().Get("Preference-Applied") != "respond-async" || runs.startCalls != 1 {
+		t.Fatalf("status=%d headers=%v calls=%d body=%s", recorder.Code, recorder.Header(), runs.startCalls, recorder.Body.String())
+	}
+	if runs.slug != "demo" || runs.startInput.WorkflowVersionID != "00000000-0000-4000-8000-000000000910" || runs.startInput.RequestKey != "00000000-0000-4000-8000-000000000909" || runs.startInput.Input["topic"] != "x" {
+		t.Fatalf("slug=%q input=%+v", runs.slug, runs.startInput)
+	}
+	assertAgentPublicHeaders(t, recorder)
+}
+
+func TestAgentRunAsyncRejectsInvalidKeysAndVersion(t *testing.T) {
+	tests := []struct{ key, body string }{
+		{body: `{"workflowVersionId":"00000000-0000-4000-8000-000000000910","input":{}}`},
+		{key: "bad", body: `{"workflowVersionId":"00000000-0000-4000-8000-000000000910","input":{}}`},
+		{key: "00000000-0000-4000-8000-000000000909", body: `{"workflowVersionId":"bad","input":{}}`},
+	}
+	for _, test := range tests {
+		dependencies := fixtureDeps()
+		request := httptest.NewRequest(http.MethodPost, "/api/agents/demo/runs", strings.NewReader(test.body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Prefer", "respond-async")
+		if test.key != "" {
+			request.Header.Set("Idempotency-Key", test.key)
+		}
+		recorder := httptest.NewRecorder()
+		NewRouter(dependencies).ServeHTTP(recorder, request)
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+		if dependencies.AgentRuns.(*fixtureAgentRuns).startCalls != 0 {
+			t.Fatal("invalid request reached AgentRun service")
+		}
+	}
+}
+
+func TestAgentRunAsyncMapsPublicErrors(t *testing.T) {
+	tests := []struct {
+		err        error
+		status     int
+		code       string
+		retryAfter string
+	}{
+		{err: workflow.ErrInputValidation, status: http.StatusUnprocessableEntity, code: "INPUT_VALIDATION_FAILED"},
+		{err: workflow.ErrAgentRunCapacity, status: http.StatusTooManyRequests, code: "RUN_CAPACITY_EXCEEDED", retryAfter: "2"},
+		{err: workflow.ErrAgentRunUnavailable, status: http.StatusServiceUnavailable, code: "RUN_START_UNAVAILABLE"},
+	}
+	for _, test := range tests {
+		dependencies := fixtureDeps()
+		dependencies.AgentRuns.(*fixtureAgentRuns).err = test.err
+		request := httptest.NewRequest(http.MethodPost, "/api/agents/demo/runs", strings.NewReader(`{"workflowVersionId":"00000000-0000-4000-8000-000000000910","input":{}}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Prefer", "respond-async")
+		request.Header.Set("Idempotency-Key", "00000000-0000-4000-8000-000000000909")
+		recorder := httptest.NewRecorder()
+		NewRouter(dependencies).ServeHTTP(recorder, request)
+		assertJSONError(t, recorder, test.status, test.code)
+		if recorder.Header().Get("Retry-After") != test.retryAfter {
+			t.Fatalf("retry-after=%q", recorder.Header().Get("Retry-After"))
+		}
+	}
+}
+
+func TestAgentRunPublicViewParsesCursorAndCancelIsIdempotent(t *testing.T) {
+	dependencies := fixtureDeps()
+	runID := "00000000-0000-4000-8000-000000000911"
+	viewRecorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/agents/demo/runs/"+runID+"?afterSequence=4", "")
+	runs := dependencies.AgentRuns.(*fixtureAgentRuns)
+	if viewRecorder.Code != http.StatusOK || runs.viewCalls != 1 || runs.afterSequence != 4 || runs.runID != runID {
+		t.Fatalf("status=%d calls=%d after=%d run=%q body=%s", viewRecorder.Code, runs.viewCalls, runs.afterSequence, runs.runID, viewRecorder.Body.String())
+	}
+	assertAgentPublicHeaders(t, viewRecorder)
+	cancelRecorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/agents/demo/runs/"+runID+"/cancel", "")
+	if cancelRecorder.Code != http.StatusOK || runs.cancelCalls != 1 || runs.runID != runID {
+		t.Fatalf("status=%d calls=%d run=%q body=%s", cancelRecorder.Code, runs.cancelCalls, runs.runID, cancelRecorder.Body.String())
+	}
+	assertAgentPublicHeaders(t, cancelRecorder)
+}
+
+func TestAgentRunPublicRoutesRejectInvalidCursorAndRunID(t *testing.T) {
+	for _, path := range []string{
+		"/api/agents/demo/runs/00000000-0000-4000-8000-000000000911?afterSequence=-1",
+		"/api/agents/demo/runs/00000000-0000-4000-8000-000000000911?afterSequence=nope",
+	} {
+		dependencies := fixtureDeps()
+		recorder := performRequest(NewRouter(dependencies), http.MethodGet, path, "")
+		assertJSONError(t, recorder, http.StatusBadRequest, "REQUEST_INVALID")
+		if dependencies.AgentRuns.(*fixtureAgentRuns).viewCalls != 0 {
+			t.Fatal("invalid cursor reached AgentRun service")
+		}
+	}
+	for _, request := range []struct{ method, path string }{
+		{http.MethodGet, "/api/agents/demo/runs/not-a-uuid"},
+		{http.MethodPost, "/api/agents/demo/runs/not-a-uuid/cancel"},
+	} {
+		dependencies := fixtureDeps()
+		recorder := performRequest(NewRouter(dependencies), request.method, request.path, "")
+		assertJSONError(t, recorder, http.StatusNotFound, "AGENT_NOT_FOUND")
+		runs := dependencies.AgentRuns.(*fixtureAgentRuns)
+		if runs.viewCalls != 0 || runs.cancelCalls != 0 {
+			t.Fatal("invalid run ID reached AgentRun service")
+		}
+	}
+}
+
+func TestAgentRunPublicNotFoundAndHeadersAreSafe(t *testing.T) {
+	dependencies := fixtureDeps()
+	dependencies.AgentRuns.(*fixtureAgentRuns).err = domain.ErrNotFound
+	recorder := performRequest(NewRouter(dependencies), http.MethodGet, "/api/agents/other/runs/00000000-0000-4000-8000-000000000911", "")
+	assertJSONError(t, recorder, http.StatusNotFound, "AGENT_NOT_FOUND")
+	assertAgentPublicHeaders(t, recorder)
+	manifest := performRequest(NewRouter(fixtureDeps()), http.MethodGet, "/api/agents/demo", "")
+	assertAgentPublicHeaders(t, manifest)
+	for _, forbidden := range []string{"nodeId", `"input"`, "activePorts", "redactedPaths"} {
+		if strings.Contains(recorder.Body.String(), forbidden) || strings.Contains(manifest.Body.String(), forbidden) {
+			t.Fatalf("public response leaked %q", forbidden)
+		}
+	}
+}
+
+func assertAgentPublicHeaders(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("headers=%v", recorder.Header())
+	}
+}
+
 func fixtureDeps() Dependencies {
 	registry := nodes.NewRegistry()
 	return Dependencies{
@@ -989,6 +1154,10 @@ func fixtureDeps() Dependencies {
 		},
 		Runner: &fixtureRunner{},
 		Runs:   fixtureRunReader{},
+		AgentRuns: &fixtureAgentRuns{
+			summary: workflow.AgentRunPublicSummary{RunID: "00000000-0000-4000-8000-000000000911", WorkflowVersionID: "00000000-0000-4000-8000-000000000910", Version: 4, Status: domain.RunRunning, StartedAt: time.Now().UTC()},
+			view:    workflow.AgentRunPublicView{Events: []workflow.AgentRunPublicEvent{}, NextSequence: 0, HasMore: false},
+		},
 		WorkflowManagement: &fixtureWorkflowManager{
 			workflow: domain.Workflow{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Name: "演示"},
 		},

@@ -80,10 +80,13 @@ func run(logger *slog.Logger) error {
 
 	compiler := engine.NewCompiler(registry)
 	runtime := engine.New(engine.Options{MaxParallel: cfg.MaxParallelNodes, Timeout: cfg.WorkflowTimeout})
+	processContext, stopCoordinator := context.WithCancel(context.Background())
 	runCoordinator := workflow.NewRunCoordinator(store, workflow.WithCoordinatorLogger(logger))
 	workflowService := workflow.NewService(store, compiler, registry)
 	workflowManagement := workflow.NewWorkflowManagementService(store)
 	runService := workflow.NewRunService(store, compiler, runtime, workflow.WithLogger(logger), workflow.WithRunCoordinator(runCoordinator))
+	agentRunSupervisor := workflow.NewAgentRunSupervisor(processContext, cfg.MaxActiveAgentRuns, runService, workflow.WithAgentRunSupervisorLogger(logger))
+	agentRunService := workflow.NewAgentRunService(runService, store, agentRunSupervisor, runCoordinator)
 	runManagement := workflow.NewRunManagementService(store, compiler, runCoordinator)
 	debugService := workflow.NewDebugService(store, compiler)
 	router := httpapi.NewRouter(httpapi.Dependencies{
@@ -92,6 +95,7 @@ func run(logger *slog.Logger) error {
 		WorkflowManagement: workflowManagement,
 		Runner:             runService,
 		Runs:               store,
+		AgentRuns:          agentRunService,
 		RunManagement:      runManagement,
 		Debugger:           debugService,
 		Readiness:          store,
@@ -105,7 +109,6 @@ func run(logger *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	processContext, stopCoordinator := context.WithCancel(context.Background())
 	coordinatorDone := make(chan error, 1)
 	go func() {
 		coordinatorDone <- runCoordinator.Run(processContext)
@@ -130,7 +133,7 @@ func run(logger *slog.Logger) error {
 
 	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
-	shutdownErr := shutdownRuntime(shutdownContext, runCoordinator, server.Shutdown, stopCoordinator, coordinatorDone)
+	shutdownErr := shutdownRuntime(shutdownContext, agentRunSupervisor, runCoordinator, server.Shutdown, stopCoordinator, coordinatorDone)
 	if serveErr != nil {
 		return serveErr
 	}
@@ -141,15 +144,23 @@ type shutdownCoordinator interface {
 	BeginShutdown()
 }
 
+type shutdownAgentSupervisor interface {
+	BeginShutdown()
+	Wait(context.Context) error
+}
+
 func shutdownRuntime(
 	ctx context.Context,
+	supervisor shutdownAgentSupervisor,
 	coordinator shutdownCoordinator,
 	shutdownHTTP func(context.Context) error,
 	stopCoordinator context.CancelFunc,
 	coordinatorDone <-chan error,
 ) error {
+	supervisor.BeginShutdown()
 	coordinator.BeginShutdown()
 	httpErr := shutdownHTTP(ctx)
+	supervisorErr := supervisor.Wait(ctx)
 	stopCoordinator()
 	wait := time.NewTimer(5 * time.Second)
 	defer wait.Stop()
@@ -163,6 +174,9 @@ func shutdownRuntime(
 	}
 	if httpErr != nil {
 		return fmt.Errorf("shutdown HTTP server: %w", httpErr)
+	}
+	if supervisorErr != nil {
+		return fmt.Errorf("shutdown agent run supervisor: %w", supervisorErr)
 	}
 	if coordinatorErr != nil {
 		return fmt.Errorf("shutdown run coordinator: %w", coordinatorErr)
