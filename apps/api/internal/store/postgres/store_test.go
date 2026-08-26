@@ -968,6 +968,185 @@ func TestListRunEventsUsesExclusiveCursorAndStableOrder(t *testing.T) {
 	}
 }
 
+func TestCreateAgentRunIsIdempotentAndScoped(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-idempotent")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	run := newPublishedRun(workflow.ID, version.ID)
+	run.AgentRequestKey = &key
+
+	first, created, err := store.CreateAgentRun(context.Background(), run)
+	if err != nil || !created || first.ID != run.ID {
+		t.Fatalf("first=%+v created=%v error=%v", first, created, err)
+	}
+	duplicate := newPublishedRun(workflow.ID, version.ID)
+	duplicate.AgentRequestKey = &key
+	second, created, err := store.CreateAgentRun(context.Background(), duplicate)
+	if err != nil || created || second.ID != run.ID {
+		t.Fatalf("second=%+v created=%v error=%v", second, created, err)
+	}
+	record, err := store.FindAgentRunByRequestKey(context.Background(), workflow.Slug, key)
+	if err != nil || record.Run.ID != run.ID || record.Version.ID != version.ID || record.Events == nil {
+		t.Fatalf("record=%+v error=%v", record, err)
+	}
+}
+
+func TestCreateAgentRunConcurrentRequestsCreateExactlyOnce(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-concurrent")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	type result struct {
+		run     domain.Run
+		created bool
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	var wait sync.WaitGroup
+	wait.Add(2)
+	for range 2 {
+		go func() {
+			defer wait.Done()
+			<-start
+			run := newPublishedRun(workflow.ID, version.ID)
+			run.AgentRequestKey = &key
+			createdRun, created, err := store.CreateAgentRun(context.Background(), run)
+			results <- result{run: createdRun, created: created, err: err}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	createdCount := 0
+	var runID string
+	for item := range results {
+		if item.err != nil {
+			t.Fatal(item.err)
+		}
+		if item.created {
+			createdCount++
+		}
+		if runID == "" {
+			runID = item.run.ID
+		} else if item.run.ID != runID {
+			t.Fatalf("different run IDs: %s and %s", runID, item.run.ID)
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("created count=%d", createdCount)
+	}
+	var count int
+	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM runs WHERE workflow_id=$1 AND agent_request_key=$2", workflow.ID, key).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("count=%d error=%v", count, err)
+	}
+}
+
+func TestGetAgentRunUsesConsistentEventPage(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-snapshot")
+	otherWorkflow := createWorkflowFixture(t, store, "agent-snapshot-other")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	run := newPublishedRun(workflow.ID, version.ID)
+	run.AgentRequestKey = &key
+	if _, created, err := store.CreateAgentRun(context.Background(), run); err != nil || !created {
+		t.Fatalf("create run created=%v error=%v", created, err)
+	}
+	budget := domain.RunEventBudget{MaxEvents: 10, MaxTotalDataBytes: 1 << 20}
+	for sequence := int64(1); sequence <= 3; sequence++ {
+		event := domain.RunEvent{
+			RunID: run.ID, Sequence: sequence, Type: "node.completed", NodeID: fmt.Sprintf("node-%d", sequence),
+			Input: json.RawMessage(fmt.Sprintf(`{"input":%d}`, sequence)), Output: json.RawMessage(fmt.Sprintf(`{"output":%d}`, sequence)),
+			Timestamp: time.Now().UTC(),
+		}
+		if err := store.PersistRunEvent(context.Background(), event, nil, budget); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record, err := store.GetAgentRun(context.Background(), workflow.Slug, run.ID, 0, 2)
+	if err != nil || len(record.Events) != 2 || record.Events[0].Sequence != 1 || record.Events[1].Sequence != 2 || !record.HasMore {
+		t.Fatalf("record=%+v error=%v", record, err)
+	}
+	if _, err := store.GetAgentRun(context.Background(), otherWorkflow.Slug, run.ID, 0, 2); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("other slug error=%v", err)
+	}
+
+	for iteration := 0; iteration < 20; iteration++ {
+		iterationKey := fixtureUUID()
+		candidate := newPublishedRun(workflow.ID, version.ID)
+		candidate.AgentRequestKey = &iterationKey
+		if _, _, err := store.CreateAgentRun(context.Background(), candidate); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		finalized := make(chan error, 1)
+		go func() {
+			<-start
+			now := time.Now().UTC()
+			_, err := store.FinalizeRun(context.Background(), workflowservice.RunFinalization{
+				RunID: candidate.ID, Status: domain.RunCompleted, Output: json.RawMessage(`{"answer":"ok"}`), EndedAt: now,
+				TerminalEvent: domain.RunEvent{RunID: candidate.ID, Sequence: 1, Type: "run.completed", Output: json.RawMessage(`{"answer":"ok"}`), Timestamp: now},
+				Budget:        domain.RunEventBudget{MaxEvents: 2, MaxTotalDataBytes: 1 << 20},
+			})
+			finalized <- err
+		}()
+		close(start)
+		snapshot, getErr := store.GetAgentRun(context.Background(), workflow.Slug, candidate.ID, 0, 10)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		switch snapshot.Run.Status {
+		case domain.RunRunning:
+			if len(snapshot.Events) != 0 {
+				t.Fatalf("running snapshot contains terminal events: %+v", snapshot)
+			}
+		case domain.RunCompleted:
+			if len(snapshot.Events) != 1 || snapshot.Events[0].Type != "run.completed" {
+				t.Fatalf("terminal snapshot misses terminal event: %+v", snapshot)
+			}
+		default:
+			t.Fatalf("unexpected snapshot status: %+v", snapshot)
+		}
+		if err := <-finalized; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRequestAgentRunCancelIsIdempotent(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-cancel")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	run := newPublishedRun(workflow.ID, version.ID)
+	run.AgentRequestKey = &key
+	if _, _, err := store.CreateAgentRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID)
+	if err != nil || first.Run.Status != domain.RunCancelling || first.Run.CancelRequestedAt == nil {
+		t.Fatalf("first=%+v error=%v", first, err)
+	}
+	second, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID)
+	if err != nil || second.Run.Status != domain.RunCancelling {
+		t.Fatalf("second=%+v error=%v", second, err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.FinalizeRun(context.Background(), workflowservice.RunFinalization{
+		RunID: run.ID, Status: domain.RunCancelled, Error: domain.NewPublicRunError(context.Canceled), EndedAt: now,
+		TerminalEvent: domain.RunEvent{RunID: run.ID, Sequence: 1, Type: "run.cancelled", Error: domain.NewPublicRunError(context.Canceled), Timestamp: now},
+		Budget:        domain.RunEventBudget{MaxEvents: 2, MaxTotalDataBytes: 1 << 20},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID)
+	if err != nil || terminal.Run.Status != domain.RunCancelled || len(terminal.Events) != 1 {
+		t.Fatalf("terminal=%+v error=%v", terminal, err)
+	}
+}
+
 func migratedTestStore(t *testing.T) *Store {
 	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")

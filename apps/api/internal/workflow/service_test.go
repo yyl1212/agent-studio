@@ -131,6 +131,63 @@ func (store *fakeStore) CreateRun(_ context.Context, run domain.Run) error {
 	return nil
 }
 
+func (store *fakeStore) FindAgentRunByRequestKey(_ context.Context, slug, requestKey string) (AgentRunRecord, error) {
+	for _, run := range store.runs {
+		if slug == store.workflow.Slug && run.AgentRequestKey != nil && *run.AgentRequestKey == requestKey && run.WorkflowVersionID != nil {
+			return AgentRunRecord{Run: run, Version: store.versions[*run.WorkflowVersionID], Events: []domain.RunEvent{}}, nil
+		}
+	}
+	return AgentRunRecord{}, domain.ErrNotFound
+}
+
+func (store *fakeStore) CreateAgentRun(_ context.Context, run domain.Run) (domain.Run, bool, error) {
+	if run.AgentRequestKey == nil {
+		return domain.Run{}, false, ErrInvalidWorkflowInput
+	}
+	for _, existing := range store.runs {
+		if existing.WorkflowID == run.WorkflowID && existing.AgentRequestKey != nil && *existing.AgentRequestKey == *run.AgentRequestKey {
+			return existing, false, nil
+		}
+	}
+	store.runs = append(store.runs, run)
+	return run, true, nil
+}
+
+func (store *fakeStore) GetAgentRun(_ context.Context, slug, runID string, afterSequence int64, limit int) (AgentRunRecord, error) {
+	for _, run := range store.runs {
+		if slug != store.workflow.Slug || run.ID != runID || run.WorkflowVersionID == nil {
+			continue
+		}
+		events := make([]domain.RunEvent, 0)
+		for _, event := range store.runEvents {
+			if event.RunID == runID && event.Sequence > afterSequence {
+				events = append(events, event)
+			}
+		}
+		hasMore := limit > 0 && len(events) > limit
+		if hasMore {
+			events = events[:limit]
+		}
+		return AgentRunRecord{Run: run, Version: store.versions[*run.WorkflowVersionID], Events: events, HasMore: hasMore}, nil
+	}
+	return AgentRunRecord{}, domain.ErrNotFound
+}
+
+func (store *fakeStore) RequestAgentRunCancel(ctx context.Context, slug, runID string) (AgentRunRecord, error) {
+	for index := range store.runs {
+		if slug != store.workflow.Slug || store.runs[index].ID != runID {
+			continue
+		}
+		if store.runs[index].Status == domain.RunRunning {
+			now := time.Now().UTC()
+			store.runs[index].Status = domain.RunCancelling
+			store.runs[index].CancelRequestedAt = &now
+		}
+		return store.GetAgentRun(ctx, slug, runID, 0, 200)
+	}
+	return AgentRunRecord{}, domain.ErrNotFound
+}
+
 func (store *fakeStore) PersistRunEvent(_ context.Context, event domain.RunEvent, nodeRun *domain.NodeRun, budget domain.RunEventBudget) error {
 	if store.failPersist != nil {
 		return store.failPersist

@@ -9,6 +9,7 @@ import (
 )
 
 type Store interface {
+	AgentRunStore
 	ListWorkflows(context.Context) ([]domain.Workflow, error)
 	CreateWorkflow(context.Context, domain.Workflow) (domain.Workflow, error)
 	GetWorkflow(context.Context, string) (domain.Workflow, error)
