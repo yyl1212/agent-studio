@@ -490,6 +490,58 @@ func TestWorkflowLookupKeepsPublishedVersionsImmutable(t *testing.T) {
 	}
 }
 
+func TestListWorkflowVersionsUsesDescendingVersionCursor(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "version-list")
+	versions := make([]domain.WorkflowVersion, 0, 3)
+	for expected := 1; expected <= 3; expected++ {
+		version := publishFixture(t, store, workflow)
+		if version.Version != expected {
+			t.Fatalf("published version=%d, want %d", version.Version, expected)
+		}
+		versions = append(versions, version)
+	}
+	other := createWorkflowFixture(t, store, "version-list-other")
+	publishFixture(t, store, other)
+
+	rows, err := store.ListWorkflowVersions(context.Background(), workflow.ID, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []int{rows.Items[0].Version, rows.Items[1].Version}; !reflect.DeepEqual(got, []int{3, 2}) {
+		t.Fatalf("versions=%v", got)
+	}
+	if !rows.Items[0].Current || rows.Items[1].Current || rows.Checkpoint != nil {
+		t.Fatalf("rows=%+v", rows)
+	}
+
+	next, err := store.ListWorkflowVersions(context.Background(), workflow.ID, 2, 2)
+	if err != nil || len(next.Items) != 1 || next.Items[0].Version != 1 {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+	if _, err := store.ListWorkflowVersions(context.Background(), fixtureUUID(), 0, 2); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("missing workflow error=%v", err)
+	}
+
+	presentation, err := json.Marshal(workflow.AgentPresentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(context.Background(), `UPDATE workflows SET draft_revision=draft_revision+1 WHERE id=$1`, workflow.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(context.Background(), `INSERT INTO workflow_draft_checkpoints(
+		workflow_id,source_revision,restored_revision,graph,agent_presentation,restored_from_version_id
+	) VALUES($1,$2,$3,$4,$5,$6)`, workflow.ID, workflow.DraftRevision, workflow.DraftRevision+1, workflow.DraftGraph, presentation, versions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	withCheckpoint, err := store.ListWorkflowVersions(context.Background(), workflow.ID, 0, 2)
+	if err != nil || withCheckpoint.Checkpoint == nil || withCheckpoint.Checkpoint.SourceRevision != workflow.DraftRevision ||
+		withCheckpoint.Checkpoint.RestoredRevision != workflow.DraftRevision+1 || withCheckpoint.Checkpoint.RestoredFromVersion != 1 {
+		t.Fatalf("checkpoint=%+v err=%v", withCheckpoint.Checkpoint, err)
+	}
+}
+
 func TestCreateWorkflowMapsDuplicateSlug(t *testing.T) {
 	store := migratedTestStore(t)
 	first := createWorkflowFixture(t, store, "duplicate")
