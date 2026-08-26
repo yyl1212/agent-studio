@@ -38,6 +38,20 @@ export type RunRetryPreview = components['schemas']['RunRetryPreview']
 export type RunRetryRequest = components['schemas']['RunRetryRequest']
 export type UpdateWorkflowRequest = components['schemas']['UpdateWorkflowRequest']
 export type CopyWorkflowRequest = components['schemas']['CopyWorkflowRequest']
+export type WorkflowSnapshotRef = components['schemas']['WorkflowSnapshotRef']
+export type WorkflowVersionSummary = components['schemas']['WorkflowVersionSummary']
+export type RollbackCheckpointSummary = components['schemas']['RollbackCheckpointSummary']
+export type WorkflowVersionPage = components['schemas']['WorkflowVersionPage']
+export type WorkflowDiff = components['schemas']['WorkflowDiff']
+export type WorkflowDiffRequest = components['schemas']['WorkflowDiffRequest']
+export type WorkflowRollbackRequest = components['schemas']['WorkflowRollbackRequest']
+export type WorkflowRollbackResult = components['schemas']['WorkflowRollbackResult']
+export type WorkflowRollbackUndoRequest = components['schemas']['WorkflowRollbackUndoRequest']
+
+export type WorkflowVersionQuery = {
+  limit: number
+  cursor?: string
+}
 
 export type WorkflowSummaryQuery = {
   q: string
@@ -185,6 +199,17 @@ export const api = {
     request<Workflow>(`/api/workflows/${encodeURIComponent(id)}/archive`, { method: 'POST', signal }),
   restoreWorkflow: (id: string, signal?: AbortSignal) =>
     request<Workflow>(`/api/workflows/${encodeURIComponent(id)}/restore`, { method: 'POST', signal }),
+  listWorkflowVersions: (id: string, query: WorkflowVersionQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ limit: String(query.limit) })
+    if (query.cursor) params.set('cursor', query.cursor)
+    return request<WorkflowVersionPage>(`/api/workflows/${encodeURIComponent(id)}/versions?${params}`, { signal })
+  },
+  diffWorkflowVersions: (id: string, body: WorkflowDiffRequest, signal?: AbortSignal) =>
+    request<WorkflowDiff>(`/api/workflows/${encodeURIComponent(id)}/version-diffs`, { method: 'POST', body: jsonBody(body), signal }),
+  rollbackWorkflow: (id: string, body: WorkflowRollbackRequest, signal?: AbortSignal) =>
+    request<WorkflowRollbackResult>(`/api/workflows/${encodeURIComponent(id)}/rollbacks`, { method: 'POST', body: jsonBody(body), signal }),
+  undoWorkflowRollback: (id: string, body: WorkflowRollbackUndoRequest, signal?: AbortSignal) =>
+    request<Workflow>(`/api/workflows/${encodeURIComponent(id)}/rollback-undo`, { method: 'POST', body: jsonBody(body), signal }),
   saveWorkflow: (id: string, body: SaveDraftRequest, signal?: AbortSignal) =>
     request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { method: 'PUT', body: jsonBody(body), signal }),
   saveAgentPresentation: (id: string, body: SaveAgentPresentationRequest, signal?: AbortSignal) =>

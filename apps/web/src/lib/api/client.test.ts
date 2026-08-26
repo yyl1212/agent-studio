@@ -199,6 +199,49 @@ describe('API client', () => {
 		for (const [path] of fetchMock.mock.calls) expect(String(path)).not.toMatch(/\?$/)
 	})
 
+	it('版本治理客户端编码分页和严格 mutation 请求', async () => {
+		const controller = new AbortController()
+		const workflow = workflowFixture()
+		const checkpoint = {
+			sourceRevision: 7, restoredRevision: 8, restoredFromVersion: 1,
+			createdAt: '2026-08-27T10:05:00Z',
+		}
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(jsonResponse({ items: [], nextCursor: null, rollbackCheckpoint: null }))
+			.mockResolvedValueOnce(jsonResponse({
+				base: { kind: 'version', version: 1, versionId: '11111111-1111-4111-8111-111111111111', createdAt: '2026-08-27T10:00:00Z' },
+				compare: { kind: 'draft', draftRevision: 7 },
+				summary: { total: 0, nodes: 0, startParameters: 0, connections: 0, agentPresentation: 0, layout: 0 },
+				truncated: false,
+				groups: { nodes: [], startParameters: [], connections: [], agentPresentation: [], layout: [] },
+			}))
+			.mockResolvedValueOnce(jsonResponse({ workflow, rollbackCheckpoint: checkpoint }))
+			.mockResolvedValueOnce(jsonResponse(workflow))
+		vi.stubGlobal('fetch', fetchMock)
+
+		await api.listWorkflowVersions('w/1', { limit: 20, cursor: 'next cursor' }, controller.signal)
+		await api.diffWorkflowVersions('w/1', {
+			base: { kind: 'version', version: 1 },
+			compare: { kind: 'draft', draftRevision: 7 },
+		}, controller.signal)
+		await api.rollbackWorkflow('w/1', { targetVersion: 1, expectedDraftRevision: 7 }, controller.signal)
+		await api.undoWorkflowRollback('w/1', { expectedDraftRevision: 8 }, controller.signal)
+
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/workflows/w%2F1/versions?limit=20&cursor=next+cursor', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/workflows/w%2F1/version-diffs', expect.objectContaining({
+			method: 'POST', signal: controller.signal,
+			body: JSON.stringify({ base: { kind: 'version', version: 1 }, compare: { kind: 'draft', draftRevision: 7 } }),
+		}))
+		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/workflows/w%2F1/rollbacks', expect.objectContaining({
+			method: 'POST', signal: controller.signal,
+			body: JSON.stringify({ targetVersion: 1, expectedDraftRevision: 7 }),
+		}))
+		expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/workflows/w%2F1/rollback-undo', expect.objectContaining({
+			method: 'POST', signal: controller.signal,
+			body: JSON.stringify({ expectedDraftRevision: 8 }),
+		}))
+	})
+
 	 it('预览并导入工作流模板', async () => {
 		const template = templateFixture()
 		const fetchMock = vi.fn()
