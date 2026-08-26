@@ -132,6 +132,7 @@ describe('StudioPage', () => {
 
   it('归档工作流以只读模式查看且导出不触发保存', async () => {
     vi.mocked(api.getWorkflow).mockResolvedValue({ ...workflow, archivedAt: '2026-08-25T04:00:00Z' })
+	vi.spyOn(api, 'listWorkflowVersions').mockResolvedValue({ items: [], nextCursor: null, rollbackCheckpoint: null })
     vi.spyOn(api, 'exportWorkflowTemplate').mockResolvedValue(new Blob(['template']))
     installURLMethod('createObjectURL', vi.fn().mockReturnValue('blob:archived-template'))
     installURLMethod('revokeObjectURL', vi.fn())
@@ -142,12 +143,16 @@ describe('StudioPage', () => {
     expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Agent 页面设置' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+	expect(screen.getByRole('button', { name: '版本历史' })).toBeEnabled()
     expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs?workflowId=w1')
     fireEvent.click(screen.getByTestId('node-start'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '导出模板' }))
     await vi.waitFor(() => expect(api.exportWorkflowTemplate).toHaveBeenCalledWith('w1', 1, expect.any(AbortSignal)))
     expect(api.saveWorkflow).not.toHaveBeenCalled()
+	await userEvent.click(screen.getByRole('button', { name: '版本历史' }))
+	expect(await screen.findByRole('heading', { name: '版本历史' })).toBeInTheDocument()
+	expect(screen.queryByRole('button', { name: /恢复 v/ })).not.toBeInTheDocument()
   })
 
   it('配置输入只更新草稿，端口就绪并显式应用后才保存一次', async () => {
@@ -202,6 +207,55 @@ describe('StudioPage', () => {
     expect(screen.queryByRole('dialog', { name: '页面设置' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '放弃更改' }))
     expect(await screen.findByRole('dialog', { name: '页面设置' })).toBeInTheDocument()
+  })
+
+  it('打开版本历史前处理脏配置并等待保存队列', async () => {
+    let resolveSave!: (value: typeof workflow) => void
+    vi.mocked(api.saveWorkflow).mockReturnValueOnce(new Promise((resolve) => { resolveSave = resolve }))
+    const listVersions = vi.spyOn(api, 'listWorkflowVersions').mockResolvedValue({ items: [], nextCursor: null, rollbackCheckpoint: null })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '等待保存' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '版本历史' }))
+    expect(screen.getByRole('dialog', { name: '保存节点配置更改？' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '应用并继续' }))
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalled())
+    expect(listVersions).not.toHaveBeenCalled()
+    resolveSave({ ...workflow, draftRevision: 2 })
+    expect(await screen.findByRole('heading', { name: '版本历史' })).toBeInTheDocument()
+    expect(listVersions).toHaveBeenCalledWith('w1', { limit: 20 }, expect.any(AbortSignal))
+  })
+
+  it('回滚期间锁定画布和工作台，并接纳服务端 revision', async () => {
+    const publishedWorkflow = { ...workflow, publishedVersion: 1 }
+    vi.mocked(api.getWorkflow).mockResolvedValue(publishedWorkflow)
+    vi.spyOn(api, 'listWorkflowVersions').mockResolvedValue({ items: [{ id: 'v1', version: 1, current: true, createdAt: '2026-08-27T00:00:00Z' }], nextCursor: null, rollbackCheckpoint: null })
+    vi.spyOn(api, 'diffWorkflowVersions').mockResolvedValue({
+      base: { kind: 'version', version: 1, versionId: 'v1', createdAt: '2026-08-27T00:00:00Z' }, compare: { kind: 'draft', draftRevision: 1 },
+      summary: { total: 1, nodes: 1, startParameters: 0, connections: 0, agentPresentation: 0, layout: 0 }, truncated: false,
+      groups: { nodes: [], startParameters: [], connections: [], agentPresentation: [], layout: [] },
+    })
+    let resolveRollback!: (value: Awaited<ReturnType<typeof api.rollbackWorkflow>>) => void
+    vi.spyOn(api, 'rollbackWorkflow').mockReturnValue(new Promise((resolve) => { resolveRollback = resolve }))
+    const restored = { ...publishedWorkflow, draftRevision: 2, draftGraph: { ...workflow.draftGraph, nodes: workflow.draftGraph.nodes.map((node) => ({ ...node, position: { x: node.position.x + 40, y: node.position.y } })) } }
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '版本历史' }))
+    await userEvent.click(await screen.findByRole('button', { name: '恢复 v1 为草稿' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认恢复' }))
+    expect(screen.getByRole('button', { name: '关闭工作台' })).toBeDisabled()
+    fireEvent.click(screen.getByTestId('node-start'))
+    expect(screen.queryByRole('heading', { name: '开始' })).not.toBeInTheDocument()
+    resolveRollback({ workflow: restored, rollbackCheckpoint: { sourceRevision: 1, restoredRevision: 2, restoredFromVersion: 1, createdAt: '2026-08-27T01:00:00Z' } })
+    expect(await screen.findByText('已回滚到版本 1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '关闭工作台' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledWith('w1', expect.objectContaining({ draftRevision: 2 })), { timeout: 2000 })
   })
 
   it('页面设置 revision 冲突时保留输入和对话框', async () => {
