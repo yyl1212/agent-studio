@@ -20,6 +20,9 @@ export type SaveDraftRequest = components['schemas']['SaveDraftRequest']
 export type SaveAgentPresentationRequest = components['schemas']['SaveAgentPresentationRequest']
 export type DraftRunRequest = components['schemas']['DraftRunRequest']
 export type AgentRunRequest = components['schemas']['AgentRunRequest']
+export type AgentRunPublicSummary = components['schemas']['AgentRunPublicSummary']
+export type AgentRunPublicView = components['schemas']['AgentRunPublicView']
+export type AgentRunPublicEvent = components['schemas']['AgentRunPublicEvent']
 export type WorkflowTemplate = components['schemas']['WorkflowTemplateV1Alpha1'] | components['schemas']['WorkflowTemplateV1Alpha2']
 export type WorkflowTemplatePreview = components['schemas']['WorkflowTemplatePreview']
 export type ImportWorkflowTemplateRequest = components['schemas']['ImportWorkflowTemplateRequest']
@@ -230,6 +233,14 @@ export const api = {
     request<AgentManifest>(`/api/agents/${encodeURIComponent(slug)}`, { signal }),
   runAgent: (slug: string, body: AgentRunRequest, signal?: AbortSignal) =>
     streamRequest(`/api/agents/${encodeURIComponent(slug)}/runs`, { method: 'POST', body: jsonBody(body), signal }),
+  startAgentRun: (slug: string, body: AgentRunRequest, idempotencyKey: string, signal?: AbortSignal) =>
+    request<AgentRunPublicSummary>(`/api/agents/${encodeURIComponent(slug)}/runs`, {
+      method: 'POST', headers: { Prefer: 'respond-async', 'Idempotency-Key': idempotencyKey }, body: jsonBody(body), signal,
+    }),
+  getAgentRunView: (slug: string, runID: string, afterSequence = 0, signal?: AbortSignal) =>
+    request<AgentRunPublicView>(`/api/agents/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runID)}?afterSequence=${encodeURIComponent(String(afterSequence))}`, { signal }),
+  cancelAgentRun: (slug: string, runID: string, signal?: AbortSignal) =>
+    request<AgentRunPublicSummary>(`/api/agents/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runID)}/cancel`, { method: 'POST', signal }),
 }
 
 function appendSearch(path: string, params: URLSearchParams): string {

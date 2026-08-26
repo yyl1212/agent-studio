@@ -48,6 +48,32 @@ describe('API client', () => {
     await expect(api.runAgent('demo', { workflowVersionId: 'v1', input: {} })).resolves.toBe(response)
   })
 
+	it('异步 Agent 运行客户端发送恢复协议所需信息', async () => {
+		const controller = new AbortController()
+		const summary = { runId: 'run-1', status: 'running' }
+		const view = { run: summary, events: [], nextSequence: 8, hasMore: false }
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(jsonResponse(summary))
+			.mockResolvedValueOnce(jsonResponse(view))
+			.mockResolvedValueOnce(jsonResponse({ ...summary, status: 'cancelling' }))
+		vi.stubGlobal('fetch', fetchMock)
+
+		const body = { workflowVersionId: 'v1', input: { topic: 'Agent' } }
+		await api.startAgentRun('demo/agent', body, '123e4567-e89b-42d3-a456-426614174000', controller.signal)
+		await api.getAgentRunView('demo/agent', 'run/1', 8, controller.signal)
+		await api.cancelAgentRun('demo/agent', 'run/1', controller.signal)
+
+		const startHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Headers
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/demo%2Fagent/runs', expect.objectContaining({
+			method: 'POST', body: JSON.stringify(body), signal: controller.signal,
+		}))
+		expect(startHeaders.get('Prefer')).toBe('respond-async')
+		expect(startHeaders.get('Idempotency-Key')).toBe('123e4567-e89b-42d3-a456-426614174000')
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/demo%2Fagent/runs/run%2F1?afterSequence=8', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/agents/demo%2Fagent/runs/run%2F1/cancel', expect.objectContaining({ method: 'POST', signal: controller.signal }))
+		expect(fetchMock.mock.calls[2]?.[1]?.body).toBeUndefined()
+	})
+
 	it('保存 Agent 页面设置使用独立 PUT 端点', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ...workflowFixture(), draftRevision: 5 }))
 		vi.stubGlobal('fetch', fetchMock)
