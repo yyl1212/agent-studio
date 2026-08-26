@@ -84,6 +84,10 @@ describe('VersionGovernancePanel', () => {
 		expect(screen.getByRole('button', { name: '撤销回滚' })).toBeDisabled()
 		expect(screen.getAllByRole('button', { name: /^v/ })).not.toHaveLength(0)
 		for (const versionButton of screen.getAllByRole('button', { name: /^v/ })) expect(versionButton).toBeDisabled()
+
+		useVersionGovernanceMock.mockReturnValue({ ...current, rollbackTarget: 1 })
+		rerender(<VersionGovernancePanel {...props} />)
+		expect(screen.getByRole('button', { name: '恢复 v1 为草稿' })).toBeDisabled()
 	})
 
 	it('覆盖未发布、加载失败、归档和不可恢复状态', async () => {

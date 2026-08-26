@@ -178,14 +178,14 @@ describe('useVersionGovernance', () => {
 		expect(undo).not.toHaveBeenCalled()
 	})
 
-	it('撤销响应丢失时仅在 revision 前进且检查点消失后同步权威状态', async () => {
+	it('撤销响应丢失时同步权威状态并使用中性提示', async () => {
 		const checkpoint = { sourceRevision: 7, restoredRevision: 8, restoredFromVersion: 1, createdAt: '2026-08-27T03:00:00Z' }
 		vi.spyOn(api, 'listWorkflowVersions')
 			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: checkpoint })
 			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: null })
 		vi.spyOn(api, 'diffWorkflowVersions').mockResolvedValue(emptyDiff(2))
 		vi.spyOn(api, 'undoWorkflowRollback').mockRejectedValue(new TypeError('network lost'))
-		const recovered = { ...workflow, draftRevision: 9 }
+		const recovered = { ...workflow, name: '其他会话保存', draftRevision: 9 }
 		vi.spyOn(api, 'getWorkflow').mockResolvedValue(recovered)
 		const onApplyWorkflow = vi.fn(async () => undefined)
 		const { result } = renderHook(() => useVersionGovernance(options({ onApplyWorkflow })))
@@ -193,25 +193,28 @@ describe('useVersionGovernance', () => {
 		await act(() => result.current.undoRollback())
 		expect(onApplyWorkflow).toHaveBeenCalledWith(recovered)
 		expect(result.current.checkpoint).toBeUndefined()
-		expect(result.current.notice).toBe('撤销回滚已完成，状态已刷新')
+		expect(result.current.notice).toBe('撤销请求结果未知，已刷新服务端状态')
 		expect(result.current.error).toBe('')
 	})
 
-	it('撤销响应丢失后检查点仍存在时保持失败', async () => {
+	it('撤销响应丢失后其他会话创建新检查点时仍同步权威状态', async () => {
 		const checkpoint = { sourceRevision: 7, restoredRevision: 8, restoredFromVersion: 1, createdAt: '2026-08-27T03:00:00Z' }
+		const freshCheckpoint = { sourceRevision: 8, restoredRevision: 9, restoredFromVersion: 2, createdAt: '2026-08-27T04:00:00Z' }
 		vi.spyOn(api, 'listWorkflowVersions')
 			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: checkpoint })
-			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: checkpoint })
+			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: freshCheckpoint })
 		vi.spyOn(api, 'diffWorkflowVersions').mockResolvedValue(emptyDiff(2))
 		vi.spyOn(api, 'undoWorkflowRollback').mockRejectedValue(new TypeError('network lost'))
-		vi.spyOn(api, 'getWorkflow').mockResolvedValue({ ...workflow, draftRevision: 9 })
+		const recovered = { ...workflow, name: '其他会话回滚', draftRevision: 9 }
+		vi.spyOn(api, 'getWorkflow').mockResolvedValue(recovered)
 		const onApplyWorkflow = vi.fn(async () => undefined)
 		const { result } = renderHook(() => useVersionGovernance(options({ onApplyWorkflow })))
 		await waitFor(() => expect(result.current.checkpoint).toEqual(checkpoint))
 		await act(() => result.current.undoRollback())
-		expect(onApplyWorkflow).not.toHaveBeenCalled()
-		expect(result.current.checkpoint).toEqual(checkpoint)
-		expect(result.current.error).toBe('撤销回滚失败，请稍后重试')
+		expect(onApplyWorkflow).toHaveBeenCalledWith(recovered)
+		expect(result.current.checkpoint).toEqual(freshCheckpoint)
+		expect(result.current.notice).toBe('撤销请求结果未知，已刷新服务端状态')
+		expect(result.current.error).toBe('')
 	})
 })
 

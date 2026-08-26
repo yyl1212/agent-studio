@@ -272,18 +272,16 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 						api.getWorkflow(options.workflow.id, controller.signal),
 						api.listWorkflowVersions(options.workflow.id, { limit: 20 }, controller.signal),
 					])
-					recovered = freshWorkflow.draftRevision > submittedRevision && freshPage.rollbackCheckpoint === null
-					if (recovered) {
-						await options.onApplyWorkflow(freshWorkflow)
-						revision.current = freshWorkflow.draftRevision
-						setVersions(sortAndDeduplicate(freshPage.items))
-						setNextCursor(freshPage.nextCursor ?? undefined)
-						setCompare({ kind: 'draft', draftRevision: freshWorkflow.draftRevision })
-						setCheckpoint(undefined)
-						checkpointEditSerial.current = undefined
-						setNotice('撤销回滚已完成，状态已刷新')
-						setDiffRefresh((value) => value + 1)
-					}
+					await options.onApplyWorkflow(freshWorkflow)
+					revision.current = freshWorkflow.draftRevision
+					setVersions(sortAndDeduplicate(freshPage.items))
+					setNextCursor(freshPage.nextCursor ?? undefined)
+					setCompare({ kind: 'draft', draftRevision: freshWorkflow.draftRevision })
+					setCheckpoint(freshPage.rollbackCheckpoint ?? undefined)
+					checkpointEditSerial.current = freshPage.rollbackCheckpoint ? options.editSerial : undefined
+					setNotice('撤销请求结果未知，已刷新服务端状态')
+					setDiffRefresh((value) => value + 1)
+					recovered = true
 				} catch (recoveryCause) {
 					if (isAbort(recoveryCause)) return
 				}

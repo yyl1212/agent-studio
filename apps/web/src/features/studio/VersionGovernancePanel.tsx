@@ -62,7 +62,7 @@ export function VersionGovernancePanel({ titleId, ...options }: VersionGovernanc
 			{model.diffLoading ? <p role="status">正在计算差异…</p> : model.diff ? <VersionDiffView diff={model.diff} /> : !model.loading && model.versions.length > 0 ? <p className="empty-state">请选择两个快照进行比较</p> : null}
 
 			<div className="version-governance-actions">
-				{options.archived ? <p>请先恢复工作流</p> : rollbackVersion !== undefined && <button type="button" className="danger-button" disabled={!rollbackEnabled} onClick={() => {
+				{options.archived ? <p>请先恢复工作流</p> : rollbackVersion !== undefined && <button type="button" className="danger-button" disabled={!rollbackEnabled || controlsDisabled} onClick={() => {
 					if (!model.diff) return
 					setRollbackSummary(model.diff.summary)
 					model.openRollback(rollbackVersion)
