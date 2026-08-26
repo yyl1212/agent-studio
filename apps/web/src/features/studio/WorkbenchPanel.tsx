@@ -7,9 +7,9 @@ const minimumWidth = 320
 const maximumWidth = 480
 const defaultWidth = 400
 
-interface WorkbenchPanelProps { titleId: string; onRequestClose: () => void; children: ReactNode }
+interface WorkbenchPanelProps { titleId: string; onRequestClose: () => void; closeDisabled?: boolean; children: ReactNode }
 
-export function WorkbenchPanel({ titleId, onRequestClose, children }: WorkbenchPanelProps) {
+export function WorkbenchPanel({ titleId, onRequestClose, closeDisabled = false, children }: WorkbenchPanelProps) {
   const [width, setWidth] = useState(readWidth)
   const drag = useRef<{ startX: number; startWidth: number } | undefined>(undefined)
   const updateWidth = useCallback((value: number) => {
@@ -26,18 +26,18 @@ export function WorkbenchPanel({ titleId, onRequestClose, children }: WorkbenchP
   }, [updateWidth])
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); onRequestClose() }
+      if (event.key === 'Escape' && !closeDisabled) { event.preventDefault(); onRequestClose() }
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [onRequestClose])
+  }, [closeDisabled, onRequestClose])
   const style = { '--as-workbench-width': `${width}px` } as CSSProperties
   return <aside className="workbench-panel" role="dialog" aria-labelledby={titleId} style={style}>
     <div className="workbench-resizer" role="separator" aria-label="调整工作台宽度" aria-orientation="vertical" aria-valuemin={minimumWidth} aria-valuemax={maximumWidth} aria-valuenow={width} tabIndex={0} onPointerDown={(event: ReactPointerEvent) => { drag.current = { startX: event.clientX, startWidth: width } }} onKeyDown={(event) => {
       if (event.key === 'ArrowLeft') { event.preventDefault(); updateWidth(width - 16) }
       if (event.key === 'ArrowRight') { event.preventDefault(); updateWidth(width + 16) }
     }} />
-    <Button className="workbench-close" variant="ghost" aria-label="关闭工作台" onClick={onRequestClose}>×</Button>
+    <Button className="workbench-close" variant="ghost" aria-label="关闭工作台" disabled={closeDisabled} onClick={onRequestClose}>×</Button>
     {children}
   </aside>
 }
