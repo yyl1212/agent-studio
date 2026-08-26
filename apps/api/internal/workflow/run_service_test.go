@@ -367,6 +367,25 @@ func TestPrepareAgentUsesRequestedVersionAfterNewPublish(t *testing.T) {
 	}
 }
 
+func TestPrepareAgentOnceReturnsExistingWithoutSecondPreparedRun(t *testing.T) {
+	service, store := newRunServiceFixture(t)
+	graph := graphReturning(t, "v1")
+	schema, err := inputSchemaForGraph(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetCurrentVersion(store.AddVersion(graph, schema))
+	key := "00000000-0000-4000-8000-000000000901"
+	first, created, err := service.PrepareAgentOnce(context.Background(), store.workflow.Slug, store.currentID, key, map[string]any{"topic": ""})
+	if err != nil || !created || first == nil || first.WorkflowVersion != 1 {
+		t.Fatalf("first=%+v created=%v error=%v", first, created, err)
+	}
+	second, created, err := service.PrepareAgentOnce(context.Background(), store.workflow.Slug, store.currentID, key, map[string]any{"topic": ""})
+	if err != nil || created || second != nil {
+		t.Fatalf("second=%+v created=%v error=%v", second, created, err)
+	}
+}
+
 func TestArchivedWorkflowRejectsDraftAndAgentRunPreparation(t *testing.T) {
 	service, store := newRunServiceFixture(t)
 	versionGraph := graphReturning(t, "v1")
