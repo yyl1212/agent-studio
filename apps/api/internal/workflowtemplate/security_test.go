@@ -114,6 +114,45 @@ func TestSecurityIssuesRejectsAgentStudioSecretSchemaExtension(t *testing.T) {
 	}
 }
 
+func TestSecurityIssuesAllowsEmptySecretFields(t *testing.T) {
+	definition := agentnode.Definition{
+		Type: "secure-empty", Version: "1",
+		ConfigSchema: json.RawMessage(`{
+          "type":"object",
+          "properties":{
+            "token":{"type":"string","x-agent-studio-secret":true},
+            "password":{"type":"string"}
+          }
+        }`),
+	}
+	node := domain.Node{
+		ID: "n", Type: "secure-empty", TypeVersion: "1",
+		Config: json.RawMessage(`{"token":"","password":""}`),
+	}
+	issues := securityIssues(domain.Graph{Nodes: []domain.Node{node}}, definitionIndex([]agentnode.Definition{definition}))
+	if len(issues) != 0 {
+		t.Fatalf("empty secret fields rejected: %+v", issues)
+	}
+}
+
+func TestSecurityIssuesPreservesSensitiveKeyMessageWhenSchemaAlsoMatches(t *testing.T) {
+	definition := agentnode.Definition{
+		Type: "secure-overlap", Version: "1",
+		ConfigSchema: json.RawMessage(`{
+          "type":"object",
+          "properties":{"token":{"type":"string","x-agent-studio-secret":true}}
+        }`),
+	}
+	node := domain.Node{
+		ID: "n", Type: "secure-overlap", TypeVersion: "1",
+		Config: json.RawMessage(`{"token":"hidden"}`),
+	}
+	issues := securityIssues(domain.Graph{Nodes: []domain.Node{node}}, definitionIndex([]agentnode.Definition{definition}))
+	if len(issues) != 1 || issues[0].Message != "节点配置包含不允许导出的凭据字段" {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
 func TestSecurityIssuesScansSecretMarkersInSchemaWithLargeExponent(t *testing.T) {
 	definition := agentnode.Definition{
 		Type: "secure-number", Version: "1",
