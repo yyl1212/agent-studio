@@ -22,11 +22,16 @@ type Config struct {
 	HTTPNodeAllowPrivate bool
 	NodeIndexCacheDir    string
 	MaxParallelNodes     int
+	MaxActiveAgentRuns   int
 	WorkflowTimeout      time.Duration
 }
 
 func Load() (Config, error) {
 	maxParallelNodes, err := intEnv("MAX_PARALLEL_NODES", 4)
+	if err != nil {
+		return Config{}, err
+	}
+	maxActiveAgentRuns, err := boundedIntEnv("MAX_ACTIVE_AGENT_RUNS", 8, 1, 128)
 	if err != nil {
 		return Config{}, err
 	}
@@ -54,6 +59,7 @@ func Load() (Config, error) {
 		HTTPNodeAllowPrivate: allowPrivate,
 		NodeIndexCacheDir:    nodeIndexCacheDir,
 		MaxParallelNodes:     maxParallelNodes,
+		MaxActiveAgentRuns:   maxActiveAgentRuns,
 		WorkflowTimeout:      workflowTimeout,
 	}
 
@@ -79,6 +85,18 @@ func intEnv(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return parsed, nil
+}
+
+func boundedIntEnv(key string, fallback, minimum, maximum int) (int, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
 	}
 	return parsed, nil
 }

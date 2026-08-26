@@ -11,9 +11,10 @@ import { Link, useParams } from 'react-router-dom'
 
 import type { JSONSchema } from '../../components/schema-form/types'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
-import { APIError, api, type NodeDefinition, type Workflow } from '../../lib/api/client'
+import { APIError, api, type AgentPresentation, type NodeDefinition, type Workflow } from '../../lib/api/client'
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { applyNodeConfig } from './configDraft'
+import { AgentPageSettingsDialog } from './AgentPageSettingsDialog'
 import { fromFlowGraph, portsFromDefinition, toFlowGraph } from './graphAdapter'
 import { NodeConfigPanel } from './NodeConfigPanel'
 import { NodeLibraryDrawer } from './NodeLibraryDrawer'
@@ -41,6 +42,9 @@ export function StudioPage() {
   const [publishing, setPublishing] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
+  const [agentSettingsOpen, setAgentSettingsOpen] = useState(false)
+  const [agentSettingsSaving, setAgentSettingsSaving] = useState(false)
+  const [agentSettingsError, setAgentSettingsError] = useState('')
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [loadError, setLoadError] = useState('')
   const [events, setEvents] = useState<RunEvent[]>([])
@@ -238,6 +242,39 @@ export function StudioPage() {
     }
   }
 
+  const openAgentSettings = async () => {
+    if (!workflow || archived) return
+    setAgentSettingsError('')
+    try {
+      await saveQueue.current?.flush()
+      setAgentSettingsOpen(true)
+    } catch (error) {
+      setAgentSettingsError(publicMessage(error))
+    }
+  }
+
+  const saveAgentSettings = async (presentation: AgentPresentation) => {
+    if (!workflow || archived || !saveQueue.current) return
+    setAgentSettingsSaving(true)
+    setAgentSettingsError('')
+    try {
+      const updated = await api.saveAgentPresentation(workflow.id, {
+        draftRevision: saveQueue.current.getRevision(), presentation,
+      })
+      saveQueue.current.adoptRevision(updated.draftRevision)
+      setWorkflow(updated)
+      setAgentSettingsOpen(false)
+    } catch (error) {
+      if (error instanceof APIError && error.status === 409) {
+        setAgentSettingsError('草稿已在其他页面更新，请刷新后重试')
+      } else {
+        setAgentSettingsError(publicMessage(error))
+      }
+    } finally {
+      setAgentSettingsSaving(false)
+    }
+  }
+
   const executeIntent = (intent: WorkbenchIntent) => {
     if (workbench.mode.kind === 'test' && intent.kind !== 'test') runController.current?.abort()
     if (intent.kind === 'open-library') {
@@ -253,6 +290,10 @@ export function StudioPage() {
     }
     if (intent.kind === 'export') {
       void exportTemplate()
+      return
+    }
+    if (intent.kind === 'agent-presentation') {
+      void openAgentSettings()
       return
     }
     setLibraryOpen(false)
@@ -288,9 +329,10 @@ export function StudioPage() {
           <Link to={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}>运行记录</Link>
           <button type="button" onClick={() => requestIntent({ kind: 'open-library' })} disabled={archived}>添加节点</button>
           <button type="button" onClick={() => requestIntent({ kind: 'test' })} disabled={archived}>测试运行</button>
+          <button type="button" onClick={() => requestIntent({ kind: 'agent-presentation' })} disabled={archived}>Agent 页面设置</button>
           <button type="button" onClick={() => requestIntent({ kind: 'export' })} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
           <button className="primary-button" type="button" onClick={() => requestIntent({ kind: 'publish' })} disabled={archived}>发布</button>
-          {exportError && <span className="studio-toolbar-error" role="alert">{exportError}</span>}
+          {(exportError || (!agentSettingsOpen && agentSettingsError)) && <span className="studio-toolbar-error" role="alert">{exportError || agentSettingsError}</span>}
         </div>
       </header>
       {archived && <div className="studio-archive-banner" role="status">已归档，只读模式。恢复后才能保存、测试或发布。</div>}
@@ -313,6 +355,16 @@ export function StudioPage() {
         onCancel={() => workbench.resolveDirty('cancel')}
       />
       {publishOpen && <PublishDialog slug={workflow.slug} version={publishedVersion} error={publishError} publishing={publishing} onConfirm={publish} onClose={() => setPublishOpen(false)} />}
+      <AgentPageSettingsDialog
+        open={agentSettingsOpen}
+        workflowName={workflow.name}
+        workflowDescription={workflow.description}
+        value={workflow.agentPresentation}
+        saving={agentSettingsSaving}
+        error={agentSettingsError}
+        onClose={() => { setAgentSettingsOpen(false); setAgentSettingsError('') }}
+        onSave={(presentation) => { void saveAgentSettings(presentation) }}
+      />
     </main>
   )
 }

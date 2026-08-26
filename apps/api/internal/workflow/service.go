@@ -56,11 +56,12 @@ func (err *TemplateValidationError) Error() string {
 }
 
 type AgentManifest struct {
-	WorkflowVersionID string          `json:"workflowVersionId"`
-	Version           int             `json:"version"`
-	Title             string          `json:"title"`
-	Description       string          `json:"description"`
-	InputSchema       json.RawMessage `json:"inputSchema"`
+	WorkflowVersionID string                   `json:"workflowVersionId"`
+	Version           int                      `json:"version"`
+	Title             string                   `json:"title"`
+	Description       string                   `json:"description"`
+	InputSchema       json.RawMessage          `json:"inputSchema"`
+	Presentation      domain.AgentPresentation `json:"presentation"`
 }
 
 type Service struct {
@@ -103,12 +104,13 @@ func (service *Service) createWithGraph(ctx context.Context, input CreateWorkflo
 		return domain.Workflow{}, fmt.Errorf("encode initial graph: %w", err)
 	}
 	workflow, err := service.store.CreateWorkflow(ctx, domain.Workflow{
-		ID:            uuid.NewString(),
-		Name:          input.Name,
-		Slug:          input.Slug,
-		Description:   input.Description,
-		DraftGraph:    raw,
-		DraftRevision: 1,
+		ID:                uuid.NewString(),
+		Name:              input.Name,
+		Slug:              input.Slug,
+		Description:       input.Description,
+		AgentPresentation: DefaultAgentPresentation(input.Name, input.Description),
+		DraftGraph:        raw,
+		DraftRevision:     1,
 	})
 	if errors.Is(err, domain.ErrSlugConflict) {
 		return domain.Workflow{}, domain.ErrSlugConflict
@@ -220,6 +222,21 @@ func (service *Service) SaveDraft(ctx context.Context, id string, revision int64
 	return service.store.UpdateDraft(ctx, id, revision, raw)
 }
 
+func (service *Service) SaveAgentPresentation(ctx context.Context, id string, revision int64, presentation domain.AgentPresentation) (domain.Workflow, error) {
+	normalized, err := NormalizeAgentPresentation(presentation)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	loaded, err := service.store.GetWorkflow(ctx, id)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	if err := ensureWorkflowActive(loaded); err != nil {
+		return domain.Workflow{}, err
+	}
+	return service.store.UpdateAgentPresentation(ctx, id, revision, normalized)
+}
+
 func (service *Service) Validate(ctx context.Context, id string) ([]domain.ValidationIssue, error) {
 	loaded, err := service.store.GetWorkflow(ctx, id)
 	if err != nil {
@@ -256,7 +273,7 @@ func (service *Service) Publish(ctx context.Context, id string, revision int64) 
 	if err != nil {
 		return domain.WorkflowVersion{}, fmt.Errorf("encode published graph: %w", err)
 	}
-	return service.store.Publish(ctx, id, revision, graphJSON, inputSchema)
+	return service.store.Publish(ctx, id, revision, graphJSON, inputSchema, workflow.AgentPresentation)
 }
 
 func (service *Service) AgentManifest(ctx context.Context, slug string) (AgentManifest, error) {
@@ -270,9 +287,10 @@ func (service *Service) AgentManifest(ctx context.Context, slug string) (AgentMa
 	return AgentManifest{
 		WorkflowVersionID: version.ID,
 		Version:           version.Version,
-		Title:             workflow.Name,
-		Description:       workflow.Description,
+		Title:             version.AgentPresentation.Title,
+		Description:       version.AgentPresentation.Description,
 		InputSchema:       version.InputSchema,
+		Presentation:      version.AgentPresentation,
 	}, nil
 }
 

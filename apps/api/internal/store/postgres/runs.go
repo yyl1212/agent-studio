@@ -15,7 +15,7 @@ import (
 
 const runSelectColumns = `id::text,workflow_id::text,workflow_version_id::text,draft_revision,
     graph_snapshot,source_run_id::text,source_node_id,retry_of_run_id::text,retry_key::text,
-    mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at`
+    agent_request_key::text,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at`
 
 func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	errorJSON, err := marshalOptional(run.Error)
@@ -40,10 +40,10 @@ func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	}
 	_, err = transaction.Exec(ctx, `INSERT INTO runs(
 		id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,
-		retry_of_run_id,retry_key,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at
-	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		retry_of_run_id,retry_key,agent_request_key,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		run.ID, run.WorkflowID, run.WorkflowVersionID, run.DraftRevision, nullableRaw(run.GraphSnapshot),
-		run.SourceRunID, run.SourceNodeID, run.RetryOfRunID, run.RetryKey, run.Mode, run.Status, run.Input, inputPaths,
+		run.SourceRunID, run.SourceNodeID, run.RetryOfRunID, run.RetryKey, run.AgentRequestKey, run.Mode, run.Status, run.Input, inputPaths,
 		nullableRaw(run.Output), errorJSON, run.CancelRequestedAt, run.HeartbeatAt, run.StartedAt, run.EndedAt,
 	)
 	if err != nil {
@@ -56,7 +56,7 @@ func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 }
 
 func (store *Store) CreateRetryRun(ctx context.Context, run domain.Run) (string, error) {
-	if run.RetryOfRunID == nil || run.RetryKey == nil {
+	if run.RetryOfRunID == nil || run.RetryKey == nil || run.AgentRequestKey != nil {
 		return "", workflowservice.ErrInvalidWorkflowInput
 	}
 	errorJSON, err := marshalOptional(run.Error)
@@ -92,10 +92,10 @@ func (store *Store) CreateRetryRun(ctx context.Context, run domain.Run) (string,
 	}
 	_, err = transaction.Exec(ctx, `INSERT INTO runs(
 		id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,source_run_id,source_node_id,
-		retry_of_run_id,retry_key,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at
-	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		retry_of_run_id,retry_key,agent_request_key,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		run.ID, run.WorkflowID, run.WorkflowVersionID, run.DraftRevision, nullableRaw(run.GraphSnapshot),
-		run.SourceRunID, run.SourceNodeID, run.RetryOfRunID, run.RetryKey, run.Mode, run.Status, run.Input, inputPaths,
+		run.SourceRunID, run.SourceNodeID, run.RetryOfRunID, run.RetryKey, run.AgentRequestKey, run.Mode, run.Status, run.Input, inputPaths,
 		nullableRaw(run.Output), errorJSON, run.CancelRequestedAt, run.HeartbeatAt, run.StartedAt, run.EndedAt,
 	)
 	if err != nil {
@@ -497,7 +497,7 @@ func scanRun(row runScanner) (domain.Run, error) {
 	if err := row.Scan(
 		&run.ID, &run.WorkflowID, &run.WorkflowVersionID, &run.DraftRevision,
 		&graphSnapshot, &run.SourceRunID, &run.SourceNodeID, &run.RetryOfRunID, &run.RetryKey,
-		&run.Mode, &run.Status, &input, &run.InputRedactedPaths, &output, &errorJSON,
+		&run.AgentRequestKey, &run.Mode, &run.Status, &input, &run.InputRedactedPaths, &output, &errorJSON,
 		&run.CancelRequestedAt, &run.HeartbeatAt,
 		&run.StartedAt, &run.EndedAt,
 	); err != nil {

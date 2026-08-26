@@ -1,9 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { APIError, api } from '../../lib/api/client'
+import { APIError, api, type AgentManifest, type AgentRunPublicView } from '../../lib/api/client'
 import { AgentPage } from './AgentPage'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -11,83 +11,79 @@ vi.mock('../../lib/api/client', async (importOriginal) => {
   return { ...original, api: { ...original.api } }
 })
 
-const inputSchema = { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', properties: { topic: { type: 'string', title: '主题' } }, required: ['topic'] }
+const inputSchema = { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', properties: { topic: { type: 'string', title: '主题' }, token: { type: 'string', title: '密钥' } }, required: ['topic'] }
+const presentation = { title: '研究助手', description: '输入主题生成报告', accent: 'teal' as const, submitLabel: '开始研究', resultMode: 'json' as const }
+const manifest: AgentManifest = { workflowVersionId: 'version-1', version: 1, title: '旧标题', description: '旧说明', inputSchema, presentation }
 
-function ndjsonResponse(events: unknown[]) {
-  return new Response(events.map((event) => JSON.stringify(event)).join('\n') + '\n', { status: 200 })
+function publicView(status: AgentRunPublicView['run']['status'], overrides: Partial<AgentRunPublicView> = {}): AgentRunPublicView {
+  return {
+    run: { runId: 'run-1', workflowVersionId: 'version-1', version: 1, status, startedAt: '2026-08-26T00:00:00Z', endedAt: status === 'running' ? null : '2026-08-26T00:01:00Z', output: status === 'completed' ? { answer: 42 } : null, error: null },
+    presentation, events: [], nextSequence: 0, hasMore: false, ...overrides,
+  }
 }
 
-function renderPage() {
-  return render(<MemoryRouter initialEntries={['/agents/demo']}><Routes><Route path="/agents/:slug" element={<AgentPage />} /></Routes></MemoryRouter>)
+function LocationProbe() { const location = useLocation(); return <output aria-label="当前地址">{location.pathname}{location.search}</output> }
+function renderPage(entry = '/agents/demo') {
+  return render(<MemoryRouter initialEntries={[entry]}><Routes><Route path="/agents/:slug" element={<><AgentPage /><LocationProbe /></>} /></Routes></MemoryRouter>)
 }
 
 describe('AgentPage', () => {
   afterEach(() => vi.restoreAllMocks())
+  beforeEach(() => vi.spyOn(api, 'getAgentManifest').mockResolvedValue(manifest))
 
-  beforeEach(() => {
-    vi.spyOn(api, 'getAgentManifest').mockResolvedValue({ workflowVersionId: 'version-1', version: 1, title: '知识助手', description: '回答问题', inputSchema })
-  })
-
-  it('运行时回传页面加载时的 workflowVersionId 并安全显示文本', async () => {
-    vi.spyOn(api, 'runAgent').mockResolvedValue(ndjsonResponse([
-      { sequence: 1, type: 'run.started', runId: 'r1', timestamp: '2026-08-17T00:00:00Z' },
-      { sequence: 2, type: 'run.completed', runId: 'r1', output: '<script>ok</script>', timestamp: '2026-08-17T00:00:01Z' },
-    ]))
+  it('按冻结页面配置展示表单并以异步协议运行', async () => {
+    vi.spyOn(api, 'startAgentRun').mockResolvedValue(publicView('running').run)
+    vi.spyOn(api, 'getAgentRunView').mockResolvedValue(publicView('completed'))
     renderPage()
-    fireEvent.change(await screen.findByLabelText('主题'), { target: { value: 'Agent' } })
-    await userEvent.click(screen.getByRole('button', { name: '运行 Agent' }))
-    expect(api.runAgent).toHaveBeenCalledWith('demo', { workflowVersionId: 'version-1', input: { topic: 'Agent' } }, expect.any(AbortSignal))
-    expect(await screen.findByText('<script>ok</script>')).toBeInTheDocument()
-    expect(document.querySelector('script')).toBeNull()
+    expect(await screen.findByRole('heading', { name: '研究助手' })).toBeInTheDocument()
+    expect(screen.getByText('输入主题生成报告')).toBeInTheDocument()
+    expect(document.querySelector('.agent-shell')).toHaveClass('accent-teal')
+    fireEvent.change(screen.getByLabelText('主题'), { target: { value: 'Agent' } })
+    fireEvent.change(screen.getByLabelText('密钥'), { target: { value: 'top-secret' } })
+    await userEvent.click(screen.getByRole('button', { name: '开始研究' }))
+    expect(api.startAgentRun).toHaveBeenCalledWith('demo', { workflowVersionId: 'version-1', input: { topic: 'Agent', token: 'top-secret' } }, expect.any(String), expect.any(AbortSignal))
+    await waitFor(() => expect(screen.getByLabelText('当前地址')).toHaveTextContent('/agents/demo?runId=run-1'))
+    expect(await screen.findByText('运行完成')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '运行结果' })).toHaveTextContent('"answer": 42')
+    expect(document.body.textContent).not.toContain('top-secret')
   })
 
-  it('显示稳定 API 错误且不泄漏其他内容', async () => {
-    vi.spyOn(api, 'runAgent').mockRejectedValue(new APIError(400, 'REQUEST_INVALID', '请求内容无效', 'req-1'))
+  it('带 runId 时不加载当前 manifest，直接恢复旧运行页面', async () => {
+    const oldPresentation = { ...presentation, title: '旧版本助手', accent: 'rose' as const, resultMode: 'text' as const }
+    vi.spyOn(api, 'getAgentRunView').mockResolvedValue(publicView('completed', { presentation: oldPresentation }))
+    renderPage('/agents/demo?runId=run-1')
+    expect(await screen.findByRole('heading', { name: '旧版本助手' })).toBeInTheDocument()
+    expect(api.getAgentManifest).not.toHaveBeenCalled()
+    expect(document.querySelector('.agent-shell')).toHaveClass('accent-rose')
+    expect(screen.queryByLabelText('主题')).not.toBeInTheDocument()
+  })
+
+  it('再次运行移除 runId、加载最新 manifest 并保留本页输入', async () => {
+    vi.spyOn(api, 'startAgentRun').mockResolvedValue(publicView('running').run)
+    vi.spyOn(api, 'getAgentRunView').mockResolvedValue(publicView('completed'))
+    const getManifest = vi.mocked(api.getAgentManifest)
     renderPage()
-    fireEvent.change(await screen.findByLabelText('主题'), { target: { value: 'Agent' } })
-    await userEvent.click(screen.getByRole('button', { name: '运行 Agent' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('请求内容无效（请求 ID：req-1）')
+    fireEvent.change(await screen.findByLabelText('主题'), { target: { value: '保留主题' } })
+    await userEvent.click(screen.getByRole('button', { name: '开始研究' }))
+    await userEvent.click(await screen.findByRole('button', { name: '再次运行' }))
+    expect(await screen.findByLabelText('主题')).toHaveValue('保留主题')
+    expect(screen.getByLabelText('当前地址')).toHaveTextContent('/agents/demo')
+    expect(getManifest).toHaveBeenCalledTimes(2)
   })
 
-  it('显示安全的服务端错误和格式化 JSON 输出', async () => {
-    const runAgent = vi.spyOn(api, 'runAgent')
-    runAgent.mockRejectedValueOnce(new APIError(500, 'INTERNAL_ERROR', '内部错误', 'req-500'))
-    renderPage()
-    fireEvent.change(await screen.findByLabelText('主题'), { target: { value: 'Agent' } })
-    await userEvent.click(screen.getByRole('button', { name: '运行 Agent' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('内部错误（请求 ID：req-500）')
-
-    runAgent.mockResolvedValueOnce(ndjsonResponse([
-      { sequence: 1, type: 'run.completed', runId: 'r2', output: { answer: 'ok' }, timestamp: '2026-08-17T00:00:01Z' },
-    ]))
-    await userEvent.click(screen.getByRole('button', { name: '运行 Agent' }))
-    expect(await screen.findByRole('region', { name: '运行结果' })).toHaveTextContent('"answer": "ok"')
+  it('恢复期间只显示骨架，不闪现空表单', () => {
+    vi.spyOn(api, 'getAgentRunView').mockImplementation(() => new Promise(() => {}))
+    renderPage('/agents/demo?runId=run-1')
+    expect(screen.getByText('正在恢复运行…')).toBeInTheDocument()
+    expect(screen.queryByLabelText('主题')).not.toBeInTheDocument()
+    expect(api.getAgentManifest).not.toHaveBeenCalled()
   })
 
-  it('可取消正在进行的运行', async () => {
-    vi.spyOn(api, 'runAgent').mockImplementation((_slug, _body, signal) => new Promise((_resolve, reject) => {
-      signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
-    }))
-    renderPage()
-    fireEvent.change(await screen.findByLabelText('主题'), { target: { value: 'Agent' } })
-    await userEvent.click(screen.getByRole('button', { name: '运行 Agent' }))
-    await userEvent.click(await screen.findByRole('button', { name: '取消运行' }))
-    await vi.waitFor(() => expect(screen.queryByRole('button', { name: '取消运行' })).not.toBeInTheDocument())
-  })
-
-  it('Agent 已归档时显示安全提示', async () => {
-    vi.mocked(api.getAgentManifest).mockRejectedValueOnce(new APIError(409, 'WORKFLOW_ARCHIVED', '内部归档错误', 'req-archive'))
+  it('显示安全的 Agent 加载错误', async () => {
+    vi.mocked(api.getAgentManifest).mockRejectedValueOnce(new APIError(409, 'WORKFLOW_ARCHIVED', '内部归档错误', 'req-secret'))
     renderPage()
     expect(await screen.findByRole('alert')).toHaveTextContent('该 Agent 已归档，暂时不能运行')
     expect(screen.getByRole('alert')).not.toHaveTextContent('内部归档错误')
-  })
-
-  it('运行期间发现 Agent 已归档时显示安全提示', async () => {
-    vi.spyOn(api, 'runAgent').mockRejectedValue(new APIError(409, 'WORKFLOW_ARCHIVED', '内部归档错误', 'req-archive'))
-    renderPage()
-    fireEvent.change(await screen.findByLabelText('主题'), { target: { value: 'Agent' } })
-    await userEvent.click(screen.getByRole('button', { name: '运行 Agent' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('该 Agent 已归档，暂时不能运行')
-    expect(screen.getByRole('alert')).not.toHaveTextContent('内部归档错误')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('req-secret')
   })
 })

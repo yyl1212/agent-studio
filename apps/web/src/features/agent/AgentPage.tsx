@@ -1,73 +1,92 @@
-import { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { useParams, useSearchParams } from 'react-router-dom'
 
 import { SchemaForm } from '../../components/schema-form/SchemaForm'
 import type { JSONSchema } from '../../components/schema-form/types'
-import { APIError, api, type AgentManifest } from '../../lib/api/client'
-import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
-import { RunProgress } from '../runs/RunProgress'
+import { APIError, api, type AgentManifest, type AgentPresentation } from '../../lib/api/client'
+import { AgentRunView } from './AgentRunView'
+import { useAgentRun } from './useAgentRun'
 import './agent.css'
+
+const accents = new Set<AgentPresentation['accent']>(['indigo', 'blue', 'teal', 'amber', 'rose'])
 
 export function AgentPage() {
   const { slug = '' } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const runId = searchParams.get('runId') || undefined
   const [manifest, setManifest] = useState<AgentManifest>()
   const [input, setInput] = useState<Record<string, unknown>>({})
   const [loadError, setLoadError] = useState('')
-  const [events, setEvents] = useState<RunEvent[]>([])
-  const [running, setRunning] = useState(false)
-  const [error, setError] = useState('')
-  const controller = useRef<AbortController | undefined>(undefined)
+  const [reloadKey, setReloadKey] = useState(0)
+  const accepted = useCallback((acceptedRunID: string) => {
+    setSearchParams({ runId: acceptedRunID }, { replace: true })
+  }, [setSearchParams])
+  const runner = useAgentRun({ slug, runId, onAccepted: accepted })
 
   useEffect(() => {
-    const loadController = new AbortController()
-    api.getAgentManifest(slug, loadController.signal).then(setManifest).catch((loadFailure: unknown) => {
-      if (!(loadFailure instanceof DOMException && loadFailure.name === 'AbortError')) setLoadError(formatError(loadFailure, 'Agent 不存在或尚未发布'))
+    if (runId) return
+    const controller = new AbortController()
+    setManifest(undefined)
+    setLoadError('')
+    api.getAgentManifest(slug, controller.signal).then(setManifest).catch((error: unknown) => {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setLoadError(manifestError(error))
     })
-    return () => loadController.abort()
-  }, [slug])
+    return () => controller.abort()
+  }, [reloadKey, runId, slug])
 
-  const run = async (input: Record<string, unknown>) => {
-    if (!manifest) return
-    controller.current?.abort()
-    const runController = new AbortController()
-    controller.current = runController
-    setEvents([])
-    setError('')
-    setRunning(true)
-    try {
-      const response = await api.runAgent(slug, { workflowVersionId: manifest.workflowVersionId, input }, runController.signal)
-      await readNDJSON(response, (event) => setEvents((current) => [...current, event]), runController.signal)
-    } catch (runFailure) {
-      if (!(runFailure instanceof DOMException && runFailure.name === 'AbortError')) setError(formatError(runFailure, '运行失败，请稍后重试'))
-    } finally {
-      setRunning(false)
-    }
+  const restart = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('runId')
+    setSearchParams(next, { replace: true })
+    setReloadKey((current) => current + 1)
   }
 
-  if (loadError) return <main className="agent-page"><div className="agent-card"><p role="alert">{loadError}</p></div></main>
-  if (!manifest) return <main className="agent-page" aria-live="polite">正在加载 Agent…</main>
-  const completed = [...events].reverse().find((event) => event.type === 'run.completed')
+  if (loadError && !runId) return <AgentShell><p className="agent-load-error" role="alert">{loadError}</p></AgentShell>
+  if (runId && !runner.view) {
+    if (runner.phase === 'failed') return <AgentShell><AgentRunView {...runner} onCancel={() => { void runner.cancel() }} onRestart={restart} /></AgentShell>
+    return <main className="agent-page agent-loading" aria-live="polite"><div className="agent-skeleton" /><p>正在恢复运行…</p></main>
+  }
+  if (!runId && !manifest) return <main className="agent-page agent-loading" aria-live="polite"><div className="agent-skeleton" /><p>正在加载 Agent…</p></main>
 
-  return (
-    <main className="agent-page">
-      <article className="agent-card">
-        <header><span className="agent-version">Agent · v{manifest.version}</span><h2>{manifest.title}</h2>{manifest.description && <p>{manifest.description}</p>}</header>
-        <SchemaForm schema={manifest.inputSchema as JSONSchema} value={input} onChange={setInput} onSubmit={run} submitLabel={running ? '运行中…' : '运行 Agent'} disabled={running} />
-        {running && <button className="cancel-button" type="button" onClick={() => controller.current?.abort()}>取消运行</button>}
-        <RunProgress events={events} />
-        {completed && <section className="agent-result" aria-label="运行结果"><h3>运行结果</h3><pre>{formatOutput(completed.output)}</pre></section>}
-        {error && <p className="form-error" role="alert">{error}</p>}
-      </article>
-    </main>
-  )
+  const presentation = runId ? runner.view!.presentation : manifest!.presentation
+  const version = runId ? runner.view!.run.version : manifest!.version
+  const accent = accents.has(presentation.accent) ? presentation.accent : 'indigo'
+  const starting = runner.phase === 'starting'
+
+  return <main className="agent-page">
+    <div className={`agent-shell accent-${accent}`}>
+      <header className="agent-hero">
+        <span className="agent-version">Agent · v{version}</span>
+        <h1>{presentation.title}</h1>
+        {presentation.description && <p>{presentation.description}</p>}
+      </header>
+      {!runId && manifest && <section className="agent-form-card" aria-label="Agent 输入">
+        <SchemaForm
+          schema={manifest.inputSchema as JSONSchema}
+          value={input}
+          onChange={setInput}
+          onSubmit={(nextInput) => runner.start(manifest, nextInput)}
+          submitLabel={starting ? '正在启动…' : presentation.submitLabel}
+          disabled={starting}
+        />
+        {runner.error && <p className="form-error" role="alert">{runner.error}</p>}
+      </section>}
+      {runId && <>
+        <div className="agent-input-summary">输入已提交。出于安全考虑，此处不显示输入值。</div>
+        <AgentRunView {...runner} onCancel={() => { void runner.cancel() }} onRestart={restart} />
+      </>}
+    </div>
+  </main>
 }
 
-function formatOutput(value: unknown) {
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+function AgentShell({ children }: { children: React.ReactNode }) {
+  return <main className="agent-page"><div className="agent-shell accent-indigo">{children}</div></main>
 }
 
-function formatError(error: unknown, fallback: string) {
-  if (!(error instanceof APIError)) return fallback
+function manifestError(error: unknown) {
+  if (!(error instanceof APIError)) return 'Agent 不存在或尚未发布'
   if (error.code === 'WORKFLOW_ARCHIVED') return '该 Agent 已归档，暂时不能运行'
-  return error.requestId ? `${error.message}（请求 ID：${error.requestId}）` : error.message
+  if (error.status === 404) return 'Agent 不存在或尚未发布'
+  if (error.status === 503) return '服务暂时不可用，请稍后重试'
+  return 'Agent 加载失败，请稍后重试'
 }

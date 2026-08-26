@@ -111,12 +111,13 @@ func (service *WorkflowManagementService) Copy(ctx context.Context, id string, i
 		return domain.Workflow{}, err
 	}
 	return service.store.CreateWorkflow(ctx, domain.Workflow{
-		ID:            uuid.NewString(),
-		Name:          identity.Name,
-		Slug:          identity.Slug,
-		Description:   identity.Description,
-		DraftGraph:    append([]byte(nil), source.DraftGraph...),
-		DraftRevision: 1,
+		ID:                uuid.NewString(),
+		Name:              identity.Name,
+		Slug:              identity.Slug,
+		Description:       identity.Description,
+		AgentPresentation: source.AgentPresentation,
+		DraftGraph:        append([]byte(nil), source.DraftGraph...),
+		DraftRevision:     1,
 	})
 }
 

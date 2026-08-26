@@ -166,6 +166,24 @@ export interface paths {
         patch: operations["updateWorkflow"];
         trace?: never;
     };
+    "/api/workflows/{id}/agent-presentation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["saveAgentPresentation"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{id}/copies": {
         parameters: {
             query?: never;
@@ -372,6 +390,44 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["runAgent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{slug}/runs/{runID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: components["parameters"]["AgentSlug"];
+                runID: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getAgentRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{slug}/runs/{runID}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: components["parameters"]["AgentSlug"];
+                runID: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelAgentRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -801,12 +857,22 @@ export interface components {
             available: boolean;
             capabilities: ("network" | "secrets" | "filesystem-read" | "filesystem-write")[];
         };
+        AgentPresentation: {
+            title: string;
+            description: string;
+            /** @enum {string} */
+            accent: "indigo" | "blue" | "teal" | "amber" | "rose";
+            submitLabel: string;
+            /** @enum {string} */
+            resultMode: "auto" | "text" | "json";
+        };
         Workflow: {
             /** Format: uuid */
             id: string;
             name: string;
             slug: string;
             description: string;
+            agentPresentation: components["schemas"]["AgentPresentation"];
             draftGraph: components["schemas"]["Graph"];
             /** Format: int64 */
             draftRevision: number;
@@ -852,6 +918,7 @@ export interface components {
             inputSchema: {
                 [key: string]: unknown;
             };
+            agentPresentation: components["schemas"]["AgentPresentation"];
             /** Format: date-time */
             createdAt: string;
         };
@@ -864,6 +931,45 @@ export interface components {
             inputSchema: {
                 [key: string]: unknown;
             };
+            presentation: components["schemas"]["AgentPresentation"];
+        };
+        AgentRunPublicError: {
+            code: string;
+            /** @enum {string} */
+            kind?: "config" | "input" | "temporary" | "canceled" | "internal";
+            message: string;
+        };
+        AgentRunPublicSummary: {
+            /** Format: uuid */
+            runId: string;
+            /** Format: uuid */
+            workflowVersionId: string;
+            version: number;
+            /** @enum {string} */
+            status: "running" | "cancelling" | "completed" | "failed" | "cancelled";
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: date-time */
+            endedAt: string | null;
+            output: unknown;
+            error: components["schemas"]["AgentRunPublicError"] | null;
+        };
+        AgentRunPublicEvent: {
+            /** Format: int64 */
+            sequence: number;
+            type: string;
+            /** @enum {string} */
+            status?: "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
+            /** Format: date-time */
+            timestamp: string;
+        };
+        AgentRunPublicView: {
+            run: components["schemas"]["AgentRunPublicSummary"];
+            presentation: components["schemas"]["AgentPresentation"];
+            events: components["schemas"]["AgentRunPublicEvent"][];
+            /** Format: int64 */
+            nextSequence: number;
+            hasMore: boolean;
         };
         Run: {
             /** Format: uuid */
@@ -1073,6 +1179,11 @@ export interface components {
             /** Format: int64 */
             draftRevision: number;
             graph: components["schemas"]["Graph"];
+        };
+        SaveAgentPresentationRequest: {
+            /** Format: int64 */
+            draftRevision: number;
+            presentation: components["schemas"]["AgentPresentation"];
         };
         DraftRunRequest: {
             /** Format: int64 */
@@ -1436,6 +1547,36 @@ export interface operations {
             500: components["responses"]["Error"];
         };
     };
+    saveAgentPresentation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["WorkflowID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveAgentPresentationRequest"];
+            };
+        };
+        responses: {
+            /** @description 已保存 Agent 页面配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workflow"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
     copyWorkflow: {
         parameters: {
             query?: never;
@@ -1743,7 +1884,10 @@ export interface operations {
     runAgent: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                Prefer?: string;
+                "Idempotency-Key"?: string;
+            };
             path: {
                 slug: components["parameters"]["AgentSlug"];
             };
@@ -1764,10 +1908,76 @@ export interface operations {
                     "application/x-ndjson": string;
                 };
             };
+            /** @description 已接受异步 Agent 运行 */
+            202: {
+                headers: {
+                    "Preference-Applied"?: "respond-async";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunPublicSummary"];
+                };
+            };
             400: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
             422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getAgentRun: {
+        parameters: {
+            query?: {
+                afterSequence?: number;
+            };
+            header?: never;
+            path: {
+                slug: components["parameters"]["AgentSlug"];
+                runID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent 运行公开快照与增量事件 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunPublicView"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    cancelAgentRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: components["parameters"]["AgentSlug"];
+                runID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent 运行最新公开摘要 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunPublicSummary"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     listRunSummaries: {

@@ -18,21 +18,22 @@ import (
 )
 
 type fakeStore struct {
-	workflow         domain.Workflow
-	versions         map[string]domain.WorkflowVersion
-	currentID        string
-	runs             []domain.Run
-	nodeRuns         map[string]domain.NodeRun
-	runEvents        []domain.RunEvent
-	eventBudget      domain.RunEventBudget
-	failPersist      error
-	finalizations    []RunFinalization
-	beforeFinalize   func()
-	finalizeErr      error
-	sequence         int
-	createCalls      int
-	updateDraftCalls int
-	publishCalls     int
+	workflow                domain.Workflow
+	versions                map[string]domain.WorkflowVersion
+	currentID               string
+	runs                    []domain.Run
+	nodeRuns                map[string]domain.NodeRun
+	runEvents               []domain.RunEvent
+	eventBudget             domain.RunEventBudget
+	failPersist             error
+	finalizations           []RunFinalization
+	beforeFinalize          func()
+	finalizeErr             error
+	sequence                int
+	createCalls             int
+	updateDraftCalls        int
+	updatePresentationCalls int
+	publishCalls            int
 }
 
 func newFakeStore(t *testing.T) *fakeStore {
@@ -40,14 +41,15 @@ func newFakeStore(t *testing.T) *fakeStore {
 	graph := graphReturning(t, "v1")
 	return &fakeStore{
 		workflow: domain.Workflow{
-			ID:            "workflow-1",
-			Name:          "演示 Agent",
-			Slug:          "demo",
-			Description:   "版本测试",
-			DraftGraph:    graph,
-			DraftRevision: 2,
-			CreatedAt:     time.Now().UTC(),
-			UpdatedAt:     time.Now().UTC(),
+			ID:                "workflow-1",
+			Name:              "演示 Agent",
+			Slug:              "demo",
+			Description:       "版本测试",
+			AgentPresentation: DefaultAgentPresentation("演示 Agent", "版本测试"),
+			DraftGraph:        graph,
+			DraftRevision:     2,
+			CreatedAt:         time.Now().UTC(),
+			UpdatedAt:         time.Now().UTC(),
 		},
 		versions: make(map[string]domain.WorkflowVersion),
 		nodeRuns: make(map[string]domain.NodeRun),
@@ -84,12 +86,27 @@ func (store *fakeStore) UpdateDraft(_ context.Context, id string, revision int64
 	return store.workflow, nil
 }
 
-func (store *fakeStore) Publish(_ context.Context, id string, revision int64, graph, inputSchema json.RawMessage) (domain.WorkflowVersion, error) {
+func (store *fakeStore) UpdateAgentPresentation(_ context.Context, id string, revision int64, presentation domain.AgentPresentation) (domain.Workflow, error) {
+	store.updatePresentationCalls++
+	if id != store.workflow.ID {
+		return domain.Workflow{}, domain.ErrNotFound
+	}
+	if revision != store.workflow.DraftRevision {
+		return domain.Workflow{}, domain.ErrRevisionConflict
+	}
+	store.workflow.AgentPresentation = presentation
+	store.workflow.DraftRevision++
+	return store.workflow, nil
+}
+
+func (store *fakeStore) Publish(_ context.Context, id string, revision int64, graph, inputSchema json.RawMessage, presentation domain.AgentPresentation) (domain.WorkflowVersion, error) {
 	store.publishCalls++
 	if id != store.workflow.ID || revision != store.workflow.DraftRevision {
 		return domain.WorkflowVersion{}, domain.ErrRevisionConflict
 	}
 	version := store.AddVersion(graph, inputSchema)
+	version.AgentPresentation = presentation
+	store.versions[version.ID] = version
 	store.SetCurrentVersion(version)
 	return version, nil
 }
@@ -112,6 +129,63 @@ func (store *fakeStore) GetAgentVersion(_ context.Context, slug, versionID strin
 func (store *fakeStore) CreateRun(_ context.Context, run domain.Run) error {
 	store.runs = append(store.runs, run)
 	return nil
+}
+
+func (store *fakeStore) FindAgentRunByRequestKey(_ context.Context, slug, requestKey string) (AgentRunRecord, error) {
+	for _, run := range store.runs {
+		if slug == store.workflow.Slug && run.AgentRequestKey != nil && *run.AgentRequestKey == requestKey && run.WorkflowVersionID != nil {
+			return AgentRunRecord{Run: run, Version: store.versions[*run.WorkflowVersionID], Events: []domain.RunEvent{}}, nil
+		}
+	}
+	return AgentRunRecord{}, domain.ErrNotFound
+}
+
+func (store *fakeStore) CreateAgentRun(_ context.Context, run domain.Run) (domain.Run, bool, error) {
+	if run.AgentRequestKey == nil {
+		return domain.Run{}, false, ErrInvalidWorkflowInput
+	}
+	for _, existing := range store.runs {
+		if existing.WorkflowID == run.WorkflowID && existing.AgentRequestKey != nil && *existing.AgentRequestKey == *run.AgentRequestKey {
+			return existing, false, nil
+		}
+	}
+	store.runs = append(store.runs, run)
+	return run, true, nil
+}
+
+func (store *fakeStore) GetAgentRun(_ context.Context, slug, runID string, afterSequence int64, limit int) (AgentRunRecord, error) {
+	for _, run := range store.runs {
+		if slug != store.workflow.Slug || run.ID != runID || run.WorkflowVersionID == nil {
+			continue
+		}
+		events := make([]domain.RunEvent, 0)
+		for _, event := range store.runEvents {
+			if event.RunID == runID && event.Sequence > afterSequence {
+				events = append(events, event)
+			}
+		}
+		hasMore := limit > 0 && len(events) > limit
+		if hasMore {
+			events = events[:limit]
+		}
+		return AgentRunRecord{Run: run, Version: store.versions[*run.WorkflowVersionID], Events: events, HasMore: hasMore}, nil
+	}
+	return AgentRunRecord{}, domain.ErrNotFound
+}
+
+func (store *fakeStore) RequestAgentRunCancel(ctx context.Context, slug, runID string) (AgentRunRecord, error) {
+	for index := range store.runs {
+		if slug != store.workflow.Slug || store.runs[index].ID != runID {
+			continue
+		}
+		if store.runs[index].Status == domain.RunRunning {
+			now := time.Now().UTC()
+			store.runs[index].Status = domain.RunCancelling
+			store.runs[index].CancelRequestedAt = &now
+		}
+		return store.GetAgentRun(ctx, slug, runID, 0, 200)
+	}
+	return AgentRunRecord{}, domain.ErrNotFound
 }
 
 func (store *fakeStore) PersistRunEvent(_ context.Context, event domain.RunEvent, nodeRun *domain.NodeRun, budget domain.RunEventBudget) error {
@@ -201,12 +275,13 @@ func (store *fakeStore) ListRuns(context.Context, string, int) ([]domain.Run, er
 func (store *fakeStore) AddVersion(graph, inputSchema json.RawMessage) domain.WorkflowVersion {
 	store.sequence++
 	version := domain.WorkflowVersion{
-		ID:          fmt.Sprintf("version-%d", store.sequence),
-		WorkflowID:  store.workflow.ID,
-		Version:     store.sequence,
-		Graph:       append(json.RawMessage(nil), graph...),
-		InputSchema: append(json.RawMessage(nil), inputSchema...),
-		CreatedAt:   time.Now().UTC(),
+		ID:                fmt.Sprintf("version-%d", store.sequence),
+		WorkflowID:        store.workflow.ID,
+		Version:           store.sequence,
+		Graph:             append(json.RawMessage(nil), graph...),
+		InputSchema:       append(json.RawMessage(nil), inputSchema...),
+		AgentPresentation: store.workflow.AgentPresentation,
+		CreatedAt:         time.Now().UTC(),
 	}
 	store.versions[version.ID] = version
 	return version
@@ -261,6 +336,15 @@ func TestArchivedWorkflowRejectsServiceWritesButAllowsExport(t *testing.T) {
 		}
 	})
 
+	t.Run("save agent presentation", func(t *testing.T) {
+		service, store := newServiceFixture(t)
+		store.workflow.ArchivedAt = &archivedAt
+		_, err := service.SaveAgentPresentation(context.Background(), store.workflow.ID, store.workflow.DraftRevision, DefaultAgentPresentation("页面", "说明"))
+		if !errors.Is(err, domain.ErrWorkflowArchived) || store.updatePresentationCalls != 0 {
+			t.Fatalf("error=%v update calls=%d", err, store.updatePresentationCalls)
+		}
+	})
+
 	t.Run("agent manifest", func(t *testing.T) {
 		service, store := newServiceFixture(t)
 		version := store.AddVersion(store.workflow.DraftGraph, json.RawMessage(`{"type":"object"}`))
@@ -299,6 +383,46 @@ func TestCreateValidatesIdentityAndAllowsIncompleteInitialDraft(t *testing.T) {
 	}
 	if created.DraftRevision != 1 || len(graph.Nodes) != 2 || len(graph.Edges) != 0 {
 		t.Fatalf("created=%+v graph=%+v", created, graph)
+	}
+	if created.AgentPresentation != DefaultAgentPresentation("新 Agent", "草稿") {
+		t.Fatalf("presentation=%+v", created.AgentPresentation)
+	}
+}
+
+func TestSaveAgentPresentationValidatesAndAdvancesRevision(t *testing.T) {
+	service, store := newServiceFixture(t)
+	input := domain.AgentPresentation{
+		Title: "  新页面  ", Description: "说明", Accent: domain.AgentAccentBlue,
+		SubmitLabel: "提交", ResultMode: domain.AgentResultModeAuto,
+	}
+	updated, err := service.SaveAgentPresentation(context.Background(), store.workflow.ID, store.workflow.DraftRevision, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AgentPresentation.Title != "新页面" || updated.DraftRevision != 3 {
+		t.Fatalf("updated=%+v", updated)
+	}
+	if _, err := service.SaveAgentPresentation(context.Background(), store.workflow.ID, updated.DraftRevision, domain.AgentPresentation{}); !errors.Is(err, ErrInvalidAgentPresentation) {
+		t.Fatalf("invalid error=%v", err)
+	}
+}
+
+func TestAgentManifestUsesPublishedPresentationSnapshot(t *testing.T) {
+	service, store := newServiceFixture(t)
+	store.workflow.AgentPresentation = domain.AgentPresentation{
+		Title: "版本标题", Description: "版本说明", Accent: domain.AgentAccentRose,
+		SubmitLabel: "开始", ResultMode: domain.AgentResultModeText,
+	}
+	version, err := service.Publish(context.Background(), store.workflow.ID, store.workflow.DraftRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.workflow.Name = "可变管理名称"
+	store.workflow.Description = "可变管理说明"
+	store.workflow.AgentPresentation = DefaultAgentPresentation("未发布草稿标题", "未发布草稿说明")
+	manifest, err := service.AgentManifest(context.Background(), store.workflow.Slug)
+	if err != nil || manifest.Title != "版本标题" || manifest.Description != "版本说明" || manifest.Presentation != version.AgentPresentation {
+		t.Fatalf("manifest=%+v version=%+v error=%v", manifest, version, err)
 	}
 }
 
@@ -339,6 +463,9 @@ func TestImportTemplateCreatesNewUnpublishedDraft(t *testing.T) {
 	}
 	if created.ID == "workflow-1" || created.Slug != "imported-copy" {
 		t.Fatalf("created=%+v", created)
+	}
+	if created.AgentPresentation != DefaultAgentPresentation("导入副本", "本地模板") {
+		t.Fatalf("presentation=%+v", created.AgentPresentation)
 	}
 }
 

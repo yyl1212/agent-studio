@@ -160,6 +160,7 @@ func TestWorkflowManagementCopyClonesOnlyArchivedSourceDraft(t *testing.T) {
 	store := &fakeWorkflowManagementStore{workflow: domain.Workflow{
 		ID: "workflow-1", Name: "Source", Slug: "source", Description: "源说明",
 		DraftGraph: json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[]}`), DraftRevision: 9,
+		AgentPresentation:  domain.AgentPresentation{Title: "源页面", Description: "页面说明", Accent: domain.AgentAccentAmber, SubmitLabel: "执行", ResultMode: domain.AgentResultModeJSON},
 		PublishedVersionID: &publishedID, PublishedVersion: &publishedVersion, ArchivedAt: &archivedAt,
 	}}
 	service := NewWorkflowManagementService(store)
@@ -172,6 +173,9 @@ func TestWorkflowManagementCopyClonesOnlyArchivedSourceDraft(t *testing.T) {
 	}
 	if created.PublishedVersionID != nil || created.PublishedVersion != nil || created.ArchivedAt != nil || store.createCalls != 1 {
 		t.Fatalf("created lifecycle=%+v calls=%d", created, store.createCalls)
+	}
+	if created.AgentPresentation != store.workflow.AgentPresentation {
+		t.Fatalf("copy presentation=%+v source=%+v", created.AgentPresentation, store.workflow.AgentPresentation)
 	}
 	created.DraftGraph[0] = 'x'
 	if store.workflow.DraftGraph[0] == 'x' {

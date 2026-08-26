@@ -13,6 +13,7 @@ describe('WorkflowListPage', () => {
     vi.spyOn(api, 'listWorkflowSummaries').mockResolvedValue({ items: [], nextCursor: null })
     vi.spyOn(api, 'createWorkflow').mockResolvedValue({
       id: 'w1', name: '演示', slug: 'demo', description: '', draftGraph: { schemaVersion: 1, nodes: [], edges: [] },
+      agentPresentation: { title: '演示', description: '', accent: 'indigo', submitLabel: '运行 Agent', resultMode: 'auto' },
       draftRevision: 1, createdAt: '2026-08-17T00:00:00Z', updatedAt: '2026-08-17T00:00:00Z',
     })
     render(<MemoryRouter><WorkflowListPage /></MemoryRouter>)
@@ -46,6 +47,7 @@ describe('WorkflowListPage', () => {
     })
     vi.spyOn(api, 'importWorkflowTemplate').mockResolvedValue({
       id: 'imported', name: '模板', slug: 'imported-workflow', description: '',
+      agentPresentation: { title: '模板', description: '', accent: 'indigo', submitLabel: '运行 Agent', resultMode: 'auto' },
       draftGraph: { schemaVersion: 1, nodes: [], edges: [] }, draftRevision: 1,
       createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
     })

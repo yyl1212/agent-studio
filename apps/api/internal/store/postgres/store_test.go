@@ -32,7 +32,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 4 {
+	if count != 5 {
 		t.Fatalf("migration count=%d", count)
 	}
 }
@@ -233,7 +233,7 @@ func TestArchivedWorkflowStoreRejectsDraftPublishAndRun(t *testing.T) {
 	if _, err := store.UpdateDraft(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph); !errors.Is(err, domain.ErrWorkflowArchived) {
 		t.Fatalf("update error=%v", err)
 	}
-	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`)); !errors.Is(err, domain.ErrWorkflowArchived) {
+	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`), workflow.AgentPresentation); !errors.Is(err, domain.ErrWorkflowArchived) {
 		t.Fatalf("publish error=%v", err)
 	}
 	run := newTestRun(workflow.ID, workflow.DraftRevision, workflow.DraftGraph)
@@ -294,7 +294,7 @@ func TestCreateRunWaitsForConcurrentArchiveDecision(t *testing.T) {
 func TestPublishPreservesVersionAndTestSnapshot(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "publish")
-	version, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`))
+	version, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`), workflow.AgentPresentation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestWorkflowLookupKeepsPublishedVersionsImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	versionTwo, err := store.Publish(context.Background(), workflow.ID, updated.DraftRevision, updated.DraftGraph, json.RawMessage(`{"type":"object"}`))
+	versionTwo, err := store.Publish(context.Background(), workflow.ID, updated.DraftRevision, updated.DraftGraph, json.RawMessage(`{"type":"object"}`), updated.AgentPresentation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestUpdateDraftUsesRevisionAndPublishRollsBackOnConflict(t *testing.T) {
 	if _, err := store.UpdateDraft(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("revision error=%v", err)
 	}
-	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`)); !errors.Is(err, ErrRevisionConflict) {
+	if _, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`), workflow.AgentPresentation); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("publish error=%v", err)
 	}
 	var count int
@@ -528,6 +528,35 @@ func TestUpdateDraftUsesRevisionAndPublishRollsBackOnConflict(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("conflicting publish inserted %d versions", count)
+	}
+}
+
+func TestAgentPresentationSaveAndPublishSnapshot(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "presentation")
+	staleRevision := workflow.DraftRevision
+	next := domain.AgentPresentation{
+		Title: "公开助手", Description: "公开说明", Accent: domain.AgentAccentTeal,
+		SubmitLabel: "开始", ResultMode: domain.AgentResultModeJSON,
+	}
+	updated, err := store.UpdateAgentPresentation(context.Background(), workflow.ID, workflow.DraftRevision, next)
+	if err != nil || updated.DraftRevision != workflow.DraftRevision+1 || updated.AgentPresentation != next {
+		t.Fatalf("updated=%+v error=%v", updated, err)
+	}
+	if _, err := store.Publish(context.Background(), updated.ID, staleRevision, updated.DraftGraph, json.RawMessage(`{"type":"object"}`), updated.AgentPresentation); !errors.Is(err, domain.ErrRevisionConflict) {
+		t.Fatalf("stale publish error=%v", err)
+	}
+	var count int
+	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM workflow_versions WHERE workflow_id=$1", workflow.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("version count=%d error=%v", count, err)
+	}
+	version, err := store.Publish(context.Background(), updated.ID, updated.DraftRevision, updated.DraftGraph, json.RawMessage(`{"type":"object"}`), updated.AgentPresentation)
+	if err != nil || version.AgentPresentation != next {
+		t.Fatalf("version=%+v error=%v", version, err)
+	}
+	loaded, loadedVersion, err := store.GetCurrentAgentVersion(context.Background(), updated.Slug)
+	if err != nil || loaded.AgentPresentation != next || loadedVersion.AgentPresentation != next {
+		t.Fatalf("loaded=%+v version=%+v error=%v", loaded, loadedVersion, err)
 	}
 }
 
@@ -939,6 +968,209 @@ func TestListRunEventsUsesExclusiveCursorAndStableOrder(t *testing.T) {
 	}
 }
 
+func TestCreateAgentRunIsIdempotentAndScoped(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-idempotent")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	run := newPublishedRun(workflow.ID, version.ID)
+	run.AgentRequestKey = &key
+
+	first, created, err := store.CreateAgentRun(context.Background(), run)
+	if err != nil || !created || first.ID != run.ID {
+		t.Fatalf("first=%+v created=%v error=%v", first, created, err)
+	}
+	duplicate := newPublishedRun(workflow.ID, version.ID)
+	duplicate.AgentRequestKey = &key
+	second, created, err := store.CreateAgentRun(context.Background(), duplicate)
+	if err != nil || created || second.ID != run.ID {
+		t.Fatalf("second=%+v created=%v error=%v", second, created, err)
+	}
+	record, err := store.FindAgentRunByRequestKey(context.Background(), workflow.Slug, key)
+	if err != nil || record.Run.ID != run.ID || record.Version.ID != version.ID || record.Events == nil {
+		t.Fatalf("record=%+v error=%v", record, err)
+	}
+}
+
+func TestArchivedAgentRunIsNotPubliclyAccessible(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-archived-public")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	run := newPublishedRun(workflow.ID, version.ID)
+	run.AgentRequestKey = &key
+	if _, _, err := store.CreateAgentRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ArchiveWorkflow(context.Background(), workflow.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FindAgentRunByRequestKey(context.Background(), workflow.Slug, key); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("find error=%v", err)
+	}
+	if _, err := store.GetAgentRun(context.Background(), workflow.Slug, run.ID, 0, 10); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("view error=%v", err)
+	}
+	if _, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("cancel error=%v", err)
+	}
+}
+
+func TestCreateAgentRunConcurrentRequestsCreateExactlyOnce(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-concurrent")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	type result struct {
+		run     domain.Run
+		created bool
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	var wait sync.WaitGroup
+	wait.Add(2)
+	for range 2 {
+		go func() {
+			defer wait.Done()
+			<-start
+			run := newPublishedRun(workflow.ID, version.ID)
+			run.AgentRequestKey = &key
+			createdRun, created, err := store.CreateAgentRun(context.Background(), run)
+			results <- result{run: createdRun, created: created, err: err}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	createdCount := 0
+	var runID string
+	for item := range results {
+		if item.err != nil {
+			t.Fatal(item.err)
+		}
+		if item.created {
+			createdCount++
+		}
+		if runID == "" {
+			runID = item.run.ID
+		} else if item.run.ID != runID {
+			t.Fatalf("different run IDs: %s and %s", runID, item.run.ID)
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("created count=%d", createdCount)
+	}
+	var count int
+	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM runs WHERE workflow_id=$1 AND agent_request_key=$2", workflow.ID, key).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("count=%d error=%v", count, err)
+	}
+}
+
+func TestGetAgentRunUsesConsistentEventPage(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-snapshot")
+	otherWorkflow := createWorkflowFixture(t, store, "agent-snapshot-other")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	run := newPublishedRun(workflow.ID, version.ID)
+	run.AgentRequestKey = &key
+	if _, created, err := store.CreateAgentRun(context.Background(), run); err != nil || !created {
+		t.Fatalf("create run created=%v error=%v", created, err)
+	}
+	budget := domain.RunEventBudget{MaxEvents: 10, MaxTotalDataBytes: 1 << 20}
+	for sequence := int64(1); sequence <= 3; sequence++ {
+		event := domain.RunEvent{
+			RunID: run.ID, Sequence: sequence, Type: "node.completed", NodeID: fmt.Sprintf("node-%d", sequence),
+			Input: json.RawMessage(fmt.Sprintf(`{"input":%d}`, sequence)), Output: json.RawMessage(fmt.Sprintf(`{"output":%d}`, sequence)),
+			Timestamp: time.Now().UTC(),
+		}
+		if err := store.PersistRunEvent(context.Background(), event, nil, budget); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record, err := store.GetAgentRun(context.Background(), workflow.Slug, run.ID, 0, 2)
+	if err != nil || len(record.Events) != 2 || record.Events[0].Sequence != 1 || record.Events[1].Sequence != 2 || !record.HasMore {
+		t.Fatalf("record=%+v error=%v", record, err)
+	}
+	if _, err := store.GetAgentRun(context.Background(), otherWorkflow.Slug, run.ID, 0, 2); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("other slug error=%v", err)
+	}
+
+	for iteration := 0; iteration < 20; iteration++ {
+		iterationKey := fixtureUUID()
+		candidate := newPublishedRun(workflow.ID, version.ID)
+		candidate.AgentRequestKey = &iterationKey
+		if _, _, err := store.CreateAgentRun(context.Background(), candidate); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		finalized := make(chan error, 1)
+		go func() {
+			<-start
+			now := time.Now().UTC()
+			_, err := store.FinalizeRun(context.Background(), workflowservice.RunFinalization{
+				RunID: candidate.ID, Status: domain.RunCompleted, Output: json.RawMessage(`{"answer":"ok"}`), EndedAt: now,
+				TerminalEvent: domain.RunEvent{RunID: candidate.ID, Sequence: 1, Type: "run.completed", Output: json.RawMessage(`{"answer":"ok"}`), Timestamp: now},
+				Budget:        domain.RunEventBudget{MaxEvents: 2, MaxTotalDataBytes: 1 << 20},
+			})
+			finalized <- err
+		}()
+		close(start)
+		snapshot, getErr := store.GetAgentRun(context.Background(), workflow.Slug, candidate.ID, 0, 10)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		switch snapshot.Run.Status {
+		case domain.RunRunning:
+			if len(snapshot.Events) != 0 {
+				t.Fatalf("running snapshot contains terminal events: %+v", snapshot)
+			}
+		case domain.RunCompleted:
+			if len(snapshot.Events) != 1 || snapshot.Events[0].Type != "run.completed" {
+				t.Fatalf("terminal snapshot misses terminal event: %+v", snapshot)
+			}
+		default:
+			t.Fatalf("unexpected snapshot status: %+v", snapshot)
+		}
+		if err := <-finalized; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRequestAgentRunCancelIsIdempotent(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "agent-cancel")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	run := newPublishedRun(workflow.ID, version.ID)
+	run.AgentRequestKey = &key
+	if _, _, err := store.CreateAgentRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID)
+	if err != nil || first.Run.Status != domain.RunCancelling || first.Run.CancelRequestedAt == nil {
+		t.Fatalf("first=%+v error=%v", first, err)
+	}
+	second, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID)
+	if err != nil || second.Run.Status != domain.RunCancelling {
+		t.Fatalf("second=%+v error=%v", second, err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.FinalizeRun(context.Background(), workflowservice.RunFinalization{
+		RunID: run.ID, Status: domain.RunCancelled, Error: domain.NewPublicRunError(context.Canceled), EndedAt: now,
+		TerminalEvent: domain.RunEvent{RunID: run.ID, Sequence: 1, Type: "run.cancelled", Error: domain.NewPublicRunError(context.Canceled), Timestamp: now},
+		Budget:        domain.RunEventBudget{MaxEvents: 2, MaxTotalDataBytes: 1 << 20},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID)
+	if err != nil || terminal.Run.Status != domain.RunCancelled || len(terminal.Events) != 1 {
+		t.Fatalf("terminal=%+v error=%v", terminal, err)
+	}
+}
+
 func migratedTestStore(t *testing.T) *Store {
 	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
@@ -968,12 +1200,13 @@ func createWorkflowFixture(t *testing.T, store *Store, suffix string) domain.Wor
 	t.Helper()
 	sequence := fixtureSequence.Add(1)
 	workflow, err := store.CreateWorkflow(context.Background(), domain.Workflow{
-		ID:            fixtureUUID(),
-		Name:          "测试工作流 " + suffix,
-		Slug:          fmt.Sprintf("workflow-%s-%d", suffix, sequence),
-		Description:   "集成测试",
-		DraftGraph:    json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[]}`),
-		DraftRevision: 1,
+		ID:                fixtureUUID(),
+		Name:              "测试工作流 " + suffix,
+		Slug:              fmt.Sprintf("workflow-%s-%d", suffix, sequence),
+		Description:       "集成测试",
+		AgentPresentation: workflowservice.DefaultAgentPresentation("测试工作流 "+suffix, "集成测试"),
+		DraftGraph:        json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[]}`),
+		DraftRevision:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -983,7 +1216,7 @@ func createWorkflowFixture(t *testing.T, store *Store, suffix string) domain.Wor
 
 func publishFixture(t *testing.T, store *Store, workflow domain.Workflow) domain.WorkflowVersion {
 	t.Helper()
-	version, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`))
+	version, err := store.Publish(context.Background(), workflow.ID, workflow.DraftRevision, workflow.DraftGraph, json.RawMessage(`{"type":"object"}`), workflow.AgentPresentation)
 	if err != nil {
 		t.Fatal(err)
 	}

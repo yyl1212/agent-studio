@@ -14,6 +14,7 @@ vi.mock('../../lib/api/client', async (importOriginal) => {
 
 const workflow = {
   id: 'w1', name: '演示助手', slug: 'demo', description: '', draftRevision: 1,
+  agentPresentation: { title: '演示助手', description: '', accent: 'indigo' as const, submitLabel: '运行 Agent', resultMode: 'auto' as const },
   draftGraph: {
     schemaVersion: 1 as const,
     nodes: [
@@ -139,6 +140,7 @@ describe('StudioPage', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('已归档，只读模式')
     expect(screen.getByRole('button', { name: '添加节点' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Agent 页面设置' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
     expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs?workflowId=w1')
     fireEvent.click(screen.getByTestId('node-start'))
@@ -163,6 +165,56 @@ describe('StudioPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(1), { timeout: 2000 })
     expect(vi.mocked(api.saveWorkflow).mock.calls[0][1].graph.nodes.find((node) => node.type === 'template')?.config).toEqual({ template: '回答：{{topic}}' })
+  })
+
+  it('保存 Agent 页面设置后接纳服务端 revision 并用于发布', async () => {
+    const nextPresentation = { ...workflow.agentPresentation, title: '研究助手', accent: 'teal' as const }
+    vi.spyOn(api, 'saveAgentPresentation').mockResolvedValue({ ...workflow, draftRevision: 2, agentPresentation: nextPresentation })
+    vi.spyOn(api, 'validateWorkflow').mockResolvedValue({ valid: true, issues: [] })
+    vi.spyOn(api, 'publishWorkflow').mockResolvedValue({
+      id: 'v1', workflowId: 'w1', version: 1, graph: workflow.draftGraph, inputSchema: {}, agentPresentation: nextPresentation, createdAt: '2026-08-17T00:00:00Z',
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: 'Agent 页面设置' }))
+    await userEvent.clear(screen.getByLabelText('页面标题'))
+    await userEvent.type(screen.getByLabelText('页面标题'), '研究助手')
+    await userEvent.selectOptions(screen.getByLabelText('强调色'), 'teal')
+    await userEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await vi.waitFor(() => expect(api.saveAgentPresentation).toHaveBeenCalledWith('w1', {
+      draftRevision: 1, presentation: nextPresentation,
+    }))
+    await vi.waitFor(() => expect(screen.queryByRole('dialog', { name: '页面设置' })).not.toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: '发布' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认发布' }))
+    await vi.waitFor(() => expect(api.publishWorkflow).toHaveBeenCalledWith('w1', 2))
+  })
+
+  it('脏节点配置会延迟打开 Agent 页面设置', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '未应用配置' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Agent 页面设置' }))
+    expect(screen.getByRole('dialog', { name: '保存节点配置更改？' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: '页面设置' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '放弃更改' }))
+    expect(await screen.findByRole('dialog', { name: '页面设置' })).toBeInTheDocument()
+  })
+
+  it('页面设置 revision 冲突时保留输入和对话框', async () => {
+    vi.spyOn(api, 'saveAgentPresentation').mockRejectedValue(new APIError(409, 'WORKFLOW_REVISION_CONFLICT', '内部冲突'))
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: 'Agent 页面设置' }))
+    await userEvent.clear(screen.getByLabelText('页面标题'))
+    await userEvent.type(screen.getByLabelText('页面标题'), '保留的标题')
+    await userEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('草稿已在其他页面更新，请刷新后重试')
+    expect(screen.getByLabelText('页面标题')).toHaveValue('保留的标题')
+    expect(screen.getByRole('dialog', { name: '页面设置' })).toBeInTheDocument()
   })
 
   it('脏配置进入测试前要求确认并在应用后运行最新草稿', async () => {
@@ -203,7 +255,7 @@ describe('StudioPage', () => {
     vi.mocked(api.saveWorkflow).mockReturnValueOnce(new Promise((resolve) => { resolveSave = resolve }))
     vi.spyOn(api, 'validateWorkflow').mockResolvedValue({ valid: true, issues: [] })
     vi.spyOn(api, 'publishWorkflow').mockResolvedValue({
-      id: 'v1', workflowId: 'w1', version: 1, graph: workflow.draftGraph, inputSchema: {}, createdAt: '2026-08-17T00:00:00Z',
+      id: 'v1', workflowId: 'w1', version: 1, graph: workflow.draftGraph, inputSchema: {}, agentPresentation: workflow.agentPresentation, createdAt: '2026-08-17T00:00:00Z',
     })
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     await screen.findByText('演示助手')

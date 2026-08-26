@@ -22,6 +22,7 @@ type WorkflowService interface {
 	Get(context.Context, string) (domain.Workflow, error)
 	Create(context.Context, workflow.CreateWorkflowInput) (domain.Workflow, error)
 	SaveDraft(context.Context, string, int64, domain.Graph) (domain.Workflow, error)
+	SaveAgentPresentation(context.Context, string, int64, domain.AgentPresentation) (domain.Workflow, error)
 	Validate(context.Context, string) ([]domain.ValidationIssue, error)
 	Publish(context.Context, string, int64) (domain.WorkflowVersion, error)
 	AgentManifest(context.Context, string) (workflow.AgentManifest, error)
@@ -39,6 +40,12 @@ type Runner interface {
 type RunReader interface {
 	GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error)
 	ListRuns(context.Context, string, int) ([]domain.Run, error)
+}
+
+type AgentRunAPI interface {
+	Start(context.Context, string, workflow.StartAgentRunInput) (workflow.AgentRunPublicSummary, bool, error)
+	View(context.Context, string, string, int64) (workflow.AgentRunPublicView, error)
+	Cancel(context.Context, string, string) (workflow.AgentRunPublicSummary, error)
 }
 
 type WorkflowManager interface {
@@ -79,6 +86,7 @@ type Dependencies struct {
 	WorkflowManagement WorkflowManager
 	Runner             Runner
 	Runs               RunReader
+	AgentRuns          AgentRunAPI
 	RunManagement      RunManager
 	Debugger           Debugger
 	Readiness          Readiness
@@ -120,6 +128,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Post("/workflows/{id}/restore", handler.restoreWorkflow)
 		api.Get("/workflows/{id}/template", handler.exportWorkflowTemplate)
 		api.Put("/workflows/{id}", handler.saveWorkflow)
+		api.Put("/workflows/{id}/agent-presentation", handler.saveAgentPresentation)
 		api.Post("/workflows/{id}/validate", handler.validateWorkflow)
 		api.Post("/workflows/{id}/test-runs", handler.runDraft)
 		api.Post("/workflows/{id}/publish", handler.publishWorkflow)
@@ -128,6 +137,8 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Post("/workflow-templates/import", handler.importWorkflowTemplate)
 		api.Get("/agents/{slug}", handler.getAgentManifest)
 		api.Post("/agents/{slug}/runs", handler.runAgent)
+		api.Get("/agents/{slug}/runs/{runID}", handler.getAgentRun)
+		api.Post("/agents/{slug}/runs/{runID}/cancel", handler.cancelAgentRun)
 		api.Get("/runs/{id}", handler.getRun)
 		api.Get("/runs", handler.listRunSummaries)
 		api.Post("/runs/{id}/cancel", handler.cancelRun)

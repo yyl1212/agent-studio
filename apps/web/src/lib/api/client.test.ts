@@ -48,6 +48,48 @@ describe('API client', () => {
     await expect(api.runAgent('demo', { workflowVersionId: 'v1', input: {} })).resolves.toBe(response)
   })
 
+	it('异步 Agent 运行客户端发送恢复协议所需信息', async () => {
+		const controller = new AbortController()
+		const summary = { runId: 'run-1', status: 'running' }
+		const view = { run: summary, events: [], nextSequence: 8, hasMore: false }
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(jsonResponse(summary))
+			.mockResolvedValueOnce(jsonResponse(view))
+			.mockResolvedValueOnce(jsonResponse({ ...summary, status: 'cancelling' }))
+		vi.stubGlobal('fetch', fetchMock)
+
+		const body = { workflowVersionId: 'v1', input: { topic: 'Agent' } }
+		await api.startAgentRun('demo/agent', body, '123e4567-e89b-42d3-a456-426614174000', controller.signal)
+		await api.getAgentRunView('demo/agent', 'run/1', 8, controller.signal)
+		await api.cancelAgentRun('demo/agent', 'run/1', controller.signal)
+
+		const startHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Headers
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/demo%2Fagent/runs', expect.objectContaining({
+			method: 'POST', body: JSON.stringify(body), signal: controller.signal,
+		}))
+		expect(startHeaders.get('Prefer')).toBe('respond-async')
+		expect(startHeaders.get('Idempotency-Key')).toBe('123e4567-e89b-42d3-a456-426614174000')
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/demo%2Fagent/runs/run%2F1?afterSequence=8', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/agents/demo%2Fagent/runs/run%2F1/cancel', expect.objectContaining({ method: 'POST', signal: controller.signal }))
+		expect(fetchMock.mock.calls[2]?.[1]?.body).toBeUndefined()
+	})
+
+	it('保存 Agent 页面设置使用独立 PUT 端点', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ...workflowFixture(), draftRevision: 5 }))
+		vi.stubGlobal('fetch', fetchMock)
+		const body = {
+			draftRevision: 4,
+			presentation: {
+				title: '研究助手', description: '输入主题并生成结果', accent: 'teal' as const,
+				submitLabel: '开始研究', resultMode: 'auto' as const,
+			},
+		}
+		await api.saveAgentPresentation('w/1', body)
+		expect(fetchMock).toHaveBeenCalledWith('/api/workflows/w%2F1/agent-presentation', expect.objectContaining({
+			method: 'PUT', body: JSON.stringify(body),
+		}))
+	})
+
 	it('调试接口编码路径、使用独占游标并透传 AbortSignal', async () => {
 		const controller = new AbortController()
 		const stream = new Response('{"type":"run.started"}\n', { status: 200 })
@@ -247,6 +289,7 @@ const previewFixture = (): WorkflowTemplatePreview => ({
 
 const workflowFixture = (): Workflow => ({
 	id: 'w-copy', name: '副本', slug: 'copy', description: '', draftRevision: 1,
+	agentPresentation: { title: '副本', description: '', accent: 'indigo', submitLabel: '运行 Agent', resultMode: 'auto' },
 	draftGraph: { schemaVersion: 1, nodes: [], edges: [] },
 	createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
 })

@@ -110,6 +110,23 @@ func (handler *handler) saveWorkflow(writer http.ResponseWriter, request *http.R
 	writeJSON(writer, http.StatusOK, updated)
 }
 
+func (handler *handler) saveAgentPresentation(writer http.ResponseWriter, request *http.Request) {
+	var body struct {
+		DraftRevision int64                    `json:"draftRevision"`
+		Presentation  domain.AgentPresentation `json:"presentation"`
+	}
+	if err := decodeJSON(writer, request, &body); err != nil {
+		writeRequestError(writer, request, err)
+		return
+	}
+	updated, err := handler.dependencies.Workflows.SaveAgentPresentation(request.Context(), chi.URLParam(request, "id"), body.DraftRevision, body.Presentation)
+	if err != nil {
+		writeError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, updated)
+}
+
 func (handler *handler) validateWorkflow(writer http.ResponseWriter, request *http.Request) {
 	issues, err := handler.dependencies.Workflows.Validate(request.Context(), chi.URLParam(request, "id"))
 	if err != nil {
