@@ -170,6 +170,99 @@ test('脏节点配置在切换工作台前支持继续编辑和放弃', async ({
   await expect(page.getByLabel('模板', { exact: true })).toHaveValue('')
 })
 
+test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const slug = `version-governance-${suffix}`
+  const workflowURL = await createWorkflow(page, slug, `版本治理 ${suffix}`)
+  const workflowID = workflowURL.split('/').at(-1)
+  if (!workflowID) throw new Error('创建后未获得工作流 ID')
+  const endpoint = `http://127.0.0.1:8080/api/workflows/${workflowID}`
+
+  const v1Draft = await saveDraftGraph(page, workflowID, versionGraph('主题', 'V1：{{topic}}'))
+  const publishV1 = await page.request.post(`${endpoint}/publish`, { data: { draftRevision: v1Draft.draftRevision } })
+  expect(publishV1.ok()).toBe(true)
+  const v1 = await publishV1.json() as { id: string; version: number }
+  expect(v1.version).toBe(1)
+
+  const v2Draft = await saveDraftGraph(page, workflowID, versionGraph('研究主题', 'V2：{{topic}}'))
+  const presentationResponse = await page.request.put(`${endpoint}/agent-presentation`, { data: {
+    draftRevision: v2Draft.draftRevision,
+    presentation: { title: 'V2 研究助手', description: '版本治理', accent: 'teal', submitLabel: '开始研究', resultMode: 'text' },
+  } })
+  expect(presentationResponse.ok()).toBe(true)
+  const presented = await presentationResponse.json() as { draftRevision: number }
+  const publishV2 = await page.request.post(`${endpoint}/publish`, { data: { draftRevision: presented.draftRevision } })
+  expect(publishV2.ok()).toBe(true)
+  const v2 = await publishV2.json() as { id: string; version: number }
+  expect(v2.version).toBe(2)
+
+  const manifestBefore = await (await page.request.get(`http://127.0.0.1:8080/api/agents/${slug}`)).json() as { version: number; workflowVersionId: string }
+  const runResponse = await page.request.post(`http://127.0.0.1:8080/api/agents/${slug}/runs`, { data: { workflowVersionId: manifestBefore.workflowVersionId, input: { topic: '历史运行' } } })
+  expect(runResponse.ok()).toBe(true)
+  const runEvents = (await runResponse.text()).trim().split('\n').map((line) => JSON.parse(line) as { type: string; runId: string })
+  const runID = runEvents.find((event) => event.type === 'run.started')?.runId
+  if (!runID) throw new Error('Agent Run 未返回 runId')
+
+  const draft = await saveDraftGraph(page, workflowID, versionGraph('研究主题', 'Draft：{{topic}}'))
+  await page.goto(workflowURL)
+  await expect(page.getByText('已保存')).toBeVisible()
+  await page.getByRole('button', { name: '版本历史' }).click()
+  await page.getByLabel('比较起点').selectOption('version:1')
+  await page.getByLabel('比较终点').selectOption('version:2')
+  await expect(page.getByRole('button', { name: /节点 · [1-9]/ })).toBeVisible()
+  await page.getByRole('button', { name: /开始参数 · [1-9]/ }).click()
+  await expect(page.locator('.version-diff-view')).toContainText('topic')
+  await page.getByRole('button', { name: /Agent 页面 · [1-9]/ }).click()
+  await expect(page.locator('.version-diff-view')).toContainText('页面标题')
+	const draftOptionValue = await page.getByLabel('比较终点').locator('option').filter({ hasText: '当前草稿' }).getAttribute('value')
+	if (!draftOptionValue) throw new Error(`未找到当前草稿选项（API revision r${draft.draftRevision}）`)
+  await page.getByLabel('比较终点').selectOption(draftOptionValue)
+  await expect(page.locator('.version-diff-view')).toContainText('Draft：{{topic}}')
+
+  await page.getByRole('button', { name: '恢复 v1 为草稿' }).click()
+  await page.getByRole('button', { name: '确认恢复' }).click()
+  await expect(page.getByText('已回滚到版本 1')).toBeVisible()
+  await expect(page.getByRole('button', { name: '撤销回滚' })).toBeVisible()
+  const manifestAfter = await (await page.request.get(`http://127.0.0.1:8080/api/agents/${slug}`)).json() as { version: number; workflowVersionId: string }
+  expect(manifestAfter.version).toBe(2)
+  expect(manifestAfter.workflowVersionId).toBe(v2.id)
+  const historicalRun = await (await page.request.get(`http://127.0.0.1:8080/api/runs/${runID}`)).json() as { run: { workflowVersionId: string } }
+  expect(historicalRun.run.workflowVersionId).toBe(v2.id)
+
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await page.getByTestId('node-template').click()
+  await expect(page.getByLabel('模板', { exact: true })).toHaveValue('V1：{{topic}}')
+  await page.getByRole('button', { name: '版本历史' }).click()
+  await page.getByRole('button', { name: '撤销回滚' }).click()
+  await expect(page.getByText('已撤销回滚')).toBeVisible()
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await page.getByTestId('node-template').click()
+  await expect(page.getByLabel('模板', { exact: true })).toHaveValue('Draft：{{topic}}')
+
+  await page.getByRole('button', { name: '版本历史' }).click()
+  await page.getByLabel('比较起点').selectOption('version:1')
+  await page.getByRole('button', { name: '恢复 v1 为草稿' }).click()
+  await page.getByRole('button', { name: '确认恢复' }).click()
+  await expect(page.getByRole('button', { name: '撤销回滚' })).toBeVisible()
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await page.getByTestId('node-template').click()
+  await page.getByLabel('模板', { exact: true }).fill('已编辑：{{topic}}')
+  await applyNodeConfig(page)
+  await page.getByRole('button', { name: '版本历史' }).click()
+  await expect(page.getByRole('button', { name: '撤销回滚' })).toHaveCount(0)
+
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1024, height: 768 }, { width: 768, height: 900 }]) {
+    await page.setViewportSize(viewport)
+    const panel = page.getByRole('dialog', { name: '版本历史' })
+    await expect(panel).toBeVisible()
+    const box = await panel.boundingBox()
+    if (!box) throw new Error('无法读取版本工作台尺寸')
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  }
+})
+
 test('工作台在桌面与窄屏均保持页面无水平溢出', async ({ page }) => {
   const suffix = Date.now().toString(36)
   await createWorkflow(page, `responsive-${suffix}`, `响应式工作台 ${suffix}`)
@@ -219,4 +312,19 @@ async function buildAndPublish(page: Page, name: string, slug: string, template:
   const agentURL = await agentLink.getAttribute('href')
   if (!agentURL) throw new Error('发布后未返回 Agent URL')
   return { agentURL, workflowURL }
+}
+
+function versionGraph(startLabel: string, template: string) {
+  return {
+    schemaVersion: 1,
+    nodes: [
+      { id: 'start', type: 'start', typeVersion: '1', position: { x: 0, y: 0 }, config: { fields: [{ key: 'topic', label: startLabel, type: 'text', required: true }] } },
+      { id: 'template', type: 'template', typeVersion: '1', position: { x: 300, y: 0 }, config: { template } },
+      { id: 'end', type: 'end', typeVersion: '1', position: { x: 600, y: 0 }, config: {} },
+    ],
+    edges: [
+      { id: 'start-template', source: 'start', sourcePort: 'topic', target: 'template', targetPort: 'topic' },
+      { id: 'template-end', source: 'template', sourcePort: 'text', target: 'end', targetPort: 'result' },
+    ],
+  }
 }

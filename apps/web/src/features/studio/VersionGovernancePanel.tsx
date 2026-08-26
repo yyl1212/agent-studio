@@ -23,7 +23,7 @@ export function VersionGovernancePanel({ titleId, ...options }: VersionGovernanc
 	}
 
 	return (
-		<section className="version-governance-panel" aria-labelledby={titleId}>
+		<section className="version-governance version-governance-panel" aria-labelledby={titleId}>
 			<header className="version-governance-heading">
 				<div><span className="node-category">工作流治理</span><h2 id={titleId}>版本历史</h2></div>
 				{model.loading && <span role="status">正在加载版本…</span>}
@@ -31,11 +31,11 @@ export function VersionGovernancePanel({ titleId, ...options }: VersionGovernanc
 			{model.notice && <p className="form-success" role="status">{model.notice}</p>}
 			{model.error && <div><p className="form-error" role="alert">{model.error}</p><button type="button" disabled={controlsDisabled} onClick={() => void model.refresh()}>重试</button></div>}
 
-			<section className="version-timeline" aria-label="版本时间线">
+			<section className="version-list version-timeline" aria-label="版本时间线">
 				{!model.loading && model.versions.length === 0 ? <p className="empty-state">尚未发布版本</p> : <ol>{model.versions.map((version) => (
 					<li key={version.id} className={version.current ? 'current' : undefined}>
 						<button type="button" disabled={controlsDisabled} aria-pressed={model.base?.kind === 'version' && model.base.version === version.version} onClick={() => model.setBase({ kind: 'version', version: version.version })}>
-							<strong>v{version.version}{version.current ? ' · 当前发布' : ''}</strong>
+							<strong>v{version.version}{version.current ? <span className="version-current-badge"> · 当前发布</span> : ''}</strong>
 							<time dateTime={version.createdAt}>{new Date(version.createdAt).toLocaleString('zh-CN')}</time>
 						</button>
 					</li>

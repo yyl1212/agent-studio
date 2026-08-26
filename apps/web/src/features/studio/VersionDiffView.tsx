@@ -42,14 +42,14 @@ function formatValue(value: unknown) {
 }
 
 function ValueChange({ change }: { change: ValueDiff }) {
-	if (change.valueOmitted) return <span>{omissionLabels[change.valueOmitted]}</span>
+	if (change.valueOmitted) return <span className="version-diff-omitted">{omissionLabels[change.valueOmitted]}</span>
 	const hasBefore = Object.prototype.hasOwnProperty.call(change, 'before')
 	const hasAfter = Object.prototype.hasOwnProperty.call(change, 'after')
 	return (
 		<span className="version-diff-values">
-			<span>{hasBefore ? formatValue(change.before) : '未设置'}</span>
+			<pre>{hasBefore ? formatValue(change.before) : '未设置'}</pre>
 			<span aria-hidden="true">→</span>
-			<span>{hasAfter ? formatValue(change.after) : '未设置'}</span>
+			<pre>{hasAfter ? formatValue(change.after) : '未设置'}</pre>
 		</span>
 	)
 }
@@ -57,7 +57,7 @@ function ValueChange({ change }: { change: ValueDiff }) {
 function GroupContents({ group, diff }: { group: GroupKey; diff: WorkflowDiff }) {
 	switch (group) {
 		case 'nodes':
-			return <ul>{diff.groups.nodes.map((node) => <li key={`${node.nodeId}-${node.kind}`}><strong>{node.title}</strong> · {kindLabels[node.kind]}{node.beforeType || node.afterType ? <p>{node.beforeType ? `${node.beforeType.title} ${node.beforeType.version}` : '未设置'} → {node.afterType ? `${node.afterType.title} ${node.afterType.version}` : '未设置'}</p> : null}{node.config.length > 0 && <ul>{node.config.map((change, index) => <li key={`${change.path}-${index}`}><code>{change.path}</code>：<ValueChange change={change} /></li>)}</ul>}</li>)}</ul>
+			return <ul>{diff.groups.nodes.map((node) => <li className="version-diff-entry" key={`${node.nodeId}-${node.kind}`}><strong>{node.title}</strong> · {kindLabels[node.kind]}{node.beforeType || node.afterType ? <p>{node.beforeType ? `${node.beforeType.title} ${node.beforeType.version}` : '未设置'} → {node.afterType ? `${node.afterType.title} ${node.afterType.version}` : '未设置'}</p> : null}{node.config.length > 0 && <ul>{node.config.map((change, index) => <li className="version-diff-entry" key={`${change.path}-${index}`}><code>{change.path}</code>：<ValueChange change={change} /></li>)}</ul>}</li>)}</ul>
 		case 'startParameters':
 			return <ul>{diff.groups.startParameters.map((parameter) => <li key={`${parameter.key}-${parameter.kind}`}><strong>{parameter.key}</strong>{parameter.kind === 'reordered' ? `：顺序 ${parameter.beforeOrder ?? '未设置'} → ${parameter.afterOrder ?? '未设置'}` : ` · ${kindLabels[parameter.kind]}`}{parameter.changes.length > 0 && <ul>{parameter.changes.map((change, index) => <li key={`${change.path}-${index}`}><code>{change.path}</code>：<ValueChange change={change} /></li>)}</ul>}</li>)}</ul>
 		case 'connections':
@@ -82,7 +82,7 @@ export function VersionDiffView({ diff }: { diff: WorkflowDiff }) {
 	return (
 		<div className="version-diff-view" aria-label="版本差异">
 			{diff.summary.total === 0 && <p className="empty-state">两个快照没有差异</p>}
-			{diff.truncated && <p role="status">仅展示前 500 项详细差异</p>}
+			{diff.truncated && <p className="version-diff-truncated" role="status">仅展示前 500 项详细差异</p>}
 			{groupDefinitions.map(({ key, label }) => {
 				const open = expanded.has(key)
 				const panelID = `version-diff-${key}`
