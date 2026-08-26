@@ -559,6 +559,165 @@ func TestGetWorkflowVersionByNumberScopesLookupToWorkflow(t *testing.T) {
 	}
 }
 
+func TestWorkflowDraftRollbackAndUndoPreservePublishedVersion(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow, versionOne, versionTwo := rollbackFixture(t, store, "rollback")
+	originalGraph := append(json.RawMessage(nil), workflow.DraftGraph...)
+	originalPresentation := workflow.AgentPresentation
+
+	rolledBack, checkpoint, err := store.RollbackWorkflowDraft(context.Background(), workflow.ID, versionOne.ID, workflow.DraftRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.DraftRevision != workflow.DraftRevision+1 || checkpoint.SourceRevision != workflow.DraftRevision ||
+		checkpoint.RestoredRevision != rolledBack.DraftRevision || checkpoint.RestoredFromVersion != versionOne.Version {
+		t.Fatalf("workflow=%+v checkpoint=%+v", rolledBack, checkpoint)
+	}
+	if !jsonEqual(rolledBack.DraftGraph, versionOne.Graph) || rolledBack.AgentPresentation != versionOne.AgentPresentation {
+		t.Fatalf("rollback did not restore version one: %+v", rolledBack)
+	}
+	if rolledBack.PublishedVersionID == nil || *rolledBack.PublishedVersionID != versionTwo.ID ||
+		rolledBack.PublishedVersion == nil || *rolledBack.PublishedVersion != versionTwo.Version {
+		t.Fatalf("published pointer changed: %+v", rolledBack)
+	}
+
+	undone, err := store.UndoWorkflowDraftRollback(context.Background(), workflow.ID, rolledBack.DraftRevision)
+	if err != nil || undone.DraftRevision != rolledBack.DraftRevision+1 || !jsonEqual(undone.DraftGraph, originalGraph) ||
+		undone.AgentPresentation != originalPresentation {
+		t.Fatalf("undone=%+v err=%v", undone, err)
+	}
+	if _, err := store.UndoWorkflowDraftRollback(context.Background(), workflow.ID, undone.DraftRevision); !errors.Is(err, domain.ErrRollbackUndoUnavailable) {
+		t.Fatalf("repeated undo error=%v", err)
+	}
+
+	loadedOne, err := store.GetWorkflowVersionByNumber(context.Background(), workflow.ID, versionOne.Version)
+	if err != nil || !jsonEqual(loadedOne.Graph, versionOne.Graph) || loadedOne.AgentPresentation != versionOne.AgentPresentation {
+		t.Fatalf("version one mutated: %+v err=%v", loadedOne, err)
+	}
+	loadedTwo, err := store.GetWorkflowVersionByNumber(context.Background(), workflow.ID, versionTwo.Version)
+	if err != nil || !jsonEqual(loadedTwo.Graph, versionTwo.Graph) || loadedTwo.AgentPresentation != versionTwo.AgentPresentation {
+		t.Fatalf("version two mutated: %+v err=%v", loadedTwo, err)
+	}
+}
+
+func TestWorkflowDraftRollbackRejectsInvalidStateAndCrossWorkflowVersion(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow, versionOne, _ := rollbackFixture(t, store, "rollback-errors")
+	other := createWorkflowFixture(t, store, "rollback-errors-other")
+	otherVersion := publishFixture(t, store, other)
+
+	if _, _, err := store.RollbackWorkflowDraft(context.Background(), workflow.ID, versionOne.ID, workflow.DraftRevision-1); !errors.Is(err, domain.ErrRevisionConflict) {
+		t.Fatalf("stale revision error=%v", err)
+	}
+	if _, _, err := store.RollbackWorkflowDraft(context.Background(), workflow.ID, otherVersion.ID, workflow.DraftRevision); !errors.Is(err, domain.ErrWorkflowVersionNotFound) {
+		t.Fatalf("cross-workflow version error=%v", err)
+	}
+	if _, err := store.ArchiveWorkflow(context.Background(), workflow.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RollbackWorkflowDraft(context.Background(), workflow.ID, versionOne.ID, workflow.DraftRevision); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("archived rollback error=%v", err)
+	}
+	if _, err := store.UndoWorkflowDraftRollback(context.Background(), workflow.ID, workflow.DraftRevision); !errors.Is(err, domain.ErrWorkflowArchived) {
+		t.Fatalf("archived undo error=%v", err)
+	}
+}
+
+func TestWorkflowDraftRollbackOverwritesCheckpointAndEnforcesVersionForeignKey(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow, versionOne, versionTwo := rollbackFixture(t, store, "rollback-checkpoint")
+
+	first, _, err := store.RollbackWorkflowDraft(context.Background(), workflow.ID, versionOne.ID, workflow.DraftRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, checkpoint, err := store.RollbackWorkflowDraft(context.Background(), workflow.ID, versionTwo.ID, first.DraftRevision)
+	if err != nil || checkpoint.SourceRevision != first.DraftRevision || checkpoint.RestoredRevision != second.DraftRevision ||
+		checkpoint.RestoredFromVersion != versionTwo.Version {
+		t.Fatalf("second=%+v checkpoint=%+v err=%v", second, checkpoint, err)
+	}
+
+	presentation, err := json.Marshal(workflow.AgentPresentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.pool.Exec(context.Background(), `INSERT INTO workflow_draft_checkpoints(
+		workflow_id,source_revision,restored_revision,graph,agent_presentation,restored_from_version_id
+	) VALUES($1,$2,$3,$4,$5,$6)
+	ON CONFLICT(workflow_id) DO UPDATE SET restored_from_version_id=excluded.restored_from_version_id`,
+		workflow.ID, second.DraftRevision, second.DraftRevision+1, workflow.DraftGraph, presentation, fixtureUUID())
+	if err == nil {
+		t.Fatal("checkpoint accepted a missing version")
+	}
+}
+
+func TestWorkflowDraftRollbackConcurrentRevisionAllowsOneWinner(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow, versionOne, _ := rollbackFixture(t, store, "rollback-concurrent")
+	start := make(chan struct{})
+	errorsByCall := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			_, _, err := store.RollbackWorkflowDraft(context.Background(), workflow.ID, versionOne.ID, workflow.DraftRevision)
+			errorsByCall <- err
+		}()
+	}
+	close(start)
+	var succeeded, conflicted int
+	for range 2 {
+		err := <-errorsByCall
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, domain.ErrRevisionConflict):
+			conflicted++
+		default:
+			t.Fatalf("unexpected rollback error=%v", err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("succeeded=%d conflicted=%d", succeeded, conflicted)
+	}
+}
+
+func TestRollbackCheckpointInvalidatedByDraftAndPresentationUpdates(t *testing.T) {
+	tests := []struct {
+		name   string
+		update func(*Store, domain.Workflow) (domain.Workflow, error)
+	}{
+		{name: "draft", update: func(store *Store, workflow domain.Workflow) (domain.Workflow, error) {
+			return store.UpdateDraft(context.Background(), workflow.ID, workflow.DraftRevision, json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[],"edited":true}`))
+		}},
+		{name: "presentation", update: func(store *Store, workflow domain.Workflow) (domain.Workflow, error) {
+			presentation := workflow.AgentPresentation
+			presentation.Title = "已编辑"
+			return store.UpdateAgentPresentation(context.Background(), workflow.ID, workflow.DraftRevision, presentation)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := migratedTestStore(t)
+			workflow, versionOne, _ := rollbackFixture(t, store, "rollback-invalidate-"+test.name)
+			rolledBack, _, err := store.RollbackWorkflowDraft(context.Background(), workflow.ID, versionOne.ID, workflow.DraftRevision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			edited, err := test.update(store, rolledBack)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.UndoWorkflowDraftRollback(context.Background(), workflow.ID, edited.DraftRevision); !errors.Is(err, domain.ErrRollbackUndoUnavailable) {
+				t.Fatalf("undo after edit error=%v", err)
+			}
+			var count int
+			if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM workflow_draft_checkpoints WHERE workflow_id=$1", workflow.ID).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("checkpoint count=%d err=%v", count, err)
+			}
+		})
+	}
+}
+
 func TestCreateWorkflowMapsDuplicateSlug(t *testing.T) {
 	store := migratedTestStore(t)
 	first := createWorkflowFixture(t, store, "duplicate")
@@ -1290,6 +1449,36 @@ func publishFixture(t *testing.T, store *Store, workflow domain.Workflow) domain
 		t.Fatal(err)
 	}
 	return version
+}
+
+func rollbackFixture(t *testing.T, store *Store, suffix string) (domain.Workflow, domain.WorkflowVersion, domain.WorkflowVersion) {
+	t.Helper()
+	workflow := createWorkflowFixture(t, store, suffix)
+	versionOne := publishFixture(t, store, workflow)
+	versionTwoGraph := json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[],"version":2}`)
+	updated, err := store.UpdateDraft(context.Background(), workflow.ID, workflow.DraftRevision, versionTwoGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionTwoPresentation := updated.AgentPresentation
+	versionTwoPresentation.Title = "版本二"
+	updated, err = store.UpdateAgentPresentation(context.Background(), workflow.ID, updated.DraftRevision, versionTwoPresentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionTwo := publishFixture(t, store, updated)
+	draftGraph := json.RawMessage(`{"schemaVersion":1,"nodes":[],"edges":[],"draft":3}`)
+	current, err := store.UpdateDraft(context.Background(), workflow.ID, updated.DraftRevision, draftGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentPresentation := current.AgentPresentation
+	currentPresentation.Title = "当前草稿"
+	current, err = store.UpdateAgentPresentation(context.Background(), workflow.ID, current.DraftRevision, currentPresentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return current, versionOne, versionTwo
 }
 
 func newTestRun(workflowID string, revision int64, graph json.RawMessage) domain.Run {

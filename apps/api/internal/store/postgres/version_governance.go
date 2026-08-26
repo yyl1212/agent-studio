@@ -99,3 +99,143 @@ func (store *Store) ListWorkflowVersions(ctx context.Context, workflowID string,
 	}
 	return workflowservice.VersionListRows{Items: items, Checkpoint: checkpoint}, nil
 }
+
+func (store *Store) RollbackWorkflowDraft(ctx context.Context, workflowID, versionID string, expectedRevision int64) (domain.Workflow, domain.RollbackCheckpointSummary, error) {
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return domain.Workflow{}, domain.RollbackCheckpointSummary{}, fmt.Errorf("begin workflow draft rollback: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+
+	var actualRevision int64
+	var archived bool
+	var sourceGraph, sourcePresentation []byte
+	if err := transaction.QueryRow(ctx, `SELECT draft_revision,archived_at IS NOT NULL,draft_graph,agent_presentation
+		FROM workflows WHERE id=$1 FOR UPDATE`, workflowID).Scan(
+		&actualRevision,
+		&archived,
+		&sourceGraph,
+		&sourcePresentation,
+	); err != nil {
+		return domain.Workflow{}, domain.RollbackCheckpointSummary{}, mapNotFound(err)
+	}
+	if archived {
+		return domain.Workflow{}, domain.RollbackCheckpointSummary{}, domain.ErrWorkflowArchived
+	}
+	if actualRevision != expectedRevision {
+		return domain.Workflow{}, domain.RollbackCheckpointSummary{}, domain.ErrRevisionConflict
+	}
+
+	var targetVersion int
+	var targetGraph, targetPresentation []byte
+	if err := transaction.QueryRow(ctx, `SELECT version,graph,agent_presentation
+		FROM workflow_versions WHERE workflow_id=$1 AND id=$2`, workflowID, versionID).Scan(
+		&targetVersion,
+		&targetGraph,
+		&targetPresentation,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Workflow{}, domain.RollbackCheckpointSummary{}, domain.ErrWorkflowVersionNotFound
+		}
+		return domain.Workflow{}, domain.RollbackCheckpointSummary{}, fmt.Errorf("load workflow rollback version: %w", err)
+	}
+
+	checkpoint := domain.RollbackCheckpointSummary{
+		SourceRevision: actualRevision, RestoredRevision: actualRevision + 1, RestoredFromVersion: targetVersion,
+	}
+	if err := transaction.QueryRow(ctx, `INSERT INTO workflow_draft_checkpoints(
+		workflow_id,source_revision,restored_revision,graph,agent_presentation,restored_from_version_id
+	) VALUES($1,$2,$3,$4,$5,$6)
+	ON CONFLICT(workflow_id) DO UPDATE SET
+		source_revision=excluded.source_revision,
+		restored_revision=excluded.restored_revision,
+		graph=excluded.graph,
+		agent_presentation=excluded.agent_presentation,
+		restored_from_version_id=excluded.restored_from_version_id,
+		created_at=now()
+	RETURNING created_at`, workflowID, checkpoint.SourceRevision, checkpoint.RestoredRevision,
+		sourceGraph, sourcePresentation, versionID).Scan(&checkpoint.CreatedAt); err != nil {
+		return domain.Workflow{}, domain.RollbackCheckpointSummary{}, fmt.Errorf("save workflow rollback checkpoint: %w", err)
+	}
+
+	row := transaction.QueryRow(ctx, `WITH updated AS (
+		UPDATE workflows
+		SET draft_graph=$3,agent_presentation=$4,draft_revision=draft_revision+1,updated_at=now()
+		WHERE id=$1 AND draft_revision=$2 AND archived_at IS NULL
+		RETURNING *
+	)
+	SELECT u.id::text,u.name,u.slug,u.description,u.agent_presentation,u.draft_graph,u.draft_revision,
+		u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
+	FROM updated u
+	LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`,
+		workflowID, actualRevision, targetGraph, targetPresentation)
+	workflow, err := scanWorkflow(row)
+	if err != nil {
+		return domain.Workflow{}, domain.RollbackCheckpointSummary{}, fmt.Errorf("rollback workflow draft: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return domain.Workflow{}, domain.RollbackCheckpointSummary{}, fmt.Errorf("commit workflow draft rollback: %w", err)
+	}
+	return workflow, checkpoint, nil
+}
+
+func (store *Store) UndoWorkflowDraftRollback(ctx context.Context, workflowID string, expectedRevision int64) (domain.Workflow, error) {
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return domain.Workflow{}, fmt.Errorf("begin workflow draft rollback undo: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+
+	var actualRevision int64
+	var archived bool
+	if err := transaction.QueryRow(ctx, `SELECT draft_revision,archived_at IS NOT NULL
+		FROM workflows WHERE id=$1 FOR UPDATE`, workflowID).Scan(&actualRevision, &archived); err != nil {
+		return domain.Workflow{}, mapNotFound(err)
+	}
+	if archived {
+		return domain.Workflow{}, domain.ErrWorkflowArchived
+	}
+	if actualRevision != expectedRevision {
+		return domain.Workflow{}, domain.ErrRevisionConflict
+	}
+
+	var restoredRevision int64
+	var sourceGraph, sourcePresentation []byte
+	if err := transaction.QueryRow(ctx, `SELECT restored_revision,graph,agent_presentation
+		FROM workflow_draft_checkpoints WHERE workflow_id=$1`, workflowID).Scan(
+		&restoredRevision,
+		&sourceGraph,
+		&sourcePresentation,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Workflow{}, domain.ErrRollbackUndoUnavailable
+		}
+		return domain.Workflow{}, fmt.Errorf("load workflow rollback checkpoint for undo: %w", err)
+	}
+	if restoredRevision != actualRevision {
+		return domain.Workflow{}, domain.ErrRollbackUndoUnavailable
+	}
+
+	row := transaction.QueryRow(ctx, `WITH updated AS (
+		UPDATE workflows
+		SET draft_graph=$3,agent_presentation=$4,draft_revision=draft_revision+1,updated_at=now()
+		WHERE id=$1 AND draft_revision=$2 AND archived_at IS NULL
+		RETURNING *
+	)
+	SELECT u.id::text,u.name,u.slug,u.description,u.agent_presentation,u.draft_graph,u.draft_revision,
+		u.published_version_id::text,pv.version,u.archived_at,u.created_at,u.updated_at
+	FROM updated u
+	LEFT JOIN workflow_versions pv ON pv.workflow_id=u.id AND pv.id=u.published_version_id`,
+		workflowID, actualRevision, sourceGraph, sourcePresentation)
+	workflow, err := scanWorkflow(row)
+	if err != nil {
+		return domain.Workflow{}, fmt.Errorf("undo workflow draft rollback: %w", err)
+	}
+	if _, err := transaction.Exec(ctx, "DELETE FROM workflow_draft_checkpoints WHERE workflow_id=$1", workflowID); err != nil {
+		return domain.Workflow{}, fmt.Errorf("delete workflow rollback checkpoint: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return domain.Workflow{}, fmt.Errorf("commit workflow draft rollback undo: %w", err)
+	}
+	return workflow, nil
+}
