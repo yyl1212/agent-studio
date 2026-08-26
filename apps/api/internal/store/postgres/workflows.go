@@ -108,6 +108,9 @@ func (store *Store) UpdateAgentPresentation(ctx context.Context, workflowID stri
 	if err != nil {
 		return domain.Workflow{}, fmt.Errorf("update agent presentation: %w", err)
 	}
+	if _, err := transaction.Exec(ctx, "DELETE FROM workflow_draft_checkpoints WHERE workflow_id=$1", workflowID); err != nil {
+		return domain.Workflow{}, fmt.Errorf("invalidate workflow draft checkpoint: %w", err)
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return domain.Workflow{}, fmt.Errorf("commit agent presentation update: %w", err)
 	}
@@ -156,6 +159,9 @@ func (store *Store) UpdateDraft(ctx context.Context, workflowID string, expected
 	workflow, err := scanWorkflow(row)
 	if err != nil {
 		return domain.Workflow{}, fmt.Errorf("update workflow draft: %w", err)
+	}
+	if _, err := transaction.Exec(ctx, "DELETE FROM workflow_draft_checkpoints WHERE workflow_id=$1", workflowID); err != nil {
+		return domain.Workflow{}, fmt.Errorf("invalidate workflow draft checkpoint: %w", err)
 	}
 	if err := transaction.Commit(ctx); err != nil {
 		return domain.Workflow{}, fmt.Errorf("commit workflow draft update: %w", err)

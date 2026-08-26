@@ -251,6 +251,7 @@ corepack pnpm@10.34.5 build
 - [Studio 聚焦工作台](docs/frontend-workbench.md)：节点草稿、动态端口、测试调试、快捷键和响应式行为。
 - [节点包开发与兼容检查](docs/node-packages.md)：节点包清单、离线检查、手工安装和模板依赖提示。
 - [官方节点包索引](docs/node-index.md)：离线搜索、显式刷新、缓存恢复和人工源码审核流程。
+- [工作流版本治理 API](docs/workflow-versions.md)：版本列表、结构化比较、安全回滚与单级撤销；当前仅提供管理 API，Studio 版本历史页面将在后续 PR 交付。
 - `docs/node-development.md`：无需修改前端的节点扩展示例。
 - `docs/sdk/quickstart.md`：仓库节点创建、测试、生成和画布验证的黄金路径。
 

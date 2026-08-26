@@ -313,6 +313,119 @@ paths:
           $ref: "#/components/responses/Error"
         "500":
           $ref: "#/components/responses/Error"
+  /api/workflows/{id}/versions:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    get:
+      operationId: listWorkflowVersions
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 512
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: 工作流版本页与当前可撤销检查点
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowVersionPage"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/version-diffs:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: diffWorkflowVersions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowDiffRequest"
+      responses:
+        "200":
+          description: 已按语义分组且脱敏的工作流差异
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDiff"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/rollbacks:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: rollbackWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowRollbackRequest"
+      responses:
+        "200":
+          description: 已将目标版本恢复为新的草稿修订
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowRollbackResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/workflows/{id}/rollback-undo:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowID"
+    post:
+      operationId: undoWorkflowRollback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowRollbackUndoRequest"
+      responses:
+        "200":
+          description: 已撤销最近一次未被编辑的草稿回滚
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
   /api/workflows/{id}/copies:
     parameters:
       - $ref: "#/components/parameters/WorkflowID"
@@ -1097,6 +1210,319 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Edge"
+    WorkflowSnapshotRef:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, draftRevision]
+          properties:
+            kind:
+              type: string
+              const: draft
+            draftRevision:
+              type: integer
+              format: int64
+              minimum: 1
+        - type: object
+          additionalProperties: false
+          required: [kind, version]
+          properties:
+            kind:
+              type: string
+              const: version
+            version:
+              type: integer
+              minimum: 1
+    WorkflowSnapshotDescriptor:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, draftRevision]
+          properties:
+            kind:
+              type: string
+              const: draft
+            draftRevision:
+              type: integer
+              format: int64
+              minimum: 1
+        - type: object
+          additionalProperties: false
+          required: [kind, version, versionId, createdAt]
+          properties:
+            kind:
+              type: string
+              const: version
+            version:
+              type: integer
+              minimum: 1
+            versionId:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+    WorkflowVersionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, version, current, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        current:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    RollbackCheckpointSummary:
+      type: object
+      additionalProperties: false
+      required: [sourceRevision, restoredRevision, restoredFromVersion, createdAt]
+      properties:
+        sourceRevision:
+          type: integer
+          format: int64
+          minimum: 1
+        restoredRevision:
+          type: integer
+          format: int64
+          minimum: 2
+        restoredFromVersion:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+    WorkflowVersionPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, rollbackCheckpoint]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowVersionSummary"
+        nextCursor:
+          type: [string, "null"]
+        rollbackCheckpoint:
+          anyOf:
+            - $ref: "#/components/schemas/RollbackCheckpointSummary"
+            - type: "null"
+    WorkflowDiffRequest:
+      type: object
+      additionalProperties: false
+      required: [base, compare]
+      properties:
+        base:
+          $ref: "#/components/schemas/WorkflowSnapshotRef"
+        compare:
+          $ref: "#/components/schemas/WorkflowSnapshotRef"
+    WorkflowValueDiff:
+      type: object
+      additionalProperties: false
+      required: [path, kind]
+      properties:
+        path:
+          type: string
+        kind:
+          type: string
+          enum: [added, removed, modified, reordered]
+        before: {}
+        after: {}
+        valueOmitted:
+          type: string
+          enum: [secret, definition_unavailable, too_large]
+    WorkflowNodeTypeSummary:
+      type: object
+      additionalProperties: false
+      required: [type, version, title]
+      properties:
+        type:
+          type: string
+        version:
+          type: string
+        title:
+          type: string
+    WorkflowNodeDiff:
+      type: object
+      additionalProperties: false
+      required: [nodeId, title, kind, config]
+      properties:
+        nodeId:
+          type: string
+        title:
+          type: string
+        kind:
+          type: string
+          enum: [added, removed, modified, reordered]
+        beforeType:
+          $ref: "#/components/schemas/WorkflowNodeTypeSummary"
+        afterType:
+          $ref: "#/components/schemas/WorkflowNodeTypeSummary"
+        config:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowValueDiff"
+    WorkflowStartParameterDiff:
+      type: object
+      additionalProperties: false
+      required: [key, kind, changes]
+      properties:
+        key:
+          type: string
+        kind:
+          type: string
+          enum: [added, removed, modified, reordered]
+        beforeOrder:
+          type: integer
+        afterOrder:
+          type: integer
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowValueDiff"
+    WorkflowConnectionSummary:
+      type: object
+      additionalProperties: false
+      required: [source, sourcePort, target, targetPort]
+      properties:
+        source:
+          type: string
+        sourcePort:
+          type: string
+        target:
+          type: string
+        targetPort:
+          type: string
+    WorkflowConnectionDiff:
+      type: object
+      additionalProperties: false
+      required: [kind, connection]
+      properties:
+        kind:
+          type: string
+          enum: [added, removed, modified, reordered]
+        connection:
+          $ref: "#/components/schemas/WorkflowConnectionSummary"
+    WorkflowPresentationDiff:
+      type: object
+      additionalProperties: false
+      required: [field, change]
+      properties:
+        field:
+          type: string
+        change:
+          $ref: "#/components/schemas/WorkflowValueDiff"
+    WorkflowLayoutDiff:
+      type: object
+      additionalProperties: false
+      required: [nodeId, title, before, after]
+      properties:
+        nodeId:
+          type: string
+        title:
+          type: string
+        before:
+          $ref: "#/components/schemas/Position"
+        after:
+          $ref: "#/components/schemas/Position"
+    WorkflowDiffSummary:
+      type: object
+      additionalProperties: false
+      required: [total, nodes, startParameters, connections, agentPresentation, layout]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        nodes:
+          type: integer
+          minimum: 0
+        startParameters:
+          type: integer
+          minimum: 0
+        connections:
+          type: integer
+          minimum: 0
+        agentPresentation:
+          type: integer
+          minimum: 0
+        layout:
+          type: integer
+          minimum: 0
+    WorkflowDiffGroups:
+      type: object
+      additionalProperties: false
+      required: [nodes, startParameters, connections, agentPresentation, layout]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowNodeDiff"
+        startParameters:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowStartParameterDiff"
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowConnectionDiff"
+        agentPresentation:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowPresentationDiff"
+        layout:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowLayoutDiff"
+    WorkflowDiff:
+      type: object
+      additionalProperties: false
+      required: [base, compare, summary, truncated, groups]
+      properties:
+        base:
+          $ref: "#/components/schemas/WorkflowSnapshotDescriptor"
+        compare:
+          $ref: "#/components/schemas/WorkflowSnapshotDescriptor"
+        summary:
+          $ref: "#/components/schemas/WorkflowDiffSummary"
+        truncated:
+          type: boolean
+        groups:
+          $ref: "#/components/schemas/WorkflowDiffGroups"
+    WorkflowRollbackRequest:
+      type: object
+      additionalProperties: false
+      required: [targetVersion, expectedDraftRevision]
+      properties:
+        targetVersion:
+          type: integer
+          minimum: 1
+        expectedDraftRevision:
+          type: integer
+          format: int64
+          minimum: 1
+    WorkflowRollbackResult:
+      type: object
+      additionalProperties: false
+      required: [workflow, rollbackCheckpoint]
+      properties:
+        workflow:
+          $ref: "#/components/schemas/Workflow"
+        rollbackCheckpoint:
+          $ref: "#/components/schemas/RollbackCheckpointSummary"
+    WorkflowRollbackUndoRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedDraftRevision]
+      properties:
+        expectedDraftRevision:
+          type: integer
+          format: int64
+          minimum: 1
     PortDefinition:
       type: object
       required: [key, title, type, required, cardinality]
