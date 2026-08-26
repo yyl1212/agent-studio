@@ -71,6 +71,7 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 	const diffGeneration = useRef(0)
 	const revision = useRef(options.workflow.draftRevision)
 	const lockChange = useRef(options.onLockChange)
+	const checkpointEditSerial = useRef<number | undefined>(undefined)
 
 	revision.current = options.workflow.draftRevision > revision.current ? options.workflow.draftRevision : revision.current
 	lockChange.current = options.onLockChange
@@ -79,6 +80,7 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 		setVersions([])
 		setNextCursor(undefined)
 		setCheckpoint(undefined)
+		checkpointEditSerial.current = undefined
 		setBase(options.workflow.publishedVersion ? { kind: 'version', version: options.workflow.publishedVersion } : undefined)
 		setCompare({ kind: 'draft', draftRevision: options.workflow.draftRevision })
 		setDiff(undefined)
@@ -106,6 +108,7 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 			setVersions(sortAndDeduplicate(page.items))
 			setNextCursor(page.nextCursor ?? undefined)
 			setCheckpoint(page.rollbackCheckpoint ?? undefined)
+			checkpointEditSerial.current = page.rollbackCheckpoint ? options.editSerial : undefined
 		}).catch((cause: unknown) => {
 			if (mine === listGeneration.current && !isAbort(cause)) setError(publicError(cause, '加载版本记录失败，请稍后重试'))
 		}).finally(() => {
@@ -113,6 +116,13 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 		})
 		return () => controller.abort()
 	}, [options.workflow.id, listRefresh])
+
+	useEffect(() => {
+		if (!checkpoint || checkpointEditSerial.current === undefined || checkpointEditSerial.current === options.editSerial) return
+		setCheckpoint(undefined)
+		checkpointEditSerial.current = undefined
+		setNotice('草稿已修改，回滚撤销已失效')
+	}, [checkpoint, options.editSerial])
 
 	useEffect(() => {
 		diffController.current?.abort()
@@ -163,6 +173,7 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 			setVersions((current) => sortAndDeduplicate([...current, ...page.items]))
 			setNextCursor(page.nextCursor ?? undefined)
 			setCheckpoint(page.rollbackCheckpoint ?? undefined)
+			checkpointEditSerial.current = page.rollbackCheckpoint ? options.editSerial : undefined
 		} catch (cause) {
 			if (mine === listGeneration.current && !isAbort(cause)) setError(publicError(cause, '加载更多版本失败，请稍后重试'))
 		} finally {
@@ -183,22 +194,54 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 		setMutating(true)
 		setError('')
 		setNotice('')
+		const submittedRevision = revision.current
 		try {
-			const result = await api.rollbackWorkflow(options.workflow.id, { targetVersion: rollbackTarget, expectedDraftRevision: revision.current }, controller.signal)
+			const result = await api.rollbackWorkflow(options.workflow.id, { targetVersion: rollbackTarget, expectedDraftRevision: submittedRevision }, controller.signal)
 			if (controller.signal.aborted) return
 			await options.onApplyWorkflow(result.workflow)
 			revision.current = result.workflow.draftRevision
+			setBase({ kind: 'version', version: rollbackTarget })
 			setCompare({ kind: 'draft', draftRevision: result.workflow.draftRevision })
 			setCheckpoint(result.rollbackCheckpoint)
+			checkpointEditSerial.current = options.editSerial
 			setRollbackTarget(undefined)
 			setNotice(`已回滚到版本 ${rollbackTarget}`)
 			setDiffRefresh((value) => value + 1)
 		} catch (cause) {
-			if (!isAbort(cause)) setError(publicError(cause, '回滚失败，请稍后重试'))
+			if (isAbort(cause)) return
+			let recovered = false
+			if (!(cause instanceof APIError)) {
+				try {
+					const [freshWorkflow, freshPage] = await Promise.all([
+						api.getWorkflow(options.workflow.id, controller.signal),
+						api.listWorkflowVersions(options.workflow.id, { limit: 20 }, controller.signal),
+					])
+					const freshCheckpoint = freshPage.rollbackCheckpoint
+					recovered = freshWorkflow.draftRevision > submittedRevision
+						&& freshCheckpoint?.restoredRevision === freshWorkflow.draftRevision
+						&& freshCheckpoint.restoredFromVersion === rollbackTarget
+					if (recovered && freshCheckpoint) {
+						await options.onApplyWorkflow(freshWorkflow)
+						revision.current = freshWorkflow.draftRevision
+						setVersions(sortAndDeduplicate(freshPage.items))
+						setNextCursor(freshPage.nextCursor ?? undefined)
+						setBase({ kind: 'version', version: rollbackTarget })
+						setCompare({ kind: 'draft', draftRevision: freshWorkflow.draftRevision })
+						setCheckpoint(freshCheckpoint)
+						checkpointEditSerial.current = options.editSerial
+						setRollbackTarget(undefined)
+						setNotice('回滚已完成，状态已刷新')
+						setDiffRefresh((value) => value + 1)
+					}
+				} catch (recoveryCause) {
+					if (isAbort(recoveryCause)) return
+				}
+			}
+			if (!recovered) setError(publicError(cause, '回滚失败，请稍后重试'))
 		} finally {
 			if (!controller.signal.aborted) setMutating(false)
 		}
-	}, [mutating, options.onApplyWorkflow, options.workflow.id, rollbackTarget])
+	}, [mutating, options.editSerial, options.onApplyWorkflow, options.workflow.id, rollbackTarget])
 
 	const undoRollback = useCallback(async () => {
 		if (!checkpoint || mutating) return
@@ -215,7 +258,9 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 			revision.current = nextWorkflow.draftRevision
 			setCompare({ kind: 'draft', draftRevision: nextWorkflow.draftRevision })
 			setCheckpoint(undefined)
+			checkpointEditSerial.current = undefined
 			setNotice('已撤销回滚')
+			setListRefresh((value) => value + 1)
 			setDiffRefresh((value) => value + 1)
 		} catch (cause) {
 			if (!isAbort(cause)) setError(publicError(cause, '撤销回滚失败，请稍后重试'))

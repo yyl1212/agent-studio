@@ -128,6 +128,55 @@ describe('useVersionGovernance', () => {
 		expect(capturedDiff.aborted).toBe(true)
 		expect(onLockChange).toHaveBeenLastCalledWith(false)
 	})
+
+	it('回滚响应丢失时仅在服务端 revision 和检查点吻合后接纳成功', async () => {
+		const recovered = { ...workflow, draftRevision: 9 }
+		const checkpoint = { sourceRevision: 8, restoredRevision: 9, restoredFromVersion: 1, createdAt: '2026-08-27T03:00:00Z' }
+		vi.spyOn(api, 'listWorkflowVersions')
+			.mockResolvedValueOnce(page)
+			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: checkpoint })
+		vi.spyOn(api, 'diffWorkflowVersions').mockResolvedValue(emptyDiff(2))
+		vi.spyOn(api, 'rollbackWorkflow').mockRejectedValue(new TypeError('network lost'))
+		vi.spyOn(api, 'getWorkflow').mockResolvedValue(recovered)
+		const onApplyWorkflow = vi.fn(async () => undefined)
+		const { result } = renderHook(() => useVersionGovernance(options({ onApplyWorkflow })))
+		await waitFor(() => expect(result.current.loading).toBe(false))
+		act(() => result.current.openRollback(1))
+		await act(() => result.current.confirmRollback())
+		expect(onApplyWorkflow).toHaveBeenCalledWith(recovered)
+		expect(result.current.checkpoint).toEqual(checkpoint)
+		expect(result.current.notice).toBe('回滚已完成，状态已刷新')
+		expect(result.current.error).toBe('')
+	})
+
+	it('回滚响应丢失后的服务端状态不吻合时保持失败', async () => {
+		vi.spyOn(api, 'listWorkflowVersions')
+			.mockResolvedValueOnce(page)
+			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: { sourceRevision: 8, restoredRevision: 9, restoredFromVersion: 2, createdAt: '2026-08-27T03:00:00Z' } })
+		vi.spyOn(api, 'diffWorkflowVersions').mockResolvedValue(emptyDiff(2))
+		vi.spyOn(api, 'rollbackWorkflow').mockRejectedValue(new TypeError('network lost'))
+		vi.spyOn(api, 'getWorkflow').mockResolvedValue({ ...workflow, draftRevision: 9 })
+		const onApplyWorkflow = vi.fn(async () => undefined)
+		const { result } = renderHook(() => useVersionGovernance(options({ onApplyWorkflow })))
+		await waitFor(() => expect(result.current.loading).toBe(false))
+		act(() => result.current.openRollback(1))
+		await act(() => result.current.confirmRollback())
+		expect(onApplyWorkflow).not.toHaveBeenCalled()
+		expect(result.current.error).toBe('回滚失败，请稍后重试')
+	})
+
+	it('本地编辑序号变化会立即使撤销检查点失效', async () => {
+		vi.spyOn(api, 'listWorkflowVersions').mockResolvedValue({ ...page, rollbackCheckpoint: { sourceRevision: 7, restoredRevision: 8, restoredFromVersion: 1, createdAt: '2026-08-27T03:00:00Z' } })
+		vi.spyOn(api, 'diffWorkflowVersions').mockResolvedValue(emptyDiff(2))
+		const undo = vi.spyOn(api, 'undoWorkflowRollback')
+		const initial = options()
+		const { result, rerender } = renderHook(({ value }) => useVersionGovernance(value), { initialProps: { value: initial } })
+		await waitFor(() => expect(result.current.checkpoint).toBeDefined())
+		rerender({ value: { ...initial, editSerial: 1 } })
+		await waitFor(() => expect(result.current.checkpoint).toBeUndefined())
+		expect(result.current.notice).toBe('草稿已修改，回滚撤销已失效')
+		expect(undo).not.toHaveBeenCalled()
+	})
 })
 
 function deferred<T>() {
