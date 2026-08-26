@@ -216,6 +216,32 @@ describe('useVersionGovernance', () => {
 		expect(result.current.notice).toBe('撤销请求结果未知，已刷新服务端状态')
 		expect(result.current.error).toBe('')
 	})
+
+	it('撤销响应丢失时仅组合同一工作流状态令牌之间的版本页', async () => {
+		const checkpoint = { sourceRevision: 7, restoredRevision: 8, restoredFromVersion: 1, createdAt: '2026-08-27T03:00:00Z' }
+		vi.spyOn(api, 'listWorkflowVersions')
+			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: checkpoint })
+			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: null })
+			.mockResolvedValueOnce({ ...page, rollbackCheckpoint: null })
+		vi.spyOn(api, 'diffWorkflowVersions').mockResolvedValue(emptyDiff(2))
+		vi.spyOn(api, 'undoWorkflowRollback').mockRejectedValue(new TypeError('network lost'))
+		const stale = { ...workflow, draftRevision: 8 }
+		const recovered = { ...workflow, name: '已撤销', draftRevision: 9, updatedAt: '2026-08-27T04:00:00Z' }
+		vi.spyOn(api, 'getWorkflow')
+			.mockResolvedValueOnce(stale)
+			.mockResolvedValueOnce(recovered)
+			.mockResolvedValueOnce(recovered)
+			.mockResolvedValueOnce(recovered)
+		const onApplyWorkflow = vi.fn(async () => undefined)
+		const { result } = renderHook(() => useVersionGovernance(options({ onApplyWorkflow })))
+		await waitFor(() => expect(result.current.checkpoint).toEqual(checkpoint))
+		await act(() => result.current.undoRollback())
+		expect(api.getWorkflow).toHaveBeenCalledTimes(4)
+		expect(api.listWorkflowVersions).toHaveBeenCalledTimes(3)
+		expect(onApplyWorkflow).toHaveBeenCalledWith(recovered)
+		expect(result.current.checkpoint).toBeUndefined()
+		expect(result.current.error).toBe('')
+	})
 })
 
 function deferred<T>() {

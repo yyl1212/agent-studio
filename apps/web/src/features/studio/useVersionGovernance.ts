@@ -7,6 +7,7 @@ import {
 	type Workflow,
 	type WorkflowDiff,
 	type WorkflowSnapshotRef,
+	type WorkflowVersionPage,
 	type WorkflowVersionSummary,
 } from '../../lib/api/client'
 import type { SaveState } from './saveQueue'
@@ -212,10 +213,7 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 			let recovered = false
 			if (!(cause instanceof APIError)) {
 				try {
-					const [freshWorkflow, freshPage] = await Promise.all([
-						api.getWorkflow(options.workflow.id, controller.signal),
-						api.listWorkflowVersions(options.workflow.id, { limit: 20 }, controller.signal),
-					])
+					const { workflow: freshWorkflow, page: freshPage } = await loadStableVersionState(options.workflow.id, controller.signal)
 					const freshCheckpoint = freshPage.rollbackCheckpoint
 					recovered = freshWorkflow.draftRevision > submittedRevision
 						&& freshCheckpoint?.restoredRevision === freshWorkflow.draftRevision
@@ -268,10 +266,7 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 			let recovered = false
 			if (!(cause instanceof APIError)) {
 				try {
-					const [freshWorkflow, freshPage] = await Promise.all([
-						api.getWorkflow(options.workflow.id, controller.signal),
-						api.listWorkflowVersions(options.workflow.id, { limit: 20 }, controller.signal),
-					])
+					const { workflow: freshWorkflow, page: freshPage } = await loadStableVersionState(options.workflow.id, controller.signal)
 					await options.onApplyWorkflow(freshWorkflow)
 					revision.current = freshWorkflow.draftRevision
 					setVersions(sortAndDeduplicate(freshPage.items))
@@ -303,6 +298,26 @@ export function useVersionGovernance(options: UseVersionGovernanceOptions): Vers
 
 function sortAndDeduplicate(items: WorkflowVersionSummary[]) {
 	return [...new Map(items.map((item) => [item.id, item])).values()].sort((left, right) => right.version - left.version)
+}
+
+async function loadStableVersionState(workflowId: string, signal: AbortSignal): Promise<{ workflow: Workflow; page: WorkflowVersionPage }> {
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const before = await api.getWorkflow(workflowId, signal)
+		const page = await api.listWorkflowVersions(workflowId, { limit: 20 }, signal)
+		const after = await api.getWorkflow(workflowId, signal)
+		if (workflowStateToken(before) === workflowStateToken(after)) return { workflow: after, page }
+	}
+	throw new Error('无法获取稳定的工作流版本状态')
+}
+
+function workflowStateToken(workflow: Workflow) {
+	return [
+		workflow.draftRevision,
+		workflow.publishedVersionId ?? '',
+		workflow.publishedVersion ?? '',
+		workflow.archivedAt ?? '',
+		workflow.updatedAt,
+	].join(':')
 }
 
 function snapshotKey(ref?: WorkflowSnapshotRef) {
