@@ -542,6 +542,23 @@ func TestListWorkflowVersionsUsesDescendingVersionCursor(t *testing.T) {
 	}
 }
 
+func TestGetWorkflowVersionByNumberScopesLookupToWorkflow(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "version-by-number")
+	want := publishFixture(t, store, workflow)
+	other := createWorkflowFixture(t, store, "version-by-number-other")
+	publishFixture(t, store, other)
+	publishFixture(t, store, other)
+
+	got, err := store.GetWorkflowVersionByNumber(context.Background(), workflow.ID, 1)
+	if err != nil || got.ID != want.ID || got.WorkflowID != workflow.ID || got.Version != 1 || !jsonEqual(got.Graph, want.Graph) {
+		t.Fatalf("version=%+v err=%v", got, err)
+	}
+	if _, err := store.GetWorkflowVersionByNumber(context.Background(), workflow.ID, 2); !errors.Is(err, domain.ErrWorkflowVersionNotFound) {
+		t.Fatalf("cross-workflow version error=%v", err)
+	}
+}
+
 func TestCreateWorkflowMapsDuplicateSlug(t *testing.T) {
 	store := migratedTestStore(t)
 	first := createWorkflowFixture(t, store, "duplicate")

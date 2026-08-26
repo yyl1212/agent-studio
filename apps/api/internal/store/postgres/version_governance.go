@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -9,6 +10,34 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	workflowservice "github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 )
+
+func (store *Store) GetWorkflowVersionByNumber(ctx context.Context, workflowID string, versionNumber int) (domain.WorkflowVersion, error) {
+	row := store.pool.QueryRow(ctx, `SELECT id::text,workflow_id::text,version,graph,input_schema,agent_presentation,created_at
+		FROM workflow_versions
+		WHERE workflow_id=$1 AND version=$2`, workflowID, versionNumber)
+	var version domain.WorkflowVersion
+	var graph, inputSchema, presentation []byte
+	if err := row.Scan(
+		&version.ID,
+		&version.WorkflowID,
+		&version.Version,
+		&graph,
+		&inputSchema,
+		&presentation,
+		&version.CreatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.WorkflowVersion{}, domain.ErrWorkflowVersionNotFound
+		}
+		return domain.WorkflowVersion{}, fmt.Errorf("load workflow version by number: %w", err)
+	}
+	version.Graph = append(json.RawMessage(nil), graph...)
+	version.InputSchema = append(json.RawMessage(nil), inputSchema...)
+	if err := json.Unmarshal(presentation, &version.AgentPresentation); err != nil {
+		return domain.WorkflowVersion{}, fmt.Errorf("decode workflow version presentation: %w", err)
+	}
+	return version, nil
+}
 
 func (store *Store) ListWorkflowVersions(ctx context.Context, workflowID string, beforeVersion, limit int) (workflowservice.VersionListRows, error) {
 	transaction, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})

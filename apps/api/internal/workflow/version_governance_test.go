@@ -73,6 +73,7 @@ func TestVersionGovernanceListDefaultsAndRejectsInvalidRequestsBeforeStore(t *te
 
 type versionGovernanceFixtureStore struct {
 	workflow      domain.Workflow
+	version       domain.WorkflowVersion
 	versions      []domain.WorkflowVersionSummary
 	checkpoint    *domain.RollbackCheckpointSummary
 	beforeVersion int
@@ -84,8 +85,11 @@ func (store *versionGovernanceFixtureStore) GetWorkflow(context.Context, string)
 	return store.workflow, nil
 }
 
-func (store *versionGovernanceFixtureStore) GetWorkflowVersionByNumber(context.Context, string, int) (domain.WorkflowVersion, error) {
-	return domain.WorkflowVersion{}, domain.ErrWorkflowVersionNotFound
+func (store *versionGovernanceFixtureStore) GetWorkflowVersionByNumber(_ context.Context, workflowID string, version int) (domain.WorkflowVersion, error) {
+	if store.version.WorkflowID != workflowID || store.version.Version != version {
+		return domain.WorkflowVersion{}, domain.ErrWorkflowVersionNotFound
+	}
+	return store.version, nil
 }
 
 func (store *versionGovernanceFixtureStore) ListWorkflowVersions(_ context.Context, _ string, beforeVersion, limit int) (VersionListRows, error) {
