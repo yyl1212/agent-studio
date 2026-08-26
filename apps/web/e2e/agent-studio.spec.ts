@@ -1,15 +1,19 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { applyNodeConfig, configureStartTextField, connectPorts, createWorkflow } from './helpers'
+import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, type AgentPresentationSettings } from './helpers'
 
 test('创建、测试、发布并运行 Agent', async ({ page }) => {
   const suffix = Date.now().toString(36)
-  const { agentURL } = await buildAndPublish(page, `闭环助手 ${suffix}`, `e2e-flow-${suffix}`, '回答：{{topic}}')
+  const settings = { title: '聚焦研究助手', description: '输入主题生成答案', accent: 'teal' as const, submitLabel: '开始研究', resultMode: 'json' as const }
+  const { agentURL } = await buildAndPublish(page, `闭环助手 ${suffix}`, `e2e-flow-${suffix}`, '回答：{{topic}}', settings)
 
   await page.goto(agentURL)
+  await expect(page.getByRole('heading', { name: settings.title })).toBeVisible()
+  await expect(page.locator('.agent-shell')).toHaveClass(/accent-teal/)
   await page.getByLabel('主题', { exact: true }).fill('Workflow')
-  await page.getByRole('button', { name: '运行 Agent' }).click()
-  await expect(page.getByText('Mock 回复：回答：Workflow')).toBeVisible()
+  await page.getByRole('button', { name: settings.submitLabel }).click()
+  await expect(page).toHaveURL(/\?runId=[0-9a-f-]+$/)
+  await expect(page.getByRole('region', { name: '运行结果' })).toContainText('Mock 回复：回答：Workflow')
 })
 
 test('已加载 Agent 固定旧版本，刷新后切换新版本', async ({ page, context }) => {
@@ -17,6 +21,10 @@ test('已加载 Agent 固定旧版本，刷新后切换新版本', async ({ page
   const { agentURL, workflowURL } = await buildAndPublish(page, `版本助手 ${suffix}`, `e2e-version-${suffix}`, 'V1：{{topic}}')
   await page.goto(agentURL)
   await expect(page.getByText('Agent · v1')).toBeVisible()
+  await page.getByLabel('主题', { exact: true }).fill('旧页')
+  await page.getByRole('button', { name: '运行 Agent' }).click()
+  await expect(page.getByText('Mock 回复：V1：旧页')).toBeVisible()
+  await expect(page).toHaveURL(/\?runId=[0-9a-f-]+$/)
 
   const editor = await context.newPage()
   await editor.goto(workflowURL)
@@ -27,11 +35,10 @@ test('已加载 Agent 固定旧版本，刷新后切换新版本', async ({ page
   await editor.getByRole('button', { name: '确认发布' }).click()
   await expect(editor.getByText('版本 v2 已发布。')).toBeVisible()
 
-  await page.getByLabel('主题', { exact: true }).fill('旧页')
-  await page.getByRole('button', { name: '运行 Agent' }).click()
-  await expect(page.getByText('Mock 回复：V1：旧页')).toBeVisible()
-
   await page.reload()
+  await expect(page.getByText('Agent · v1')).toBeVisible()
+  await expect(page.getByText('Mock 回复：V1：旧页')).toBeVisible()
+  await page.getByRole('button', { name: '再次运行' }).click()
   await expect(page.getByText('Agent · v2')).toBeVisible()
   await page.getByLabel('主题', { exact: true }).fill('新页')
   await page.getByRole('button', { name: '运行 Agent' }).click()
@@ -134,7 +141,7 @@ test('工作台在桌面与窄屏均保持页面无水平溢出', async ({ page 
   }
 })
 
-async function buildAndPublish(page: Page, name: string, slug: string, template: string) {
+async function buildAndPublish(page: Page, name: string, slug: string, template: string, presentation?: AgentPresentationSettings) {
   const workflowURL = await createWorkflow(page, slug, name)
   await configureStartTextField(page, 'topic', '主题')
 
@@ -157,6 +164,8 @@ async function buildAndPublish(page: Page, name: string, slug: string, template:
   await page.getByRole('button', { name: '运行', exact: true }).click()
   await expect(page.getByText(`Mock 回复：${template.replace('{{topic}}', 'Agent')}`)).toBeVisible()
   await page.getByRole('button', { name: '关闭工作台' }).click()
+
+  if (presentation) await configureAgentPresentation(page, presentation)
 
   await page.getByRole('button', { name: '发布' }).click()
   await page.getByRole('button', { name: '确认发布' }).click()

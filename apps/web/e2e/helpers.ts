@@ -41,6 +41,27 @@ export async function configureStartTextField(page: Page, key: string, label: st
   await configureStartField(page, key, label, 'text')
 }
 
+export interface AgentPresentationSettings {
+  title: string
+  description: string
+  accent: 'indigo' | 'blue' | 'teal' | 'amber' | 'rose'
+  submitLabel: string
+  resultMode: 'auto' | 'text' | 'json'
+}
+
+export async function configureAgentPresentation(page: Page, settings: AgentPresentationSettings) {
+  await page.getByRole('button', { name: 'Agent 页面设置' }).click()
+  const dialog = page.getByRole('dialog', { name: '页面设置' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByLabel('页面标题').fill(settings.title)
+  await dialog.getByLabel('页面说明').fill(settings.description)
+  await dialog.getByLabel('强调色').selectOption(settings.accent)
+  await dialog.getByLabel('提交按钮文案').fill(settings.submitLabel)
+  await dialog.getByLabel('结果展示方式').selectOption(settings.resultMode)
+  await dialog.getByRole('button', { name: '保存设置' }).click()
+  await expect(dialog).toBeHidden()
+}
+
 export async function applyNodeConfig(page: Page) {
   const apply = page.getByRole('button', { name: '应用配置' })
   await expect(apply).toBeEnabled()

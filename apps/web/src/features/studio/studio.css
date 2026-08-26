@@ -18,7 +18,7 @@
 .studio-actions button:disabled { cursor: wait; opacity: .6; }
 .studio-toolbar-error { max-width: 260px; color: #b42318; font-size: 13px; font-weight: 650; }
 .studio-archive-banner { position: absolute; z-index: 9; top: 90px; left: 50%; max-width: calc(100% - 32px); padding: 9px 14px; transform: translateX(-50%); border: 1px solid #fedf89; border-radius: var(--as-radius-sm); color: #7a2e0e; background: #fffaeb; font-size: 13px; font-weight: 700; }
-.agent-settings-dialog { width: min(900px, calc(100vw - 32px)); max-width: 900px; padding: 0; overflow: hidden; }
+.agent-settings-dialog { width: min(900px, calc(100vw - 32px)); max-width: 900px; max-height: calc(100vh - 32px); padding: 0; overflow: auto; }
 .agent-settings-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--as-border); }
 .agent-settings-heading h2 { margin: 3px 0 0; font-size: 22px; }
 .agent-settings-heading > button { width: 34px; height: 34px; border: 0; border-radius: var(--as-radius-sm); background: var(--as-surface-muted); font-size: 22px; }
