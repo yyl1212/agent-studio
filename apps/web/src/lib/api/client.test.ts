@@ -48,6 +48,22 @@ describe('API client', () => {
     await expect(api.runAgent('demo', { workflowVersionId: 'v1', input: {} })).resolves.toBe(response)
   })
 
+	it('保存 Agent 页面设置使用独立 PUT 端点', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ...workflowFixture(), draftRevision: 5 }))
+		vi.stubGlobal('fetch', fetchMock)
+		const body = {
+			draftRevision: 4,
+			presentation: {
+				title: '研究助手', description: '输入主题并生成结果', accent: 'teal' as const,
+				submitLabel: '开始研究', resultMode: 'auto' as const,
+			},
+		}
+		await api.saveAgentPresentation('w/1', body)
+		expect(fetchMock).toHaveBeenCalledWith('/api/workflows/w%2F1/agent-presentation', expect.objectContaining({
+			method: 'PUT', body: JSON.stringify(body),
+		}))
+	})
+
 	it('调试接口编码路径、使用独占游标并透传 AbortSignal', async () => {
 		const controller = new AbortController()
 		const stream = new Response('{"type":"run.started"}\n', { status: 200 })

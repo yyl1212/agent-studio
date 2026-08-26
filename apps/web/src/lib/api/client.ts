@@ -6,6 +6,7 @@ export type ResolvedPorts = components['schemas']['ResolvedPorts']
 export type Workflow = components['schemas']['Workflow']
 export type WorkflowVersion = components['schemas']['WorkflowVersion']
 export type AgentManifest = components['schemas']['AgentManifest']
+export type AgentPresentation = components['schemas']['AgentPresentation']
 export type Run = components['schemas']['Run']
 export type NodeRun = components['schemas']['NodeRun']
 export type DebugOverview = components['schemas']['DebugOverview']
@@ -16,6 +17,7 @@ export type ErrorResponse = components['schemas']['ErrorResponse']
 export type ValidationIssue = components['schemas']['ValidationIssue']
 export type CreateWorkflowRequest = components['schemas']['CreateWorkflowRequest']
 export type SaveDraftRequest = components['schemas']['SaveDraftRequest']
+export type SaveAgentPresentationRequest = components['schemas']['SaveAgentPresentationRequest']
 export type DraftRunRequest = components['schemas']['DraftRunRequest']
 export type AgentRunRequest = components['schemas']['AgentRunRequest']
 export type WorkflowTemplate = components['schemas']['WorkflowTemplateV1Alpha1'] | components['schemas']['WorkflowTemplateV1Alpha2']
@@ -182,6 +184,8 @@ export const api = {
     request<Workflow>(`/api/workflows/${encodeURIComponent(id)}/restore`, { method: 'POST', signal }),
   saveWorkflow: (id: string, body: SaveDraftRequest, signal?: AbortSignal) =>
     request<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, { method: 'PUT', body: jsonBody(body), signal }),
+  saveAgentPresentation: (id: string, body: SaveAgentPresentationRequest, signal?: AbortSignal) =>
+    request<Workflow>(`/api/workflows/${encodeURIComponent(id)}/agent-presentation`, { method: 'PUT', body: jsonBody(body), signal }),
   validateWorkflow: (id: string) =>
     request<{ valid: boolean; issues: ValidationIssue[] }>(`/api/workflows/${encodeURIComponent(id)}/validate`, { method: 'POST' }),
   publishWorkflow: (id: string, draftRevision: number) =>

@@ -33,6 +33,17 @@ describe('useStudioWorkbench', () => {
     expect(result.current.mode).toEqual({ kind: 'config', nodeId: 'a' })
   })
 
+  it('脏配置会延迟 Agent 页面设置外部意图', () => {
+    const { result } = renderHook(() => useStudioWorkbench())
+    act(() => result.current.request({ kind: 'config', nodeId: 'a' }, false))
+    act(() => result.current.request({ kind: 'agent-presentation' }, true))
+    expect(result.current.pendingIntent).toEqual({ kind: 'agent-presentation' })
+    let intent
+    act(() => { intent = result.current.resolveDirty('discard') })
+    expect(intent).toEqual({ kind: 'agent-presentation' })
+    expect(result.current.mode).toEqual({ kind: 'config', nodeId: 'a' })
+  })
+
   it('应用草稿后取出并清除待执行意图', () => {
     const { result } = renderHook(() => useStudioWorkbench())
     act(() => result.current.request({ kind: 'config', nodeId: 'a' }, false))

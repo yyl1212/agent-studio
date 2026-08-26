@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 
 export type WorkbenchMode = { kind: 'closed' } | { kind: 'config'; nodeId: string } | { kind: 'test' }
-export type WorkbenchIntent = { kind: 'close' } | { kind: 'config'; nodeId: string } | { kind: 'test' } | { kind: 'open-library' } | { kind: 'publish' } | { kind: 'export' }
+export type WorkbenchIntent = { kind: 'close' } | { kind: 'config'; nodeId: string } | { kind: 'test' } | { kind: 'open-library' } | { kind: 'publish' } | { kind: 'export' } | { kind: 'agent-presentation' }
 export interface StudioWorkbench { mode: WorkbenchMode; pendingIntent?: WorkbenchIntent; request: (intent: WorkbenchIntent, dirty: boolean) => void; resolveDirty: (choice: 'apply' | 'discard' | 'cancel') => WorkbenchIntent | undefined }
 
 export function useStudioWorkbench(): StudioWorkbench {
