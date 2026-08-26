@@ -13,6 +13,11 @@ type WorkflowVersionListRequest struct {
 	Limit  int
 }
 
+type WorkflowDiffRequest struct {
+	Base    domain.WorkflowSnapshotRef `json:"base"`
+	Compare domain.WorkflowSnapshotRef `json:"compare"`
+}
+
 type VersionListRows struct {
 	Items      []domain.WorkflowVersionSummary
 	Checkpoint *domain.RollbackCheckpointSummary
@@ -76,4 +81,16 @@ func (service *VersionGovernanceService) List(ctx context.Context, workflowID st
 	return domain.WorkflowVersionPage{
 		Items: items, NextCursor: nextCursor, RollbackCheckpoint: rows.Checkpoint,
 	}, nil
+}
+
+func (service *VersionGovernanceService) Diff(ctx context.Context, workflowID string, request WorkflowDiffRequest) (domain.WorkflowDiff, error) {
+	base, err := service.loadSnapshot(ctx, workflowID, request.Base)
+	if err != nil {
+		return domain.WorkflowDiff{}, err
+	}
+	compare, err := service.loadSnapshot(ctx, workflowID, request.Compare)
+	if err != nil {
+		return domain.WorkflowDiff{}, err
+	}
+	return newSemanticDiffEngine(service.definitions).Diff(base, compare)
 }
