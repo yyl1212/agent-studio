@@ -15,6 +15,7 @@ vi.mock('@xyflow/react', async () => {
     Controls: () => null,
     MiniMap: () => null,
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    ViewportPortal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     ReactFlow: (props: {
       onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void
       onNodeClick?: (event: ReactMouseEvent<HTMLDivElement>, node: StudioNode) => void
@@ -115,6 +116,28 @@ it('把节点和边的删除作为一次原子事件上报，并在只读时阻�
   rerender(<WorkflowCanvas {...baseProps} nodes={[node('a'), node('b')]} edges={[edge]} onDelete={onDelete} readOnly />)
   fireEvent.click(screen.getByRole('button', { name: '删除选中元素' }))
   expect(onDelete).not.toHaveBeenCalled()
+})
+
+it('画布空图引导只上报添加意图，不产生节点或边变化', () => {
+  const onAdd = vi.fn()
+  const onNodesChange = vi.fn()
+  const onEdgesChange = vi.fn()
+  render(
+    <WorkflowCanvas
+      {...baseProps}
+      nodes={[]}
+      onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
+      emptyGuide={{ position: { x: 300, y: 100 }, onAdd }}
+    />,
+  )
+
+  fireEvent.click(
+    screen.getByRole('button', { name: '在这里添加第一个节点' }),
+  )
+  expect(onAdd).toHaveBeenCalledOnce()
+  expect(onNodesChange).not.toHaveBeenCalled()
+  expect(onEdgesChange).not.toHaveBeenCalled()
 })
 
 it('fitRequest 推进时主动重新适配服务端替换后的画布', () => {
