@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { configureStartTextField, connectPorts, createWorkflow, saveDraftGraph } from './helpers'
+import { configureStartTextField, connectPorts, createWorkflow, openMoreActions, saveDraftGraph } from './helpers'
 
 test('工作流与运行管理闭环在三档宽度下可用', async ({ page }) => {
   const suffix = Date.now().toString(36)
@@ -60,6 +60,7 @@ test('工作流与运行管理闭环在三档宽度下可用', async ({ page }) 
   await page.getByLabel('主题', { exact: true }).fill(`输出 ${suffix}`)
   await page.getByRole('button', { name: '运行', exact: true }).click()
   await expect(page.locator('.run-output')).toContainText(`输出 ${suffix}`)
+  await openMoreActions(page)
   await page.getByRole('link', { name: '运行记录' }).click()
   await expect(page).toHaveURL(`/runs?workflowId=${workflowID}`)
 

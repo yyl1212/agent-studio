@@ -50,6 +50,7 @@ export interface AgentPresentationSettings {
 }
 
 export async function configureAgentPresentation(page: Page, settings: AgentPresentationSettings) {
+  await openMoreActions(page)
   await page.getByRole('button', { name: 'Agent 页面设置' }).click()
   const dialog = page.getByRole('dialog', { name: '页面设置' })
   await expect(dialog).toBeVisible()
@@ -74,7 +75,7 @@ export async function openOptionalConfig(page: Page) {
 }
 
 export async function connectPorts(page: Page, connections: Array<[string, string, string, string]>) {
-  await page.getByRole('button', { name: 'Fit View' }).click()
+  await page.getByRole('button', { name: '适配工作流' }).click()
   for (const [sourceType, sourcePort, targetType, targetPort] of connections) {
     const edgeCount = await page.locator('.react-flow__edge').count()
     const sourceNode = page.getByTestId(`node-${sourceType}`).locator('..')
@@ -84,6 +85,12 @@ export async function connectPorts(page: Page, connections: Array<[string, strin
     await dragHandle(page, source, target)
     await expect(page.locator('.react-flow__edge')).toHaveCount(edgeCount + 1)
   }
+}
+
+export async function openMoreActions(page: Page) {
+  const summary = page.getByText('更多操作', { exact: true })
+  const details = summary.locator('..')
+  if (!await details.evaluate((element) => (element as HTMLDetailsElement).open)) await summary.click()
 }
 
 export async function connectIndexedPorts(
