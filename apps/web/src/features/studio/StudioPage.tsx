@@ -341,6 +341,7 @@ export function StudioPage() {
 	}
 
   const executeIntent = (intent: WorkbenchIntent) => {
+    setActiveDisclosure(undefined)
     if (workbench.mode.kind === 'test' && intent.kind !== 'test') runController.current?.abort()
 		if (intent.kind === 'version-history') {
 			setVersionError('')

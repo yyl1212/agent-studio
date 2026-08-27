@@ -191,6 +191,22 @@ describe('StudioPage', () => {
     expect(screen.getByRole('dialog', { name: '开始' })).toBeInTheDocument()
   })
 
+  it('应用并试运行的直接切换路径也会关闭 disclosure', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用并试运行' })).toBeEnabled())
+
+    const moreSummary = screen.getByText('更多操作')
+    await userEvent.click(moreSummary)
+    await userEvent.click(screen.getByRole('button', { name: '应用并试运行' }))
+
+    await vi.waitFor(() => expect(screen.getByRole('dialog', { name: '测试运行' })).toBeInTheDocument())
+    expect(moreSummary.closest('details')).not.toHaveAttribute('open')
+  })
+
   it('只把图结构变化写入草稿，不持久化 React Flow 尺寸和选中态', () => {
 	 expect(isPersistentNodeChange({ type: 'dimensions', id: 'a', dimensions: { width: 100, height: 60 } })).toBe(false)
 	 expect(isPersistentNodeChange({ type: 'select', id: 'a', selected: true })).toBe(false)
