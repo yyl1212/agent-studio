@@ -37,7 +37,7 @@ replace github.com/yyl1212/agent-studio => %s
 		"--license", "Apache-2.0",
 		"--repository", "https://example.com/sdkfixture",
 		"--runtime-min", "v0.2.0",
-		"--runtime-max-exclusive", "v0.4.0",
+		"--runtime-max-exclusive", "v0.5.0",
 	)
 	run(t, fixture, nil, cliBinary, "node", "init", "echo")
 	run(t, fixture, nil, cliBinary, "node", "test", "./extensions/echo")

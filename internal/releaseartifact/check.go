@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 const (
@@ -211,8 +213,9 @@ func VerifyTarget(config Config) error {
 	}
 	actual := strings.TrimSpace(output)
 	expected := fmt.Sprintf(
-		"agent-studio %s (sdk 0.3.1; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
+		"agent-studio %s (sdk %s; api agent-studio.dev/v1alpha1; commit %s; dirty false)",
 		config.Version,
+		agentnode.Version,
 		config.Commit,
 	)
 	if actual != expected {
