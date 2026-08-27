@@ -573,7 +573,7 @@ describe('StudioPage', () => {
     expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
 	expect(screen.getByRole('button', { name: '版本历史' })).toBeEnabled()
     expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs?workflowId=w1')
-    fireEvent.click(screen.getByTestId('node-start'))
+    fireEvent.click(await screen.findByTestId('node-start'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '导出模板' }))
     await vi.waitFor(() => expect(api.exportWorkflowTemplate).toHaveBeenCalledWith('w1', 1, expect.any(AbortSignal)))
