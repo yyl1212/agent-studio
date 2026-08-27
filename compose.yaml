@@ -15,5 +15,48 @@ services:
       timeout: 3s
       retries: 30
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.159.0
+    profiles: [observability]
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:13133:13133"
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    profiles: [observability]
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "/bin/prometheus", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0
+    profiles: [observability]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:16686:16686"
+    healthcheck:
+      test: ["CMD", "/cmd/jaeger/jaeger", "version"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
 volumes:
   agent_pg_data:
