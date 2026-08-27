@@ -313,7 +313,7 @@ describe('StudioPage', () => {
     expect(screen.getByRole('dialog', { name: '页面设置' })).toBeInTheDocument()
   })
 
-  it('脏配置进入测试前要求确认并在应用后运行最新草稿', async () => {
+  it('应用配置后直接打开测试工作台并运行最新草稿', async () => {
     vi.spyOn(api, 'runDraft').mockResolvedValue(new Response('{"type":"run.completed","sequence":1,"output":{}}\n', { headers: { 'content-type': 'application/x-ndjson' } }))
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     await screen.findByText('演示助手')
@@ -322,10 +322,8 @@ describe('StudioPage', () => {
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
     await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
 
-    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
-    expect(screen.getByRole('dialog', { name: '保存节点配置更改？' })).toBeInTheDocument()
-    expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: '应用并继续' }))
+    await userEvent.click(screen.getByRole('button', { name: '应用并试运行' }))
+    expect(screen.queryByRole('dialog', { name: '保存节点配置更改？' })).not.toBeInTheDocument()
     expect(await screen.findByRole('dialog', { name: '测试运行' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '运行' }))
     await vi.waitFor(() => expect(api.runDraft).toHaveBeenCalledWith('w1', { draftRevision: 2, input: {} }, expect.any(AbortSignal)), { timeout: 2500 })

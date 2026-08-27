@@ -11,7 +11,7 @@ import { useParams } from 'react-router-dom'
 
 import type { JSONSchema } from '../../components/schema-form/types'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
-import { APIError, api, type AgentPresentation, type NodeDefinition, type Workflow } from '../../lib/api/client'
+import { APIError, api, type AgentPresentation, type NodeDefinition, type ResolvedPorts, type Workflow } from '../../lib/api/client'
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { applyNodeConfig } from './configDraft'
 import { AgentPageSettingsDialog } from './AgentPageSettingsDialog'
@@ -162,13 +162,24 @@ export function StudioPage() {
     commit(next, edges)
   }
 
-  const applySelectedConfig = (config: Record<string, unknown>, ports: Parameters<typeof applyNodeConfig>[4]) => {
-    if (archived || !selectedID) return
+  const applySelectedConfig = (config: Record<string, unknown>, ports: ResolvedPorts) => {
+    if (archived || !selectedID) return false
     const applied = applyNodeConfig(nodes, edges, selectedID, config, ports)
     setNodes(applied.nodes)
     setEdges(applied.edges)
     commit(applied.nodes, applied.edges)
     configDraft.markApplied(config, ports)
+    return true
+  }
+
+  const applyAndOpenTest = async (config: Record<string, unknown>, ports: ResolvedPorts) => {
+    if (!applySelectedConfig(config, ports)) return
+    try {
+      await saveQueue.current?.flush()
+      executeIntent({ kind: 'test' })
+    } catch {
+      // SaveQueue exposes the failure through saveState; keep the configuration context open.
+    }
   }
 
   const startSchema = useMemo(() => deriveStartSchema(nodes), [nodes])
@@ -434,7 +445,7 @@ export function StudioPage() {
         />}
         nodeLibrary={libraryOpen ? <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} /> : undefined}
         workbench={workbench.mode.kind !== 'closed' ? <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={closeTopLayer}>
-          {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={applySelectedConfig} />}
+          {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={(config, ports) => { applySelectedConfig(config, ports) }} onApplyAndTest={applyAndOpenTest} />}
           {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} error={runError} onRun={runDraft} onCancel={() => runController.current?.abort()} /></>}
           {workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
         </WorkbenchPanel> : undefined}

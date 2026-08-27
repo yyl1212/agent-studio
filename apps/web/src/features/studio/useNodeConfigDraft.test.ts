@@ -15,6 +15,19 @@ const makeNode = (id: string): StudioNode => ({ id, type: 'studio', position: { 
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done }); return { promise, resolve } }
 
 describe('useNodeConfigDraft', () => {
+  it('端口解析失败后用同一草稿重试并进入 ready', async () => {
+    const resolve: ResolveNodePorts = vi.fn()
+      .mockRejectedValueOnce(new Error('解析服务暂不可用'))
+      .mockResolvedValueOnce({ inputs: [], outputs: [] })
+    const { result } = renderHook(() => useNodeConfigDraft({ node: makeNode('a'), edges: [], resolve, debounceMs: 0 }))
+    act(() => result.current.setDraft({ model: 'valid' }))
+    await waitFor(() => expect(result.current.status).toBe('error'))
+    act(() => result.current.retry())
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect(result.current.draft).toEqual({ model: 'valid' })
+  })
+
   it('取消旧节点解析并拒绝迟到 generation', async () => {
     const oldResult = deferred<ResolvedPorts>()
     const newResult = deferred<ResolvedPorts>()

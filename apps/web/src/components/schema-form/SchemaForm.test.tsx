@@ -41,6 +41,20 @@ const documentsSchema = {
 }
 
 describe('SchemaForm', () => {
+  it('第二提交复用校验并调用独立处理器', async () => {
+    const onSecondarySubmit = vi.fn()
+    render(<SchemaForm schema={schema} value={{ topic: 'Agent' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用"
+      secondarySubmit={{ label: '应用并试运行', onSubmit: onSecondarySubmit }} />)
+    await userEvent.click(screen.getByRole('button', { name: '应用并试运行' }))
+    expect(onSecondarySubmit).toHaveBeenCalledWith(expect.objectContaining({ topic: 'Agent' }))
+  })
+
+  it('无效提交展示错误并自动聚焦首个字段', async () => {
+    render(<SchemaForm schema={schema} value={{ topic: '' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用" />)
+    await userEvent.click(screen.getByRole('button', { name: '应用' }))
+    await vi.waitFor(() => expect(screen.getByLabelText('主题')).toHaveFocus())
+  })
+
   it('按 x-ui-order 分组必要与可选配置并从摘要定位首个错误', async () => {
     render(<SchemaForm schema={{
       type: 'object',
