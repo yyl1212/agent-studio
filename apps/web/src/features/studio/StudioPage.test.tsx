@@ -4,7 +4,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition } from '../../lib/api/client'
-import { isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
+import type { RunEvent } from '../../lib/api/ndjson'
+import { activeRunNodeID, connectionIssue, decorateRunNodes, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
 import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -139,6 +140,27 @@ describe('StudioPage', () => {
 	 expect(isPersistentEdgeChange({ type: 'remove', id: 'edge' })).toBe(true)
   })
 
+  it('说明无效连线的具体原因', () => {
+    const source = studioNode('source', 'template', { inputs: [], outputs: [{ key: 'text', title: '文本', type: 'string', required: false, cardinality: 'one' }] })
+    const target = studioNode('target', 'end', { inputs: [{ key: 'value', title: '数值', type: 'number', required: false, cardinality: 'one' }], outputs: [] })
+    const mismatch = { source: 'source', sourceHandle: 'text', target: 'target', targetHandle: 'value' }
+    expect(connectionIssue(mismatch, [source, target], [])).toBe('端口类型不兼容：string 不能连接到 number')
+    const anyTarget = { ...target, data: { ...target.data, ports: { inputs: [{ ...target.data.ports.inputs[0], type: 'any' as const }], outputs: [] } } }
+    const occupied: StudioEdge = { id: 'edge-1', ...mismatch, targetHandle: 'value' }
+    expect(connectionIssue(mismatch, [source, anyTarget], [occupied])).toBe('目标端口只允许一条输入连线')
+    expect(connectionIssue(mismatch, [source, anyTarget], [])).toBeUndefined()
+  })
+
+  it('只高亮尚未结束的最新运行节点并保留中文状态所需数据', () => {
+    expect(activeRunNodeID([runEvent(1, 'node.started', 'a')])).toBe('a')
+    expect(activeRunNodeID([runEvent(1, 'node.started', 'a'), runEvent(2, 'node.completed', 'a')])).toBeUndefined()
+    expect(activeRunNodeID([runEvent(1, 'node.started', 'a'), runEvent(2, 'run.failed')])).toBeUndefined()
+    const nodes = [studioNode('a', 'template', { inputs: [], outputs: [] }), studioNode('b', 'end', { inputs: [], outputs: [] })]
+    const decorated = decorateRunNodes(nodes, [runEvent(1, 'node.completed', 'a'), runEvent(2, 'node.started', 'b')])
+    expect(decorated[0].data.debugStatus).toBe('completed')
+    expect(decorated[1].data).toEqual(expect.objectContaining({ debugStatus: 'running', debugCurrent: true }))
+  })
+
   it('打开节点库、添加节点并在右侧配置', async () => {
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     expect(await screen.findByText('演示助手')).toBeInTheDocument()
@@ -190,6 +212,24 @@ describe('StudioPage', () => {
 	await userEvent.click(screen.getByRole('button', { name: '版本历史' }))
 	expect(await screen.findByRole('heading', { name: '版本历史' })).toBeInTheDocument()
 	expect(screen.queryByRole('button', { name: /恢复 v/ })).not.toBeInTheDocument()
+  })
+
+  it('保存失败后保留草稿、阻断提交动作并允许原位重试', async () => {
+    vi.mocked(api.saveWorkflow)
+      .mockRejectedValueOnce(new TypeError('network failed'))
+      .mockResolvedValueOnce({ ...workflow, draftRevision: 2 })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    const retry = await screen.findByRole('button', { name: '重试保存' }, { timeout: 2500 })
+    expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+    expect(screen.getByTestId('node-template')).toBeInTheDocument()
+    await userEvent.click(retry)
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(2), { timeout: 2500 })
+    expect(await screen.findByText('已保存', {}, { timeout: 2500 })).toBeInTheDocument()
+    expect(screen.getByTestId('node-template')).toBeInTheDocument()
   })
 
   it('配置输入只更新草稿，端口就绪并显式应用后才保存一次', async () => {
@@ -566,4 +606,8 @@ function studioNode(id: string, nodeType: string, ports: StudioNode['data']['por
     id, type: 'studio', position: { x: 0, y: 0 },
     data: { nodeType, typeVersion: '2', config: {}, ports, issues: [] },
   }
+}
+
+function runEvent(sequence: number, type: RunEvent['type'], nodeId?: string): RunEvent {
+  return { sequence, type, runId: 'r1', ...(nodeId ? { nodeId } : {}), activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [], timestamp: '2026-08-27T00:00:00Z' }
 }

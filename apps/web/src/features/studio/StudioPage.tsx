@@ -55,6 +55,8 @@ export function StudioPage() {
   const [events, setEvents] = useState<RunEvent[]>([])
   const [runError, setRunError] = useState('')
   const [running, setRunning] = useState(false)
+	const [runCancelled, setRunCancelled] = useState(false)
+	const [connectionStatus, setConnectionStatus] = useState<{ message: string; clientX: number; clientY: number }>()
 	const [draftEditSerial, setDraftEditSerial] = useState(0)
 	const [versionLocked, setVersionLocked] = useState(false)
 	const [versionError, setVersionError] = useState('')
@@ -105,6 +107,7 @@ export function StudioPage() {
   const selectedID = workbench.mode.kind === 'config' ? workbench.mode.nodeId : undefined
   const selectedNode = nodes.find((node) => node.id === selectedID)
   const archived = Boolean(workflow?.archivedAt)
+  const saveBlocked = saveState === 'error' || saveState === 'conflict'
   const resolveNodePorts = useCallback((type: string, version: string, config: Record<string, unknown>, signal: AbortSignal) => api.resolveNodeType(type, version, config, signal), [])
   const configDraft = useNodeConfigDraft({ node: selectedNode, edges, resolve: resolveNodePorts })
 
@@ -133,6 +136,7 @@ export function StudioPage() {
   const isValidConnection = (connection: Connection | StudioEdge) => validateConnection(connection, nodes, edges)
   const handleConnect = (connection: Connection) => {
     if (archived || !isValidConnection(connection)) return
+    setConnectionStatus(undefined)
     setEdges((current) => {
       const next = addEdge({ ...connection, id: createID('edge'), data: {} }, current)
       commit(nodes, next)
@@ -190,11 +194,15 @@ export function StudioPage() {
     runController.current = controller
     setEvents([])
     setRunError('')
+    setRunCancelled(false)
     setRunning(true)
     try {
       await saveQueue.current?.flush()
       const response = await api.runDraft(workflow.id, { draftRevision: saveQueue.current?.getRevision() ?? workflow.draftRevision, input }, controller.signal)
-      await readNDJSON(response, (event) => setEvents((current) => [...current, event]), controller.signal)
+      await readNDJSON(response, (event) => {
+        setEvents((current) => [...current, event])
+        if (event.type === 'run.cancelled') setRunCancelled(true)
+      }, controller.signal)
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) setRunError(publicMessage(error))
     } finally {
@@ -203,6 +211,11 @@ export function StudioPage() {
         setRunning(false)
       }
     }
+  }
+
+  const cancelRun = () => {
+    setRunCancelled(true)
+    runController.current?.abort()
   }
 
   const publish = async () => {
@@ -312,6 +325,7 @@ export function StudioPage() {
 		setEdges(flow.edges)
 		setEvents([])
 		setRunError('')
+		setRunCancelled(false)
 		setRunning(false)
 		setFitRequest((value) => value + 1)
 	}
@@ -380,6 +394,10 @@ export function StudioPage() {
     requestIntent({ kind: 'open-library' })
   }
 
+  const retrySave = () => {
+    if (saveState === 'error') commit(nodes, edges)
+  }
+
   const continuePendingIntent = (choice: 'apply' | 'discard') => {
     if (choice === 'apply') {
       if (!configDraft.normalized || !configDraft.preview || configDraft.status !== 'ready') return
@@ -413,7 +431,7 @@ export function StudioPage() {
           runsHref={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}
           actionError={exportError || versionError || (!agentSettingsOpen && agentSettingsError) || ''}
           testLabel="测试运行"
-          testDisabled={archived || versionLocked}
+          testDisabled={archived || versionLocked || saveBlocked}
           testButtonRef={testButtonRef}
           versionButtonRef={versionButtonRef}
           onTest={() => { rememberTrigger(testButtonRef.current); requestIntent({ kind: 'test' }) }}
@@ -421,6 +439,8 @@ export function StudioPage() {
           onAgentPresentation={() => requestIntent({ kind: 'agent-presentation' })}
           onVersionHistory={() => { rememberTrigger(versionButtonRef.current); requestIntent({ kind: 'version-history' }) }}
           onExport={() => requestIntent({ kind: 'export' })}
+          onRetrySave={retrySave}
+          onRefreshConflict={() => window.location.reload()}
         />}
         quickTools={<StudioQuickTools
           disabled={archived || versionLocked}
@@ -432,12 +452,21 @@ export function StudioPage() {
           ref={canvasRef}
           readOnly={archived || versionLocked}
           fitRequest={fitRequest}
-          nodes={nodes}
+          nodes={decorateRunNodes(nodes, events)}
           edges={edges}
           onNodesChange={handleNodesChange}
           onEdgesChange={handleEdgesChange}
           onConnect={handleConnect}
           isValidConnection={isValidConnection}
+          currentNodeID={activeRunNodeID(events)}
+          onInvalidConnection={({ connection, clientX, clientY }) => {
+            const message = connectionIssue(connection, nodes, edges)
+            if (message) setConnectionStatus({
+              message,
+              clientX: Math.max(8, Math.min(clientX, window.innerWidth - 300)),
+              clientY: Math.max(8, Math.min(clientY, window.innerHeight - 100)),
+            })
+          }}
           onNodeClick={(node, trigger) => {
             rememberTrigger(trigger)
             if (!archived && !versionLocked) requestIntent({ kind: 'config', nodeId: node.id })
@@ -446,10 +475,11 @@ export function StudioPage() {
         nodeLibrary={libraryOpen ? <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} /> : undefined}
         workbench={workbench.mode.kind !== 'closed' ? <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={closeTopLayer}>
           {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={(config, ports) => { applySelectedConfig(config, ports) }} onApplyAndTest={applyAndOpenTest} />}
-          {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} error={runError} onRun={runDraft} onCancel={() => runController.current?.abort()} /></>}
+          {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} cancelled={runCancelled} error={runError} onRun={runDraft} onCancel={cancelRun} /></>}
           {workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
         </WorkbenchPanel> : undefined}
       />
+      {connectionStatus && <output className="studio-canvas-status" aria-live="polite" style={{ left: connectionStatus.clientX, top: connectionStatus.clientY }}>{connectionStatus.message}</output>}
       {archived && <div className="studio-archive-banner" role="status">已归档，只读模式。恢复后才能保存、测试或发布。</div>}
       <ConfirmDialog
         open={Boolean(workbench.pendingIntent)}
@@ -502,14 +532,20 @@ function defaultValue(schema: JSONSchema): unknown {
 }
 
 export function validateConnection(connection: Connection | StudioEdge, nodes: StudioNode[], edges: StudioEdge[]) {
-  if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle || connection.source === connection.target) return false
+  return connectionIssue(connection, nodes, edges) === undefined
+}
+
+export function connectionIssue(connection: Connection | StudioEdge, nodes: StudioNode[], edges: StudioEdge[]) {
+  if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle) return '请连接有效的输入和输出端口'
+  if (connection.source === connection.target) return '节点不能连接到自身'
   const source = nodes.find((node) => node.id === connection.source)
   const target = nodes.find((node) => node.id === connection.target)
   const output = source?.data.ports.outputs.find((port) => port.key === connection.sourceHandle)
   const input = target?.data.ports.inputs.find((port) => port.key === connection.targetHandle)
-  if (!output || !input || (output.type !== 'any' && input.type !== 'any' && output.type !== input.type)) return false
-  if (input.cardinality === 'one' && edges.some((edge) => edge.id !== ('id' in connection ? connection.id : undefined) && edge.target === connection.target && edge.targetHandle === connection.targetHandle)) return false
-  return true
+  if (!output || !input) return '端口不存在或已变化'
+  if (output.type !== 'any' && input.type !== 'any' && output.type !== input.type) return `端口类型不兼容：${output.type} 不能连接到 ${input.type}`
+  if (input.cardinality === 'one' && edges.some((edge) => edge.id !== ('id' in connection ? connection.id : undefined) && edge.target === connection.target && edge.targetHandle === connection.targetHandle)) return '目标端口只允许一条输入连线'
+  return undefined
 }
 
 export function markInvalidEdges(nodes: StudioNode[], edges: StudioEdge[]) {
@@ -517,6 +553,31 @@ export function markInvalidEdges(nodes: StudioNode[], edges: StudioEdge[]) {
     const invalid = !validateConnection(edge, nodes, edges)
     return { ...edge, data: { ...edge.data, invalid }, style: invalid ? { stroke: '#d92d20', strokeDasharray: '5 4' } : undefined }
   })
+}
+
+export function activeRunNodeID(events: RunEvent[]) {
+  const settled = new Set<string>()
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled') return undefined
+    if (!event.nodeId) continue
+    if (event.type === 'node.completed' || event.type === 'node.failed' || event.type === 'node.skipped' || event.type === 'node.cancelled') settled.add(event.nodeId)
+    else if (event.type === 'node.started' && !settled.has(event.nodeId)) return event.nodeId
+  }
+  return undefined
+}
+
+export function decorateRunNodes(nodes: StudioNode[], events: RunEvent[]) {
+  const statuses = new Map<string, string>()
+  for (const event of events) {
+    if (!event.nodeId || !event.type.startsWith('node.')) continue
+    statuses.set(event.nodeId, event.type === 'node.started' ? 'running' : event.type.slice('node.'.length))
+  }
+  const currentNodeID = activeRunNodeID(events)
+  return nodes.map((node) => ({
+    ...node,
+    data: { ...node.data, debugStatus: statuses.get(node.id), debugCurrent: node.id === currentNodeID },
+  }))
 }
 
 function deriveStartSchema(nodes: StudioNode[]): JSONSchema {

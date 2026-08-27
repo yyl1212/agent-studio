@@ -13,6 +13,8 @@
 .node-config-panel > header { display: grid; gap: 3px; padding-right: 42px; }
 .node-config-panel > header h2 { margin: 0; }
 .node-config-panel > header small { color: var(--as-text-muted); }
+.node-config-panel .schema-form-actions { position: sticky; z-index: 2; bottom: -22px; display: flex; flex-wrap: wrap; gap: 8px; margin: 0 -22px -22px; padding: 14px 22px; border-top: 1px solid var(--as-border); background: color-mix(in srgb, var(--as-surface) 96%, transparent); }
+.node-config-panel .form-error > p { margin: 0 0 8px; }
 .port-preview { margin-top: 18px; padding: 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface-muted); }
 .port-preview h3 { margin: 0 0 8px; font-size: 13px; }
 .port-preview p { margin: 4px 0; font-size: 13px; }
@@ -21,6 +23,7 @@
 .studio-title > a { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); }
 .studio-title div { display: grid; gap: 2px; }
 .studio-title small { color: var(--as-text-muted); }
+.studio-save-recovery { padding: 0; border: 0; color: var(--as-primary); background: transparent; text-align: left; font-size: 12px; font-weight: 750; }
 .studio-more-actions, .studio-shortcut-help { position: relative; }
 .studio-more-actions summary, .studio-shortcut-help summary { padding: 8px 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface); cursor: pointer; font-size: 13px; font-weight: 700; list-style: none; }
 .studio-more-actions summary::-webkit-details-marker, .studio-shortcut-help summary::-webkit-details-marker { display: none; }
@@ -33,6 +36,7 @@
 .studio-shortcut-help p { margin: 4px; color: var(--as-text-muted); font-size: 12px; white-space: nowrap; }
 .studio-shortcut-help kbd { color: var(--as-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .studio-archive-banner { position: absolute; z-index: 9; top: 90px; left: 50%; max-width: calc(100% - 32px); padding: 9px 14px; transform: translateX(-50%); border: 1px solid #fedf89; border-radius: var(--as-radius-sm); color: #7a2e0e; background: #fffaeb; font-size: 13px; font-weight: 700; }
+.studio-canvas-status { position: fixed; z-index: 30; max-width: min(280px, calc(100vw - 16px)); padding: 8px 11px; transform: translate(12px, 12px); border: 1px solid color-mix(in srgb, var(--as-danger) 28%, var(--as-border)); border-radius: var(--as-radius-sm); color: var(--as-danger); background: var(--as-surface); box-shadow: var(--as-shadow-panel); font-size: 13px; font-weight: 650; }
 .agent-settings-dialog { width: min(900px, calc(100vw - 32px)); max-width: 900px; max-height: calc(100vh - 32px); padding: 0; overflow: auto; }
 .agent-settings-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--as-border); }
 .agent-settings-heading h2 { margin: 3px 0 0; font-size: 22px; }

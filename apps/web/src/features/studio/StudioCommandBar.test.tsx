@@ -44,3 +44,17 @@ it('持续呈现页面动作错误', () => {
   renderCommandBar({ actionError: '导出失败，请稍后重试' })
   expect(screen.getByRole('alert')).toHaveTextContent('导出失败，请稍后重试')
 })
+
+it('保存失败提供重试，冲突只提供刷新并阻断提交动作', async () => {
+  const onRetrySave = vi.fn()
+  const view = renderCommandBar({ saveState: 'error', onRetrySave })
+  await userEvent.click(screen.getByRole('button', { name: '重试保存' }))
+  expect(onRetrySave).toHaveBeenCalledOnce()
+
+  const onRefreshConflict = vi.fn()
+  view.rerender(<MemoryRouter><StudioCommandBar {...commandProps} saveState="conflict" onRefreshConflict={onRefreshConflict} /></MemoryRouter>)
+  expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: '刷新工作流' }))
+  expect(onRefreshConflict).toHaveBeenCalledOnce()
+})

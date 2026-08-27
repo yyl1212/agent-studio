@@ -25,17 +25,20 @@ export interface StudioCommandBarProps {
 }
 
 export function StudioCommandBar(props: StudioCommandBarProps) {
+  const saveBlocked = props.saveState === 'error' || props.saveState === 'conflict'
   return <header className="studio-command-bar">
     <div className="studio-title">
       <Link to="/workflows" aria-label="返回工作流列表">←</Link>
       <div>
         <strong>{props.workflowName}</strong>
         <small>{saveLabel(props.saveState)}</small>
+        {props.saveState === 'error' && props.onRetrySave && <button className="studio-save-recovery" type="button" onClick={props.onRetrySave}>重试保存</button>}
+        {props.saveState === 'conflict' && props.onRefreshConflict && <button className="studio-save-recovery" type="button" onClick={props.onRefreshConflict}>刷新工作流</button>}
       </div>
     </div>
     <div className="studio-primary-actions">
-      <Button ref={props.testButtonRef} onClick={props.onTest} disabled={props.testDisabled}>{props.testLabel}</Button>
-      <Button variant="primary" onClick={props.onPublish} disabled={props.archived || props.testDisabled}>发布</Button>
+      <Button ref={props.testButtonRef} onClick={props.onTest} disabled={props.testDisabled || saveBlocked}>{props.testLabel}</Button>
+      <Button variant="primary" onClick={props.onPublish} disabled={props.archived || props.testDisabled || saveBlocked}>发布</Button>
       <details className="studio-more-actions">
         <summary>更多操作</summary>
         <div className="studio-more-menu">

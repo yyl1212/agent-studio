@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { createRef, useEffect, type MouseEvent as ReactMouseEvent } from 'react'
 import { beforeEach, expect, it, vi } from 'vitest'
 
-import { WorkflowCanvas, type WorkflowCanvasHandle } from './WorkflowCanvas'
+import { WorkflowCanvas, type InvalidConnectionAttempt, type WorkflowCanvasHandle } from './WorkflowCanvas'
 import type { StudioNode } from './types'
 
 const fitView = vi.hoisted(() => vi.fn())
@@ -18,12 +18,18 @@ vi.mock('@xyflow/react', async () => {
     ReactFlow: (props: {
       onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void
       onNodeClick?: (event: ReactMouseEvent<HTMLDivElement>, node: StudioNode) => void
+      onConnectEnd?: (event: MouseEvent, state: unknown) => void
       nodes: StudioNode[]
       children: React.ReactNode
     }) => {
       useEffect(() => { props.onInit?.({ fitView, screenToFlowPosition }) }, [props.onInit])
       return <div>
-        {props.nodes.map((flowNode) => <div className="react-flow__node" data-testid={`flow-node-${flowNode.id}`} key={flowNode.id} onClick={(event) => props.onNodeClick?.(event, flowNode)}>{flowNode.id}</div>)}
+        {props.nodes.map((flowNode) => <div className="react-flow__node" data-selected={String(Boolean(flowNode.selected))} data-testid={`flow-node-${flowNode.id}`} key={flowNode.id} onClick={(event) => props.onNodeClick?.(event, flowNode)}>{flowNode.id}</div>)}
+        <button type="button" onClick={(event) => props.onConnectEnd?.(event.nativeEvent, {
+          isValid: false,
+          fromHandle: { type: 'source', nodeId: 'source', id: 'text' },
+          toHandle: { type: 'target', nodeId: 'target', id: 'value' },
+        })}>结束无效连线</button>
         {props.children}
       </div>
     },
@@ -64,6 +70,24 @@ it('节点或工作台状态变化时不会重复重置画布视口', () => {
   expect(fitView).toHaveBeenCalledTimes(1)
   rerender(<WorkflowCanvas {...baseProps} nodes={[node('a'), node('b')]} />)
   expect(fitView).toHaveBeenCalledTimes(1)
+})
+
+it('只把当前运行节点标记为选中', () => {
+  render(<WorkflowCanvas {...baseProps} nodes={[node('a'), node('b')]} currentNodeID="b" />)
+  expect(screen.getByTestId('flow-node-a')).toHaveAttribute('data-selected', 'false')
+  expect(screen.getByTestId('flow-node-b')).toHaveAttribute('data-selected', 'true')
+})
+
+it('在连线结束时上报无效候选和指针位置', () => {
+  const onInvalidConnection = vi.fn<(attempt: InvalidConnectionAttempt) => void>()
+  render(<WorkflowCanvas {...baseProps} nodes={[node('a')]} onInvalidConnection={onInvalidConnection} />)
+
+  fireEvent.click(screen.getByRole('button', { name: '结束无效连线' }), { clientX: 120, clientY: 80 })
+  expect(onInvalidConnection).toHaveBeenCalledWith({
+    connection: { source: 'source', sourceHandle: 'text', target: 'target', targetHandle: 'value' },
+    clientX: 120,
+    clientY: 80,
+  })
 })
 
 it('fitRequest 推进时主动重新适配服务端替换后的画布', () => {

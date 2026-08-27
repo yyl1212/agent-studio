@@ -11,7 +11,7 @@ import {
   type Viewport,
   type XYPosition,
 } from '@xyflow/react'
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, type ComponentProps } from 'react'
 
 import { GenericNode } from './GenericNode'
 import type { StudioEdge, StudioNode } from './types'
@@ -30,6 +30,13 @@ interface WorkflowCanvasProps {
 	fitRequest?: number
   currentNodeID?: string
   onViewportChange?: (viewport: Viewport) => void
+  onInvalidConnection?: (attempt: InvalidConnectionAttempt) => void
+}
+
+export interface InvalidConnectionAttempt {
+  connection: Connection
+  clientX: number
+  clientY: number
 }
 
 export interface WorkflowCanvasHandle {
@@ -65,6 +72,17 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
 	const canvasNodes = props.currentNodeID === undefined
 		? props.nodes
 		: props.nodes.map((node) => ({ ...node, selected: props.currentNodeID === node.id }))
+  const onConnectEnd: NonNullable<ComponentProps<typeof ReactFlow>['onConnectEnd']> = (event, state) => {
+    if (state.isValid || !state.fromHandle || !state.toHandle) return
+    const source = state.fromHandle.type === 'source' ? state.fromHandle : state.toHandle
+    const target = state.fromHandle.type === 'target' ? state.fromHandle : state.toHandle
+    const point = 'changedTouches' in event ? event.changedTouches[0] : event
+    props.onInvalidConnection?.({
+      connection: { source: source.nodeId, sourceHandle: source.id ?? null, target: target.nodeId, targetHandle: target.id ?? null },
+      clientX: point?.clientX ?? 0,
+      clientY: point?.clientY ?? 0,
+    })
+  }
   return (
     <div ref={containerRef} className="workflow-canvas" aria-label="工作流画布">
       <ReactFlowProvider>
@@ -75,6 +93,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
           onNodesChange={(changes) => { if (!props.readOnly) props.onNodesChange(changes) }}
           onEdgesChange={(changes) => { if (!props.readOnly) props.onEdgesChange(changes) }}
           onConnect={(connection) => { if (!props.readOnly) props.onConnect(connection) }}
+          onConnectEnd={onConnectEnd}
           isValidConnection={props.isValidConnection}
           onNodeClick={(event, node) => {
             if ((event.target as HTMLElement).closest('.react-flow__handle')) return
