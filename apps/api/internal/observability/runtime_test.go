@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -41,6 +44,12 @@ func clearExporterEnv(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_CERTIFICATE",
 		"OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE",
 		"OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE",
+		"OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
+		"OTEL_EXPORTER_OTLP_CLIENT_KEY",
+		"OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE",
+		"OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY",
+		"OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE",
+		"OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY",
 		"OTEL_EXPORTER_OTLP_COMPRESSION",
 		"OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
 		"OTEL_EXPORTER_OTLP_METRICS_COMPRESSION",
@@ -234,6 +243,88 @@ func TestNewRejectsInvalidOptionsWithoutDisclosingValues(t *testing.T) {
 		if strings.Contains(err.Error(), "secret-") || strings.Contains(err.Error(), options.Endpoint) {
 			t.Fatalf("case %d error disclosed configuration: %v", index, err)
 		}
+	}
+}
+
+func TestNewSanitizesOTelInternalExporterConfigurationLogs(t *testing.T) {
+	clearExporterEnv(t)
+	const sentinel = "sentinel-header-secret"
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", sentinel)
+	var logOutput strings.Builder
+	runtime, err := New(context.Background(), Options{
+		Endpoint:             "http://127.0.0.1:4318",
+		ServiceName:          "agent-studio-runtime-test",
+		ExportTimeout:        time.Second,
+		Compression:          "none",
+		MetricExportInterval: time.Hour,
+	}, slog.New(slog.NewJSONHandler(&logOutput, nil)))
+	if runtime != nil {
+		_ = runtime.Shutdown(context.Background())
+	}
+	if err != nil && strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("initialization error leaked exporter configuration: %v", err)
+	}
+	if strings.Contains(logOutput.String(), sentinel) {
+		t.Fatalf("internal logger leaked exporter configuration: %s", logOutput.String())
+	}
+}
+
+func TestSafeOTelLoggerDropsMessagesErrorsAndValues(t *testing.T) {
+	const sentinel = "sentinel-internal-logger-secret"
+	var logOutput strings.Builder
+	logger := newSafeOTelLogger(newRateLimitedErrorHandler(slog.New(slog.NewJSONHandler(&logOutput, nil))))
+	logger.WithName(sentinel).WithValues("token", sentinel).Info(sentinel, "endpoint", sentinel)
+	logger.Error(errors.New(sentinel), sentinel, "certificate", sentinel)
+	if strings.Contains(logOutput.String(), sentinel) {
+		t.Fatalf("safe internal logger leaked values: %s", logOutput.String())
+	}
+}
+
+func TestNewDoesNotLeakStandardExporterEnvironmentToProcessOutput(t *testing.T) {
+	if os.Getenv("AGENT_STUDIO_OTEL_LOG_HELPER") == "1" {
+		_, _ = New(context.Background(), Options{
+			Endpoint:             "http://127.0.0.1:4318",
+			ServiceName:          "agent-studio-runtime-test",
+			ExportTimeout:        time.Millisecond,
+			Compression:          "none",
+			MetricExportInterval: time.Hour,
+		}, slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+		return
+	}
+	clearExporterEnv(t)
+
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{key: "OTEL_EXPORTER_OTLP_HEADERS", value: "sentinel-common-header"},
+		{key: "OTEL_EXPORTER_OTLP_TRACES_HEADERS", value: "sentinel-trace-header"},
+		{key: "OTEL_EXPORTER_OTLP_METRICS_HEADERS", value: "sentinel-metric-header"},
+		{key: "OTEL_EXPORTER_OTLP_CERTIFICATE", value: "/sentinel-common-certificate"},
+		{key: "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE", value: "/sentinel-trace-certificate"},
+		{key: "OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE", value: "/sentinel-metric-certificate"},
+		{key: "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", value: "/sentinel-client-certificate"},
+		{key: "OTEL_EXPORTER_OTLP_CLIENT_KEY", value: "/sentinel-client-key"},
+		{key: "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE", value: "/sentinel-trace-client-certificate"},
+		{key: "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY", value: "/sentinel-trace-client-key"},
+		{key: "OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE", value: "/sentinel-metric-client-certificate"},
+		{key: "OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY", value: "/sentinel-metric-client-key"},
+	}
+	for _, test := range tests {
+		t.Run(test.key, func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=^TestNewDoesNotLeakStandardExporterEnvironmentToProcessOutput$")
+			command.Env = append(os.Environ(),
+				"AGENT_STUDIO_OTEL_LOG_HELPER=1",
+				test.key+"="+test.value,
+			)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("helper failed: %v\n%s", err, output)
+			}
+			if bytes.Contains(output, []byte(test.value)) {
+				t.Fatalf("process output leaked %s: %s", test.key, output)
+			}
+		})
 	}
 }
 

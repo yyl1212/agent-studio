@@ -630,6 +630,33 @@ func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 	}
 }
 
+func TestRunServiceLogsOnlyAllowlistedNodeErrorFields(t *testing.T) {
+	store := newFakeStore(t)
+	const runID = "run-untrusted-error-fields"
+	if err := store.CreateRun(context.Background(), domain.Run{ID: runID, Status: domain.RunRunning}); err != nil {
+		t.Fatal(err)
+	}
+	const sentinel = "authorization_bearer_secret123"
+	nodeErr := agentnode.NewError(agentnode.ErrorKind(sentinel), sentinel, errors.New("private"), nil)
+	runErr := &engine.NodeExecutionError{NodeID: "extension-1", NodeType: "third-party", Err: nodeErr}
+	var logs bytes.Buffer
+	service := NewRunService(store, newRealCompiler(t), failingRunEngine{err: runErr}, WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	_, err := service.Execute(context.Background(), &PreparedRun{RunID: runID, Plan: &engine.Plan{}}, &recordingObserver{})
+	if !errors.Is(err, nodeErr) {
+		t.Fatalf("execute error = %v", err)
+	}
+	if strings.Contains(logs.String(), sentinel) {
+		t.Fatalf("structured log leaked untrusted error fields: %s", logs.String())
+	}
+	var record map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["error_kind"] != "internal" || record["error_code"] != "execution_failed" {
+		t.Fatalf("sanitized fields = %v/%v, record=%v", record["error_kind"], record["error_code"], record)
+	}
+}
+
 func TestRunServiceBindsFinalPublicErrorToPreparedPlanIdentity(t *testing.T) {
 	tests := []struct {
 		name        string

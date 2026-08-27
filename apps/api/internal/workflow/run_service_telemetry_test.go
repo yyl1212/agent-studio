@@ -123,6 +123,21 @@ func TestRunTelemetrySanitizesNodeFailureAndBalancesActive(t *testing.T) {
 	assertRunMetricSet(t, metrics, "published", "failed")
 }
 
+func TestRunTelemetryFinishIsIdempotent(t *testing.T) {
+	telemetry := newRunTelemetryTestFixture(t)
+	runTelemetry := newRunTelemetry(telemetry.providers)
+	_, finish := runTelemetry.start(context.Background(), &PreparedRun{Mode: domain.RunModeTest})
+	finish(domain.RunCompleted, "")
+	finish(domain.RunFailed, observability.ErrorCategoryInternal)
+
+	metrics := collectRunMetrics(t, telemetry.metricReader)
+	assertRunMetricSet(t, metrics, "test", "completed")
+	spans := telemetry.spanExporter.GetSpans()
+	if len(spans) != 1 || spans[0].Status.Code != codes.Unset {
+		t.Fatalf("spans=%#v, want one successfully completed span", spans)
+	}
+}
+
 func collectRunMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
 	t.Helper()
 	var collected metricdata.ResourceMetrics

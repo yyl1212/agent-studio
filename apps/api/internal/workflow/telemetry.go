@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
@@ -73,18 +74,21 @@ func (telemetry *runTelemetry) start(ctx context.Context, prepared *PreparedRun)
 	modeAttribute := attribute.String("mode", mode)
 	telemetry.active.Add(ctx, 1, metric.WithAttributes(modeAttribute))
 	started := time.Now()
+	var finishOnce sync.Once
 	return ctx, func(status domain.RunStatus, category observability.ErrorCategory) {
-		statusValue := normalizedRunStatus(status)
-		completedAttributes := []attribute.KeyValue{modeAttribute, attribute.String("status", statusValue)}
-		telemetry.active.Add(ctx, -1, metric.WithAttributes(modeAttribute))
-		telemetry.runs.Add(ctx, 1, metric.WithAttributes(completedAttributes...))
-		telemetry.duration.Record(ctx, time.Since(started).Seconds(), metric.WithAttributes(completedAttributes...))
-		span.SetAttributes(attribute.String("agent_studio.run.status", statusValue))
-		if category != "" {
-			span.SetAttributes(attribute.String("error.category", string(category)))
-			span.SetStatus(codes.Error, string(category))
-		}
-		span.End()
+		finishOnce.Do(func() {
+			statusValue := normalizedRunStatus(status)
+			completedAttributes := []attribute.KeyValue{modeAttribute, attribute.String("status", statusValue)}
+			telemetry.active.Add(ctx, -1, metric.WithAttributes(modeAttribute))
+			telemetry.runs.Add(ctx, 1, metric.WithAttributes(completedAttributes...))
+			telemetry.duration.Record(ctx, time.Since(started).Seconds(), metric.WithAttributes(completedAttributes...))
+			span.SetAttributes(attribute.String("agent_studio.run.status", statusValue))
+			if category != "" {
+				span.SetAttributes(attribute.String("error.category", string(category)))
+				span.SetStatus(codes.Error, string(category))
+			}
+			span.End()
+		})
 	}
 }
 

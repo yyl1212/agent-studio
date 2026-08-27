@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -120,6 +121,11 @@ func New(ctx context.Context, options Options, logger *slog.Logger) (*Runtime, e
 	if options.ServiceVersion != "" {
 		resourceAttributes = append(resourceAttributes, semconv.ServiceVersion(options.ServiceVersion))
 	}
+	sdkErrorHandler := newRateLimitedErrorHandler(logger)
+	// Resource and exporter constructors may parse environment variables and
+	// log their raw values through OTel's process-wide internal logger. Install
+	// the value-dropping sink before entering SDK construction.
+	otel.SetLogger(newSafeOTelLogger(sdkErrorHandler))
 	resourceValue, err := resource.New(ctx,
 		resource.WithTelemetrySDK(),
 		resource.WithAttributes(resourceAttributes...),
@@ -127,7 +133,6 @@ func New(ctx context.Context, options Options, logger *slog.Logger) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("%w: resource", ErrInitialization)
 	}
-
 	traceExporter, err := otlptracehttp.New(ctx, traceExporterOptions(options, traceEndpoint)...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: trace exporter", ErrInitialization)
@@ -155,7 +160,7 @@ func New(ctx context.Context, options Options, logger *slog.Logger) (*Runtime, e
 		sdkmetric.WithReader(reader),
 	)
 	previousErrorHandler := otel.GetErrorHandler()
-	otel.SetErrorHandler(newRateLimitedErrorHandler(logger))
+	otel.SetErrorHandler(sdkErrorHandler)
 	return &Runtime{
 		providers: Providers{
 			TracerProvider:    tracerProvider,
@@ -293,6 +298,30 @@ type rateLimitedErrorHandler struct {
 func newRateLimitedErrorHandler(logger *slog.Logger) *rateLimitedErrorHandler {
 	return &rateLimitedErrorHandler{logger: logger, now: time.Now}
 }
+
+func newSafeOTelLogger(handler *rateLimitedErrorHandler) logr.Logger {
+	return logr.New(&safeOTelLogSink{handler: handler})
+}
+
+type safeOTelLogSink struct {
+	handler *rateLimitedErrorHandler
+}
+
+func (*safeOTelLogSink) Init(logr.RuntimeInfo) {}
+
+func (*safeOTelLogSink) Enabled(int) bool { return true }
+
+func (sink *safeOTelLogSink) Info(int, string, ...any) {
+	sink.handler.Handle(nil)
+}
+
+func (sink *safeOTelLogSink) Error(error, string, ...any) {
+	sink.handler.Handle(nil)
+}
+
+func (sink *safeOTelLogSink) WithValues(...any) logr.LogSink { return sink }
+
+func (sink *safeOTelLogSink) WithName(string) logr.LogSink { return sink }
 
 func (handler *rateLimitedErrorHandler) Handle(error) {
 	handler.mutex.Lock()

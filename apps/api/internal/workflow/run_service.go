@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -318,7 +317,7 @@ func (service *RunService) logRunError(ctx context.Context, prepared *PreparedRu
 	if !errors.As(err, &executionErr) {
 		return
 	}
-	kind := agentnode.KindOf(executionErr.Err)
+	kind := safeErrorKind(agentnode.KindOf(executionErr.Err))
 	code := "execution_failed"
 	var nodeErr *agentnode.NodeError
 	if errors.As(executionErr.Err, &nodeErr) {
@@ -335,15 +334,25 @@ func (service *RunService) logRunError(ctx context.Context, prepared *PreparedRu
 }
 
 func safeErrorCode(code string) string {
-	if code == "" || len(code) > 64 {
+	switch code {
+	case "invalid_config", "invalid_input", "missing_input", "invalid_query", "invalid_text",
+		"invalid_body", "webhook_rejected", "missing_webhook_configuration", "upstream_failed",
+		"execution_failed", "run_canceled", "upstream_timeout", "upstream_unavailable",
+		"model_structured_output_rejected", "model_provider_auth_failed", "model_refused", "model_output_invalid":
+		return code
+	default:
 		return "execution_failed"
 	}
-	for _, current := range code {
-		if (current < 'a' || current > 'z') && (current < '0' || current > '9') && current != '_' {
-			return "execution_failed"
-		}
+}
+
+func safeErrorKind(kind agentnode.ErrorKind) agentnode.ErrorKind {
+	switch kind {
+	case agentnode.ErrorKindConfig, agentnode.ErrorKindInput, agentnode.ErrorKindTemporary,
+		agentnode.ErrorKindCanceled, agentnode.ErrorKindInternal:
+		return kind
+	default:
+		return agentnode.ErrorKindInternal
 	}
-	return strings.ToLower(code)
 }
 
 func compileRunGraph(compiler Compiler, raw json.RawMessage) (domain.Graph, *engine.Plan, error) {
