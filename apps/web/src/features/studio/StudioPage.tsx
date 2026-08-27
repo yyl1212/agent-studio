@@ -412,7 +412,8 @@ function createID(prefix: string) {
 }
 
 export function isPersistentNodeChange(change: NodeChange<StudioNode>) {
-	return change.type === 'position' || change.type === 'add' || change.type === 'remove' || change.type === 'replace'
+	if (change.type === 'position') return change.dragging === false
+	return change.type === 'add' || change.type === 'remove' || change.type === 'replace'
 }
 
 export function isPersistentEdgeChange(change: EdgeChange<StudioEdge>) {

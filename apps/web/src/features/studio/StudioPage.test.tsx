@@ -123,6 +123,7 @@ describe('StudioPage', () => {
   it('只把图结构变化写入草稿，不持久化 React Flow 尺寸和选中态', () => {
 	 expect(isPersistentNodeChange({ type: 'dimensions', id: 'a', dimensions: { width: 100, height: 60 } })).toBe(false)
 	 expect(isPersistentNodeChange({ type: 'select', id: 'a', selected: true })).toBe(false)
+	 expect(isPersistentNodeChange({ type: 'position', id: 'a', position: { x: 8, y: 9 }, dragging: true })).toBe(false)
 	 expect(isPersistentNodeChange({ type: 'position', id: 'a', position: { x: 10, y: 20 }, dragging: false })).toBe(true)
 	 expect(isPersistentEdgeChange({ type: 'select', id: 'edge', selected: true })).toBe(false)
 	 expect(isPersistentEdgeChange({ type: 'remove', id: 'edge' })).toBe(true)
