@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { StrictMode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -299,13 +300,15 @@ describe('StudioPage', () => {
 
   it('点击添加只保存一次、立即配置并记录最近使用', async () => {
     window.localStorage.setItem('agent-studio.node-library.recent.v1', JSON.stringify(['removed@1']))
-    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    render(<StrictMode><MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter></StrictMode>)
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
 
     expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
+    expect(setItem).toHaveBeenCalledOnce()
     expect(JSON.parse(window.localStorage.getItem('agent-studio.node-library.recent.v1') ?? '[]')).toEqual(['template@1'])
 
     await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
@@ -324,7 +327,8 @@ describe('StudioPage', () => {
   })
 
   it('拖放通过统一入口创建一次并立即打开配置', async () => {
-    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    render(<StrictMode><MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter></StrictMode>)
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     const transfer = nodeTransfer('template@1')
@@ -334,7 +338,21 @@ describe('StudioPage', () => {
 
     expect(await screen.findByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
+    expect(setItem).toHaveBeenCalledOnce()
     expect(JSON.parse(window.localStorage.getItem('agent-studio.node-library.recent.v1') ?? '[]')).toEqual(['template@1'])
+  })
+
+  it('最近记录写入失败时仍创建、保存并打开配置', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+
+    expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
   })
 
   it('拖放失效定义时保持节点库并提示，不创建也不保存', async () => {

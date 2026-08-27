@@ -51,6 +51,7 @@ export function StudioPage() {
   const [recentNodeKeys, setRecentNodeKeys] = useState<string[]>(() =>
     readRecentNodeKeys(),
   )
+  const recentNodeKeysRef = useRef(recentNodeKeys)
   const [nodeLibraryError, setNodeLibraryError] = useState('')
   const [activeDisclosure, setActiveDisclosure] = useState<'commands' | 'shortcuts'>()
   const [publishOpen, setPublishOpen] = useState(false)
@@ -190,12 +191,12 @@ export function StudioPage() {
     const next = [...nodes, node]
     setNodes(next)
     const validDefinitionKeys = new Set(definitions.map(nodeDefinitionKey))
-    setRecentNodeKeys((current) =>
-      rememberRecentNodeKey(
-        current.filter((key) => validDefinitionKeys.has(key)),
-        nodeDefinitionKey(definition),
-      ),
+    const nextRecentNodeKeys = rememberRecentNodeKey(
+      recentNodeKeysRef.current.filter((key) => validDefinitionKeys.has(key)),
+      nodeDefinitionKey(definition),
     )
+    recentNodeKeysRef.current = nextRecentNodeKeys
+    setRecentNodeKeys(nextRecentNodeKeys)
     setNodeLibraryError('')
     setLibraryOpen(false)
     workbench.request({ kind: 'config', nodeId: node.id }, false)

@@ -74,18 +74,12 @@
 .generic-node.debug-skipped .node-debug-status, .generic-node.debug-cancelled .node-debug-status { color: #667085; }
 .generic-node.debug-running .node-debug-status { color: #175cd3; }
 .react-flow__handle { width: 10px; height: 10px; border: 2px solid var(--as-surface); background: var(--as-primary); }
-.studio-drawer { position: absolute; z-index: 12; top: 90px; bottom: 16px; width: min(380px, calc(100% - 32px)); padding: 22px; overflow: auto; border: 1px solid #dce3ee; background: white; box-shadow: 0 20px 60px rgb(23 32 51 / 18%); }
-.studio-drawer.left { left: 16px; border-radius: 16px; }
-.studio-drawer.right { right: 16px; border-radius: 16px; }
-.drawer-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-.drawer-heading h2 { margin: 0; font-size: 21px; }
-.drawer-heading > button { width: 32px; height: 32px; border: 0; border-radius: 8px; background: #f0f3f8; font-size: 22px; }
+.studio-drawer { position: absolute; z-index: 12; top: 90px; bottom: 16px; width: min(380px, calc(100% - 32px)); padding: 22px; overflow: auto; border: 1px solid var(--as-border); background: var(--as-surface); box-shadow: var(--as-shadow-panel); }
+.studio-drawer.left { left: 16px; border-radius: var(--as-radius-md); }
+.studio-drawer.right { right: 16px; border-radius: var(--as-radius-md); }
 .search-field { display: grid; gap: 7px; margin: 20px 0; font-weight: 650; }
-.search-field input { padding: 10px 12px; border: 1px solid #ccd5e3; border-radius: 9px; }
-.studio-drawer section h3 { margin: 24px 0 8px; color: #687387; font-size: 12px; text-transform: uppercase; }
-.library-node { display: grid; width: 100%; gap: 4px; margin: 8px 0; padding: 14px; border: 1px solid #dce3ee; border-radius: 11px; text-align: left; background: #fbfcfe; }
-.library-node small { color: #6d7687; }
-.library-node .package-summary { color: #475467; font-weight: 600; }
+.search-field input { padding: 10px 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface); }
+.studio-drawer section h3 { margin: 24px 0 8px; color: var(--as-text-muted); font-size: 12px; text-transform: uppercase; }
 .node-library-drawer { display: grid; grid-template: auto minmax(0, 1fr) / 76px minmax(0, 1fr); padding: 0; overflow: hidden; border-color: var(--as-border); border-radius: var(--as-radius-md); background: var(--as-surface); box-shadow: var(--as-shadow-panel); }
 .node-library-heading { grid-column: 1 / -1; display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 18px 18px 14px; border-bottom: 1px solid var(--as-border); }
 .node-library-heading h2 { margin: 2px 0 0; font-size: 21px; }
