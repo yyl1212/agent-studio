@@ -7,7 +7,7 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 
 import type { JSONSchema } from '../../components/schema-form/types'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
@@ -21,12 +21,15 @@ import { NodeConfigPanel } from './NodeConfigPanel'
 import { NodeLibraryDrawer } from './NodeLibraryDrawer'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
+import { StudioCommandBar } from './StudioCommandBar'
+import { StudioQuickTools } from './StudioQuickTools'
+import { StudioShell } from './StudioShell'
 import { TestRunPanel } from './TestRunPanel'
 import type { StudioEdge, StudioNode } from './types'
 import { useNodeConfigDraft } from './useNodeConfigDraft'
 import { useStudioWorkbench, type WorkbenchIntent } from './useStudioWorkbench'
 import { WorkbenchPanel } from './WorkbenchPanel'
-import { WorkflowCanvas } from './WorkflowCanvas'
+import { WorkflowCanvas, type WorkflowCanvasHandle } from './WorkflowCanvas'
 import { VersionGovernancePanel } from './VersionGovernancePanel'
 import '@xyflow/react/dist/style.css'
 import './studio.css'
@@ -61,6 +64,10 @@ export function StudioPage() {
   const exportController = useRef<AbortController | undefined>(undefined)
 	const hydrateController = useRef<AbortController | undefined>(undefined)
 	const versionButtonRef = useRef<HTMLButtonElement>(null)
+  const canvasRef = useRef<WorkflowCanvasHandle>(null)
+  const addButtonRef = useRef<HTMLButtonElement>(null)
+  const testButtonRef = useRef<HTMLButtonElement>(null)
+  const lastTriggerRef = useRef<HTMLElement | null>(null)
   const workbench = useStudioWorkbench()
 
   useEffect(() => () => {
@@ -343,6 +350,25 @@ export function StudioPage() {
     else executeIntent(intent)
   }
 
+  const rememberTrigger = (trigger: HTMLElement | null) => {
+    lastTriggerRef.current = trigger
+  }
+
+  const closeTopLayer = () => {
+    if (libraryOpen) {
+      setLibraryOpen(false)
+      return
+    }
+    if (workbench.mode.kind !== 'closed' && !(workbench.mode.kind === 'versions' && versionLocked)) {
+      requestIntent({ kind: 'close' })
+    }
+  }
+
+  const openLibraryFromQuickTools = () => {
+    rememberTrigger(addButtonRef.current)
+    requestIntent({ kind: 'open-library' })
+  }
+
   const continuePendingIntent = (choice: 'apply' | 'discard') => {
     if (choice === 'apply') {
       if (!configDraft.normalized || !configDraft.preview || configDraft.status !== 'ready') return
@@ -359,27 +385,61 @@ export function StudioPage() {
 
   return (
     <main className="studio-page">
-      <header className="studio-toolbar">
-        <div className="studio-title"><Link to="/workflows" aria-label="返回工作流列表">←</Link><div><strong>{workflow.name}</strong><small>{saveLabel(saveState)}</small></div></div>
-        <div className="studio-actions">
-          <Link to={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}>运行记录</Link>
-          <button type="button" onClick={() => requestIntent({ kind: 'open-library' })} disabled={archived}>添加节点</button>
-          <button type="button" onClick={() => requestIntent({ kind: 'test' })} disabled={archived}>测试运行</button>
-          <button type="button" onClick={() => requestIntent({ kind: 'agent-presentation' })} disabled={archived}>Agent 页面设置</button>
-		  <button ref={versionButtonRef} type="button" onClick={() => requestIntent({ kind: 'version-history' })}>版本历史</button>
-          <button type="button" onClick={() => requestIntent({ kind: 'export' })} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
-          <button className="primary-button" type="button" onClick={() => requestIntent({ kind: 'publish' })} disabled={archived}>发布</button>
-		  {(exportError || versionError || (!agentSettingsOpen && agentSettingsError)) && <span className="studio-toolbar-error" role="alert">{exportError || versionError || agentSettingsError}</span>}
-        </div>
-      </header>
+      <StudioShell
+        layer={libraryOpen ? 'library' : workbench.mode.kind !== 'closed' ? 'workbench' : 'none'}
+        returnFocusRef={lastTriggerRef}
+        onOpenNodeLibrary={() => {
+          if (archived || versionLocked) return
+          rememberTrigger(document.activeElement instanceof HTMLElement ? document.activeElement : addButtonRef.current)
+          requestIntent({ kind: 'open-library' })
+        }}
+        onRequestCloseTopLayer={closeTopLayer}
+        commandBar={<StudioCommandBar
+          workflowName={workflow.name}
+          saveState={saveState}
+          archived={archived}
+          exporting={exporting}
+          runsHref={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}
+          actionError={exportError || versionError || (!agentSettingsOpen && agentSettingsError) || ''}
+          testLabel="测试运行"
+          testDisabled={archived || versionLocked}
+          testButtonRef={testButtonRef}
+          versionButtonRef={versionButtonRef}
+          onTest={() => { rememberTrigger(testButtonRef.current); requestIntent({ kind: 'test' }) }}
+          onPublish={() => requestIntent({ kind: 'publish' })}
+          onAgentPresentation={() => requestIntent({ kind: 'agent-presentation' })}
+          onVersionHistory={() => { rememberTrigger(versionButtonRef.current); requestIntent({ kind: 'version-history' }) }}
+          onExport={() => requestIntent({ kind: 'export' })}
+        />}
+        quickTools={<StudioQuickTools
+          disabled={archived || versionLocked}
+          addButtonRef={addButtonRef}
+          onAdd={openLibraryFromQuickTools}
+          onFitView={() => { void canvasRef.current?.fitView() }}
+        />}
+        canvas={<WorkflowCanvas
+          ref={canvasRef}
+          readOnly={archived || versionLocked}
+          fitRequest={fitRequest}
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={handleEdgesChange}
+          onConnect={handleConnect}
+          isValidConnection={isValidConnection}
+          onNodeClick={(node, trigger) => {
+            rememberTrigger(trigger)
+            if (!archived && !versionLocked) requestIntent({ kind: 'config', nodeId: node.id })
+          }}
+        />}
+        nodeLibrary={libraryOpen ? <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} /> : undefined}
+        workbench={workbench.mode.kind !== 'closed' ? <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={closeTopLayer}>
+          {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={applySelectedConfig} />}
+          {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} error={runError} onRun={runDraft} onCancel={() => runController.current?.abort()} /></>}
+          {workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
+        </WorkbenchPanel> : undefined}
+      />
       {archived && <div className="studio-archive-banner" role="status">已归档，只读模式。恢复后才能保存、测试或发布。</div>}
-	  <WorkflowCanvas readOnly={archived || versionLocked} fitRequest={fitRequest} nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => { if (!archived && !versionLocked) requestIntent({ kind: 'config', nodeId: node.id }) }} />
-      {libraryOpen && <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} />}
-	  {workbench.mode.kind !== 'closed' && <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={() => requestIntent({ kind: 'close' })}>
-        {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={applySelectedConfig} />}
-        {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} error={runError} onRun={runDraft} onCancel={() => runController.current?.abort()} /></>}
-		{workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
-      </WorkbenchPanel>}
       <ConfirmDialog
         open={Boolean(workbench.pendingIntent)}
         title="保存节点配置更改？"
@@ -472,10 +532,6 @@ function deriveStartSchema(nodes: StudioNode[]): JSONSchema {
     if (field.required) required.push(key)
   }
   return { type: 'object', properties, required, 'x-ui-order': order, additionalProperties: false }
-}
-
-function saveLabel(state: SaveState) {
-  return { saved: '已保存', pending: '等待保存', saving: '保存中…', conflict: '保存冲突，请刷新', error: '保存失败' }[state]
 }
 
 function publicMessage(error: unknown) {

@@ -120,6 +120,16 @@ describe('StudioPage', () => {
     vi.spyOn(api, 'saveWorkflow').mockResolvedValue({ ...workflow, draftRevision: 2 })
   })
 
+  it('使用全画布外壳突出试运行和发布，并收纳低频操作', async () => {
+    const { container } = render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    expect(await screen.findByText('演示助手')).toBeInTheDocument()
+    expect(container.querySelector('.studio-shell')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '测试运行' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '发布' })).toBeVisible()
+    await userEvent.click(screen.getByText('更多操作'))
+    expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs?workflowId=w1')
+  })
+
   it('只把图结构变化写入草稿，不持久化 React Flow 尺寸和选中态', () => {
 	 expect(isPersistentNodeChange({ type: 'dimensions', id: 'a', dimensions: { width: 100, height: 60 } })).toBe(false)
 	 expect(isPersistentNodeChange({ type: 'select', id: 'a', selected: true })).toBe(false)
