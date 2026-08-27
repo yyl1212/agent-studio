@@ -42,6 +42,7 @@ export function StudioPage() {
   const [nodes, setNodes] = useState<StudioNode[]>([])
   const [edges, setEdges] = useState<StudioEdge[]>([])
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [activeDisclosure, setActiveDisclosure] = useState<'commands' | 'shortcuts'>()
   const [publishOpen, setPublishOpen] = useState(false)
   const [publishedVersion, setPublishedVersion] = useState<number>()
   const [publishError, setPublishError] = useState('')
@@ -67,6 +68,7 @@ export function StudioPage() {
   const exportController = useRef<AbortController | undefined>(undefined)
 	const hydrateController = useRef<AbortController | undefined>(undefined)
   const moreActionsTriggerRef = useRef<HTMLElement>(null)
+  const shortcutHelpTriggerRef = useRef<HTMLElement>(null)
   const canvasRef = useRef<WorkflowCanvasHandle>(null)
   const addButtonRef = useRef<HTMLButtonElement>(null)
   const testButtonRef = useRef<HTMLButtonElement>(null)
@@ -122,7 +124,7 @@ export function StudioPage() {
     if (archived) return
     setNodes((current) => {
       const next = applyNodeChanges(changes, current)
-		  if (changes.some(isPersistentNodeChange)) commit(next, edges)
+		  if (changes.some((change) => change.type !== 'remove' && isPersistentNodeChange(change))) commit(next, edges)
       return next
     })
   }
@@ -130,7 +132,7 @@ export function StudioPage() {
     if (archived) return
     setEdges((current) => {
       const next = applyEdgeChanges(changes, current)
-		  if (changes.some(isPersistentEdgeChange)) commit(nodes, next)
+		  if (changes.some((change) => change.type !== 'remove' && isPersistentEdgeChange(change))) commit(nodes, next)
       return next
     })
   }
@@ -143,6 +145,13 @@ export function StudioPage() {
       commit(nodes, next)
       return next
     })
+  }
+  const handleDelete = (deleted: { nodes: StudioNode[]; edges: StudioEdge[] }) => {
+    if (archived) return
+    const next = graphAfterDelete(nodes, edges, deleted.nodes, deleted.edges)
+    setNodes(next.nodes)
+    setEdges(next.edges)
+    commit(next.nodes, next.edges)
   }
 
   const addNode = (definition: NodeDefinition) => {
@@ -343,6 +352,7 @@ export function StudioPage() {
 		}
     if (intent.kind === 'open-library') {
       workbench.request({ kind: 'close' }, false)
+      setActiveDisclosure(undefined)
       setLibraryOpen(true)
       return
     }
@@ -381,6 +391,10 @@ export function StudioPage() {
   }
 
   const closeTopLayer = () => {
+    if (activeDisclosure) {
+      setActiveDisclosure(undefined)
+      return
+    }
     if (libraryOpen) {
       setLibraryOpen(false)
       return
@@ -392,6 +406,7 @@ export function StudioPage() {
 
   const openLibraryFromQuickTools = () => {
     rememberTrigger(addButtonRef.current)
+    setActiveDisclosure(undefined)
     requestIntent({ kind: 'open-library' })
   }
 
@@ -416,11 +431,12 @@ export function StudioPage() {
   return (
     <main className="studio-page">
       <StudioShell
-        layer={libraryOpen ? 'library' : workbench.mode.kind !== 'closed' ? 'workbench' : 'none'}
+        layer={activeDisclosure ?? (libraryOpen ? 'library' : workbench.mode.kind !== 'closed' ? 'workbench' : 'none')}
         returnFocusRef={lastTriggerRef}
         onOpenNodeLibrary={() => {
           if (archived || versionLocked) return
           rememberTrigger(document.activeElement instanceof HTMLElement ? document.activeElement : addButtonRef.current)
+          setActiveDisclosure(undefined)
           requestIntent({ kind: 'open-library' })
         }}
         onRequestCloseTopLayer={closeTopLayer}
@@ -435,6 +451,16 @@ export function StudioPage() {
           testDisabled={archived || versionLocked || saveBlocked}
           testButtonRef={testButtonRef}
           moreActionsTriggerRef={moreActionsTriggerRef}
+          moreActionsOpen={activeDisclosure === 'commands'}
+          onMoreActionsOpenChange={(open) => {
+            if (open) {
+              rememberTrigger(moreActionsTriggerRef.current)
+              setLibraryOpen(false)
+              setActiveDisclosure('commands')
+            } else {
+              setActiveDisclosure((current) => current === 'commands' ? undefined : current)
+            }
+          }}
           onTest={() => { rememberTrigger(testButtonRef.current); requestIntent({ kind: 'test' }) }}
           onPublish={() => requestIntent({ kind: 'publish' })}
           onAgentPresentation={() => requestIntent({ kind: 'agent-presentation' })}
@@ -446,6 +472,17 @@ export function StudioPage() {
         quickTools={<StudioQuickTools
           disabled={archived || versionLocked}
           addButtonRef={addButtonRef}
+          shortcutHelpTriggerRef={shortcutHelpTriggerRef}
+          shortcutHelpOpen={activeDisclosure === 'shortcuts'}
+          onShortcutHelpOpenChange={(open) => {
+            if (open) {
+              rememberTrigger(shortcutHelpTriggerRef.current)
+              setLibraryOpen(false)
+              setActiveDisclosure('shortcuts')
+            } else {
+              setActiveDisclosure((current) => current === 'shortcuts' ? undefined : current)
+            }
+          }}
           onAdd={openLibraryFromQuickTools}
           onFitView={() => { void canvasRef.current?.fitView() }}
         />}
@@ -458,6 +495,7 @@ export function StudioPage() {
           onNodesChange={handleNodesChange}
           onEdgesChange={handleEdgesChange}
           onConnect={handleConnect}
+          onDelete={handleDelete}
           isValidConnection={isValidConnection}
           currentNodeID={activeRunNodeID(events)}
           onInvalidConnection={({ connection, clientX, clientY }) => {
@@ -520,6 +558,15 @@ export function availableNodePosition(center: XYPosition, nodes: StudioNode[]): 
     if (!overlaps) return candidate
   }
   return { x: center.x, y: center.y + (nodes.length + 1) * 190 }
+}
+
+export function graphAfterDelete(nodes: StudioNode[], edges: StudioEdge[], deletedNodes: StudioNode[], deletedEdges: StudioEdge[]) {
+  const nodeIDs = new Set(deletedNodes.map((node) => node.id))
+  const edgeIDs = new Set(deletedEdges.map((edge) => edge.id))
+  return {
+    nodes: nodes.filter((node) => !nodeIDs.has(node.id)),
+    edges: edges.filter((edge) => !edgeIDs.has(edge.id) && !nodeIDs.has(edge.source) && !nodeIDs.has(edge.target)),
+  }
 }
 
 export function isPersistentNodeChange(change: NodeChange<StudioNode>) {

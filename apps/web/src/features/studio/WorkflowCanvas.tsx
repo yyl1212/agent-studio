@@ -24,6 +24,7 @@ interface WorkflowCanvasProps {
   onNodesChange: (changes: NodeChange<StudioNode>[]) => void
   onEdgesChange: (changes: EdgeChange<StudioEdge>[]) => void
   onConnect: (connection: Connection) => void
+  onDelete?: (elements: { nodes: StudioNode[]; edges: StudioEdge[] }) => void
   isValidConnection: (connection: Connection | StudioEdge) => boolean
   onNodeClick: (node: StudioNode, trigger: HTMLElement) => void
   readOnly?: boolean
@@ -93,6 +94,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
           onNodesChange={(changes) => { if (!props.readOnly) props.onNodesChange(changes) }}
           onEdgesChange={(changes) => { if (!props.readOnly) props.onEdgesChange(changes) }}
           onConnect={(connection) => { if (!props.readOnly) props.onConnect(connection) }}
+          onDelete={(elements) => { if (!props.readOnly) props.onDelete?.(elements) }}
           onConnectEnd={onConnectEnd}
           isValidConnection={props.isValidConnection}
           onNodeClick={(event, node) => {

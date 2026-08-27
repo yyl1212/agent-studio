@@ -2,7 +2,7 @@ import fs from 'node:fs'
 
 import { expect, test } from '@playwright/test'
 
-import { applyNodeConfig, configureStartTextField, connectPorts, createWorkflow, openOptionalConfig } from './helpers'
+import { applyNodeConfig, configureStartTextField, connectPorts, createWorkflow, openMoreActions, openOptionalConfig } from './helpers'
 
 test('导出草稿模板并导入为未发布新工作流', async ({ page }) => {
   const suffix = Date.now().toString(36)
@@ -19,6 +19,7 @@ test('导出草稿模板并导入为未发布新工作流', async ({ page }) => 
     ['extension.echo', 'text', 'end', 'result'],
   ])
 
+  await openMoreActions(page)
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出模板' }).click()
   const download = await downloadPromise
@@ -132,6 +133,7 @@ test('LLM v2 结构化配置导出并按精确版本导入', async ({ page }) =>
     ['llm', 'json', 'end', 'result'],
   ])
 
+  await openMoreActions(page)
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出模板' }).click()
   const download = await downloadPromise

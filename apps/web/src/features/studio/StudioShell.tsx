@@ -2,7 +2,7 @@ import { useEffect, useRef, type ReactNode, type RefObject } from 'react'
 
 import { useStudioShortcuts } from './useStudioShortcuts'
 
-export type StudioLayer = 'none' | 'library' | 'workbench'
+export type StudioLayer = 'none' | 'commands' | 'shortcuts' | 'library' | 'workbench'
 
 export interface StudioShellProps {
   layer: StudioLayer

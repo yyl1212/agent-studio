@@ -55,6 +55,20 @@ describe('SchemaForm', () => {
     await vi.waitFor(() => expect(screen.getByLabelText('主题')).toHaveFocus())
   })
 
+  it('卸载时取消尚未执行的首错聚焦，避免抢占后续页面焦点', async () => {
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(42)
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
+    const { unmount } = render(<SchemaForm schema={schema} value={{ topic: '' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用" />)
+
+    await userEvent.click(screen.getByRole('button', { name: '应用' }))
+    expect(requestFrame).toHaveBeenCalledOnce()
+    unmount()
+    expect(cancelFrame).toHaveBeenCalledWith(42)
+
+    requestFrame.mockRestore()
+    cancelFrame.mockRestore()
+  })
+
   it('按 x-ui-order 分组必要与可选配置并从摘要定位首个错误', async () => {
     render(<SchemaForm schema={{
       type: 'object',

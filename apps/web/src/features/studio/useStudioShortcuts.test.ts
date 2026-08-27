@@ -22,17 +22,23 @@ it('输入控件、contenteditable 和组合输入期间不触发', () => {
   renderHook(() => useStudioShortcuts({ onOpenNodeLibrary, onEscape }))
   const input = document.createElement('input')
   const editable = document.createElement('div')
-  editable.setAttribute('contenteditable', 'true')
-  document.body.append(input, editable)
+  editable.setAttribute('contenteditable', '')
+  const editableChild = document.createElement('span')
+  editable.append(editableChild)
+  const plaintext = document.createElement('div')
+  plaintext.setAttribute('contenteditable', 'plaintext-only')
+  document.body.append(input, editable, plaintext)
 
   fireEvent.keyDown(input, { key: 'k', metaKey: true })
-  fireEvent.keyDown(editable, { key: 'Escape' })
+  fireEvent.keyDown(editableChild, { key: 'Escape' })
+  fireEvent.keyDown(plaintext, { key: 'k', ctrlKey: true })
   fireEvent.keyDown(window, { key: 'k', metaKey: true, isComposing: true })
 
   expect(onOpenNodeLibrary).not.toHaveBeenCalled()
   expect(onEscape).not.toHaveBeenCalled()
   input.remove()
   editable.remove()
+  plaintext.remove()
 })
 
 it('子组件已处理的按键不再触发全局动作', () => {

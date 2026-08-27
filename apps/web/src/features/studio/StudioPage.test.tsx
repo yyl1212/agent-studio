@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition } from '../../lib/api/client'
 import type { RunEvent } from '../../lib/api/ndjson'
-import { activeRunNodeID, availableNodePosition, connectionIssue, decorateRunNodes, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
+import { activeRunNodeID, availableNodePosition, connectionIssue, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
 import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -131,6 +131,27 @@ describe('StudioPage', () => {
     expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs?workflowId=w1')
   })
 
+  it('节点库与两个 disclosure 互斥，并由 Escape 关闭视觉最上层', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    const moreSummary = screen.getByText('更多操作')
+    await userEvent.click(moreSummary)
+    expect(moreSummary.closest('details')).toHaveAttribute('open')
+
+    await userEvent.keyboard('{Control>}k{/Control}')
+    expect(await screen.findByRole('dialog', { name: '节点库' })).toBeInTheDocument()
+    expect(moreSummary.closest('details')).not.toHaveAttribute('open')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: '节点库' })).not.toBeInTheDocument()
+
+    const helpSummary = screen.getByText('快捷键帮助')
+    await userEvent.click(helpSummary)
+    expect(helpSummary.closest('details')).toHaveAttribute('open')
+    await userEvent.keyboard('{Escape}')
+    expect(helpSummary.closest('details')).not.toHaveAttribute('open')
+    expect(helpSummary).toHaveFocus()
+  })
+
   it('只把图结构变化写入草稿，不持久化 React Flow 尺寸和选中态', () => {
 	 expect(isPersistentNodeChange({ type: 'dimensions', id: 'a', dimensions: { width: 100, height: 60 } })).toBe(false)
 	 expect(isPersistentNodeChange({ type: 'select', id: 'a', selected: true })).toBe(false)
@@ -149,6 +170,14 @@ describe('StudioPage', () => {
     const occupied: StudioEdge = { id: 'edge-1', ...mismatch, targetHandle: 'value' }
     expect(connectionIssue(mismatch, [source, anyTarget], [occupied])).toBe('目标端口只允许一条输入连线')
     expect(connectionIssue(mismatch, [source, anyTarget], [])).toBeUndefined()
+  })
+
+  it('删除已连线节点时生成不含悬空边的原子保存快照', () => {
+    const source = studioNode('source', 'template', { inputs: [], outputs: [{ key: 'text', title: '文本', type: 'string', required: false, cardinality: 'one' }] })
+    const target = studioNode('target', 'end', { inputs: [{ key: 'result', title: '结果', type: 'any', required: false, cardinality: 'one' }], outputs: [] })
+    const edge: StudioEdge = { id: 'edge-1', source: 'source', sourceHandle: 'text', target: 'target', targetHandle: 'result' }
+
+    expect(graphAfterDelete([source, target], [edge], [source], [])).toEqual({ nodes: [target], edges: [] })
   })
 
   it('只高亮尚未结束的最新运行节点并保留中文状态所需数据', () => {

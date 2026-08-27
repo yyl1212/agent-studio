@@ -6,7 +6,11 @@ interface StudioShortcutOptions {
 }
 
 export function isEditableTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
+  if (!(target instanceof HTMLElement)) return false
+  if (target.closest('input, textarea, select')) return true
+  if (target.isContentEditable) return true
+  const editableRoot = target.closest<HTMLElement>('[contenteditable]')
+  return Boolean(editableRoot && editableRoot.getAttribute('contenteditable') !== 'false')
 }
 
 export function useStudioShortcuts({ onOpenNodeLibrary, onEscape }: StudioShortcutOptions) {

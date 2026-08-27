@@ -28,6 +28,13 @@ test('全画布内应用配置并试运行最新草稿', async ({ page }) => {
   }
   await page.getByRole('button', { name: '关闭工作台' }).click()
   await expect(page.getByRole('button', { name: '添加节点' })).toBeEnabled()
+  await page.getByRole('button', { name: '添加节点' }).click()
+  const nodeSearch = page.getByLabel('搜索节点')
+  await expect(nodeSearch).toBeVisible()
+  await nodeSearch.click()
+  await nodeSearch.fill('提示词')
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
 })
 
 test('无效配置聚焦首错且输入时快捷键不打断编辑', async ({ page }) => {

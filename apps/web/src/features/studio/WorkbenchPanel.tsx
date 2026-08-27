@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 
 import { Button } from '../../components/ui/Button'
+import { isEditableTarget } from './useStudioShortcuts'
 
 const storageKey = 'agent-studio.workbench-width'
 const minimumWidth = 320
@@ -26,6 +27,7 @@ export function WorkbenchPanel({ titleId, onRequestClose, closeDisabled = false,
   }, [updateWidth])
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || isEditableTarget(event.target)) return
       if (event.key === 'Escape' && !closeDisabled) { event.preventDefault(); onRequestClose() }
     }
     window.addEventListener('keydown', closeOnEscape)

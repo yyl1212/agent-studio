@@ -17,7 +17,9 @@ interface TestRunPanelProps {
 export function TestRunPanel({ schema, events, running, error, onRun, onCancel, cancelled = false }: TestRunPanelProps) {
   const [input, setInput] = useState<FormValue>({})
   const completed = [...events].reverse().find((event) => event.type === 'run.completed')
-  const failed = [...events].reverse().find((event) => event.type === 'node.failed' || event.type === 'run.failed')
+  const reversedEvents = [...events].reverse()
+  const failed = reversedEvents.find((event) => event.type === 'node.failed' && event.error)
+    ?? reversedEvents.find((event) => event.type === 'run.failed' && event.error)
   const cancelledEvent = events.some((event) => event.type === 'run.cancelled')
   const canRetry = !running && Boolean(error || failed || cancelled || cancelledEvent)
   const duration = runDuration(events)

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -41,6 +41,21 @@ describe('WorkbenchPanel', () => {
     render(<WorkbenchPanel titleId="panel-title" onRequestClose={onClose}><h2 id="panel-title">节点配置</h2></WorkbenchPanel>)
     await userEvent.keyboard('{Escape}')
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('编辑控件、组合输入和已处理事件中的 Escape 不关闭工作台', () => {
+    const onClose = vi.fn()
+    render(<WorkbenchPanel titleId="panel-title" onRequestClose={onClose}><h2 id="panel-title">节点配置</h2><input aria-label="配置值" /></WorkbenchPanel>)
+    const input = screen.getByLabelText('配置值')
+
+    input.focus()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true })
+    const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    handled.preventDefault()
+    window.dispatchEvent(handled)
+
+    expect(onClose).not.toHaveBeenCalled()
   })
 
 	 it('关闭被锁定时禁用按钮并拦截 Escape，解锁后恢复', async () => {

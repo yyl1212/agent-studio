@@ -20,9 +20,10 @@ export function NodeLibraryDrawer({ definitions, onAdd, onClose }: NodeLibraryDr
     for (const definition of visibleDefinitions) grouped.set(definition.category, [...(grouped.get(definition.category) ?? []), definition])
     return grouped
   }, [visibleDefinitions])
+  const orderedDefinitions = useMemo(() => [...groups.values()].flat(), [groups])
   const focusItem = (index: number) => {
-    if (visibleDefinitions.length === 0) return
-    itemRefs.current[(index + visibleDefinitions.length) % visibleDefinitions.length]?.focus()
+    if (orderedDefinitions.length === 0) return
+    itemRefs.current[(index + orderedDefinitions.length) % orderedDefinitions.length]?.focus()
   }
   const handleItemKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number, definition: NodeDefinition) => {
     if (event.key === 'ArrowDown') {
@@ -54,12 +55,12 @@ export function NodeLibraryDrawer({ definitions, onAdd, onClose }: NodeLibraryDr
       {[...groups.entries()].map(([category, items]) => (
         <section key={category}><h3>{category}</h3>{items.map((definition) => (
           <button
-            ref={(element) => { itemRefs.current[visibleDefinitions.indexOf(definition)] = element }}
+            ref={(element) => { itemRefs.current[orderedDefinitions.indexOf(definition)] = element }}
             className="library-node"
             type="button"
             key={`${definition.type}@${definition.version}`}
             onClick={() => onAdd(definition)}
-            onKeyDown={(event) => handleItemKeyDown(event, visibleDefinitions.indexOf(definition), definition)}
+            onKeyDown={(event) => handleItemKeyDown(event, orderedDefinitions.indexOf(definition), definition)}
           >
             <strong>{definition.title}</strong><small>{definition.description}</small>
             <small className="package-summary">{definition.package.displayName}{definition.package.version ? ` · ${definition.package.version}` : ''}</small>

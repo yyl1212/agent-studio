@@ -3,7 +3,7 @@ import { createRef, useEffect, type MouseEvent as ReactMouseEvent } from 'react'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { WorkflowCanvas, type InvalidConnectionAttempt, type WorkflowCanvasHandle } from './WorkflowCanvas'
-import type { StudioNode } from './types'
+import type { StudioEdge, StudioNode } from './types'
 
 const fitView = vi.hoisted(() => vi.fn())
 const screenToFlowPosition = vi.hoisted(() => vi.fn(() => ({ x: 420, y: 260 })))
@@ -19,7 +19,9 @@ vi.mock('@xyflow/react', async () => {
       onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void
       onNodeClick?: (event: ReactMouseEvent<HTMLDivElement>, node: StudioNode) => void
       onConnectEnd?: (event: MouseEvent, state: unknown) => void
+      onDelete?: (elements: { nodes: StudioNode[]; edges: StudioEdge[] }) => void
       nodes: StudioNode[]
+      edges: StudioEdge[]
       children: React.ReactNode
     }) => {
       useEffect(() => { props.onInit?.({ fitView, screenToFlowPosition }) }, [props.onInit])
@@ -30,6 +32,7 @@ vi.mock('@xyflow/react', async () => {
           fromHandle: { type: 'source', nodeId: 'source', id: 'text' },
           toHandle: { type: 'target', nodeId: 'target', id: 'value' },
         })}>结束无效连线</button>
+        <button type="button" onClick={() => props.onDelete?.({ nodes: props.nodes.slice(0, 1), edges: props.edges.slice(0, 1) })}>删除选中元素</button>
         {props.children}
       </div>
     },
@@ -88,6 +91,20 @@ it('在连线结束时上报无效候选和指针位置', () => {
     clientX: 120,
     clientY: 80,
   })
+})
+
+it('把节点和边的删除作为一次原子事件上报，并在只读时阻止删除', () => {
+  const onDelete = vi.fn()
+  const edge = { id: 'a-b', source: 'a', target: 'b' } as StudioEdge
+  const { rerender } = render(<WorkflowCanvas {...baseProps} nodes={[node('a'), node('b')]} edges={[edge]} onDelete={onDelete} />)
+
+  fireEvent.click(screen.getByRole('button', { name: '删除选中元素' }))
+  expect(onDelete).toHaveBeenCalledWith({ nodes: [expect.objectContaining({ id: 'a' })], edges: [edge] })
+
+  onDelete.mockClear()
+  rerender(<WorkflowCanvas {...baseProps} nodes={[node('a'), node('b')]} edges={[edge]} onDelete={onDelete} readOnly />)
+  fireEvent.click(screen.getByRole('button', { name: '删除选中元素' }))
+  expect(onDelete).not.toHaveBeenCalled()
 })
 
 it('fitRequest 推进时主动重新适配服务端替换后的画布', () => {

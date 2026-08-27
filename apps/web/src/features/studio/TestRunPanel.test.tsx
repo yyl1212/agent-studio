@@ -38,6 +38,15 @@ describe('TestRunPanel', () => {
     expect(screen.getByText(/"answer": 42/)).toBeInTheDocument()
   })
 
+  it('节点失败后优先显示具体的安全错误，而不是后续通用运行错误', () => {
+    render(<TestRunPanel schema={schema} events={[
+      { ...runEvent(1, 'node.failed', 'webhook'), error: { code: 'NODE_EXECUTION_FAILED', kind: 'input', message: '节点输入无效' } },
+      { ...runEvent(2, 'run.failed'), error: { code: 'RUN_FAILED', kind: 'input', message: '运行失败' } },
+    ]} running={false} error="" onRun={vi.fn()} onCancel={vi.fn()} />)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('节点输入无效')
+  })
+
   it('作为工作台内容提交输入而不创建第二个 dialog', async () => {
     const onRun = vi.fn()
     render(<TestRunPanel schema={{ type: 'object', required: ['topic'], properties: { topic: { type: 'string', title: '主题', minLength: 1 } } }} events={[]} running={false} error="" onRun={onRun} onCancel={vi.fn()} />)

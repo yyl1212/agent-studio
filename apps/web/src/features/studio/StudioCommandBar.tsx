@@ -22,6 +22,8 @@ export interface StudioCommandBarProps {
   onRefreshConflict?: () => void
   testButtonRef?: Ref<HTMLButtonElement>
   moreActionsTriggerRef?: Ref<HTMLElement>
+  moreActionsOpen?: boolean
+  onMoreActionsOpenChange?: (open: boolean) => void
 }
 
 export function StudioCommandBar(props: StudioCommandBarProps) {
@@ -29,6 +31,7 @@ export function StudioCommandBar(props: StudioCommandBarProps) {
   const moreActionsRef = useRef<HTMLDetailsElement>(null)
   const runMenuAction = (action: () => void) => {
     if (moreActionsRef.current) moreActionsRef.current.open = false
+    props.onMoreActionsOpenChange?.(false)
     action()
   }
   return <header className="studio-command-bar">
@@ -44,10 +47,10 @@ export function StudioCommandBar(props: StudioCommandBarProps) {
     <div className="studio-primary-actions">
       <Button ref={props.testButtonRef} onClick={props.onTest} disabled={props.testDisabled || saveBlocked}>{props.testLabel}</Button>
       <Button variant="primary" onClick={props.onPublish} disabled={props.archived || props.testDisabled || saveBlocked}>发布</Button>
-      <details ref={moreActionsRef} className="studio-more-actions">
+      <details ref={moreActionsRef} className="studio-more-actions" open={props.moreActionsOpen} onToggle={(event) => props.onMoreActionsOpenChange?.(event.currentTarget.open)}>
         <summary ref={props.moreActionsTriggerRef}>更多操作</summary>
         <div className="studio-more-menu">
-          <Link to={props.runsHref} onClick={() => { if (moreActionsRef.current) moreActionsRef.current.open = false }}>运行记录</Link>
+          <Link to={props.runsHref} onClick={() => { if (moreActionsRef.current) moreActionsRef.current.open = false; props.onMoreActionsOpenChange?.(false) }}>运行记录</Link>
           <Button variant="ghost" onClick={() => runMenuAction(props.onAgentPresentation)} disabled={props.archived}>Agent 页面设置</Button>
           <Button variant="ghost" onClick={() => runMenuAction(props.onVersionHistory)}>版本历史</Button>
           <Button variant="ghost" onClick={() => runMenuAction(props.onExport)} disabled={props.exporting}>{props.exporting ? '导出中…' : '导出模板'}</Button>

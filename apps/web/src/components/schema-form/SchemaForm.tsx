@@ -1,6 +1,6 @@
 import type { ErrorObject, ValidateFunction } from 'ajv'
 import Ajv2020 from 'ajv/dist/2020.js'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
 import { Field } from './Field'
 import { pointerChild, type FormValue, type JSONSchema } from './types'
@@ -37,7 +37,11 @@ interface SchemaFormProps {
 export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, secondarySubmit, disabled, groupOptional, onValidationChange, editablePaths, requiredPaths }: SchemaFormProps) {
   const [draft, setDraft] = useState<FormValue>(value)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const focusFrame = useRef<number | undefined>(undefined)
   useEffect(() => setDraft(value), [value])
+  useEffect(() => () => {
+    if (focusFrame.current !== undefined) window.cancelAnimationFrame(focusFrame.current)
+  }, [])
   const properties = schema.properties ?? {}
   const order = [...(schema['x-ui-order'] ?? []), ...Object.keys(properties).filter((key) => !schema['x-ui-order']?.includes(key))]
   const validation = useMemo(() => validateFormValue(schema, draft, requiredPaths), [draft, schema, requiredPaths])
@@ -59,7 +63,11 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, sec
     if (!validation.valid) {
       setErrors(validation.errors)
       const first = Object.keys(validation.errors)[0]
-      window.requestAnimationFrame(() => document.getElementById(fieldID(first))?.focus())
+      if (focusFrame.current !== undefined) window.cancelAnimationFrame(focusFrame.current)
+      focusFrame.current = window.requestAnimationFrame(() => {
+        focusFrame.current = undefined
+        document.getElementById(fieldID(first))?.focus()
+      })
       return
     }
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null
