@@ -1,10 +1,10 @@
 # SDK 兼容性策略
 
-本文冻结 Agent Studio Go SDK v0.3 的兼容边界。
+本文冻结 Agent Studio Go SDK v0.4 的兼容边界。
 
 ## 协议与 SDK 版本
 
-- v0.3 使用 API Version `agent-studio.dev/v1alpha1`。
+- v0.4 使用 API Version `agent-studio.dev/v1alpha1`。
 - 相同 API Version 内新增可选 JSON 字段属于兼容变更，旧宿主必须忽略未知可选字段。
 - 删除字段、修改已有枚举值语义、改变 `Resolve`/`Execute` 生命周期或端口解释方式属于不兼容变更，必须提升 API Version。
 - Go SDK 在 v1.0 前允许 minor 版本包含编译期变更，但发布时必须提供迁移说明；patch 版本不得故意破坏已公开 API。
@@ -15,10 +15,10 @@
 
 SDK 版本与应用构建版本独立：
 
-- `agentnode.Version = 0.3.1` 表示公开 Go SDK 契约。
+- `agentnode.Version = 0.4.0` 表示公开 Go SDK 契约。
 - `agentnode.APIVersion = agent-studio.dev/v1alpha1` 表示节点协议。
-- 本地源码构建显示 `0.3.1-dev`。
-- 从 tag 安装的 CLI 显示对应模块版本，例如 `v0.3.1`。
+- 本地源码构建显示 `0.4.0-dev`。
+- 从 tag 安装的 CLI 显示对应模块版本，例如 `v0.4.0-rc.1`。
 
 应用构建版本变化不自动改变 SDK 或节点协议；只有公开契约变化时才按
 本文件的兼容规则提升 SDK/API 版本。
@@ -29,17 +29,17 @@ SDK 版本与应用构建版本独立：
 
 ### Runtime Core 内置节点
 
-`llm@2` 是 Agent Studio Runtime Core 的内置节点版本，不是公开 Go SDK 或 Node API 的新版本。它不会改变 `agent-studio.dev/v1alpha1`、第三方节点的 `Resolve`/`Execute` 生命周期或现有 `llm@1` 行为；当前补丁 SDK 版本为 `agentnode.Version = 0.3.1`。
+`llm@2` 是 Agent Studio Runtime Core 的内置节点版本，不是公开 Go SDK 或 Node API 的新版本。它不会改变 `agent-studio.dev/v1alpha1`、第三方节点的 `Resolve`/`Execute` 生命周期或现有 `llm@1` 行为。Go SDK v0.4 的公开增量是 `ExecutionSafety` 交互契约，而不是 `llm@2` 本身。
 
 工作流和模板始终按 `Type + Version` 精确匹配节点。包含 `llm@2` 的模板导入到未注册该版本的旧 Runtime 时必须报告节点类型或版本缺失并阻止导入；宿主不得静默替换为 `llm@1`、丢弃结构化字段或改写动态端口。
 
 ## Manifest 与 Go SDK
 
-扩展 manifest 和 Go SDK 分别版本化。manifest 声明宿主发现、身份和打包信息，Go SDK 定义进程内节点协议。CLI 必须拒绝未知 manifest API Version，不能因为 Go 包可以编译就默认 manifest 兼容。
+扩展 manifest 和 Go SDK 分别版本化。manifest 声明宿主发现、身份、打包信息和 Runtime 半开兼容区间，Go SDK 定义进程内节点协议。v0.4 节点包必须显式声明一个覆盖 v0.4 Runtime 的区间；仓库根目录官方 manifest 使用 `[v0.2.0, v0.5.0)`。CLI 必须拒绝未知 manifest API Version 或不兼容 Runtime，不能因为 Go 包可以编译就默认兼容，也不会自动改写、下载或安装节点包。
 
 ## 安全边界
 
-Capability 在 v0.3 只用于展示、审计和未来调度，不提供进程、网络、密钥或文件系统隔离。节点仍与 API 运行在同一进程中；宿主部署者必须只加载可信代码，并使用容器、操作系统权限和网络策略建立真正的隔离边界。
+Capability 在 v0.4 只用于展示、审计和未来调度，不提供进程、网络、密钥或文件系统隔离。节点仍与 API 运行在同一进程中；宿主部署者必须只加载可信代码，并使用容器、操作系统权限和网络策略建立真正的隔离边界。
 
 `Definition.executionSafety` 是同一 API Version 内新增的可选字段。使用旧 SDK 编译、未携带该字段的节点仍可被新宿主加载，但有效等级会保守设为 `side_effect`，从历史节点局部重跑时必须进行副作用确认；空值和未来未知值采用相同默认。节点升级安全声明时必须继续遵循“按最危险可能行为声明”的原则。
 
