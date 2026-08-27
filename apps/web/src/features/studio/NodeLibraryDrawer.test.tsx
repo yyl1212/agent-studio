@@ -16,6 +16,23 @@ const definition = (packageVersion?: string, overrides: Partial<NodeDefinition> 
 })
 
 describe('NodeLibraryDrawer', () => {
+  it('打开后聚焦搜索，并支持上下键、回车和 Escape', async () => {
+    const onAdd = vi.fn()
+    const onClose = vi.fn()
+    render(<NodeLibraryDrawer definitions={[
+      definition(),
+      definition(undefined, { type: 'example.http', title: 'HTTP' }),
+    ]} onAdd={onAdd} onClose={onClose} />)
+
+    const search = screen.getByLabelText('搜索节点')
+    expect(search).toHaveFocus()
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}{Enter}')
+    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ type: 'example.http' }))
+    search.focus()
+    await userEvent.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it('展示包摘要并按包名搜索', async () => {
     render(<NodeLibraryDrawer definitions={[definition('v0.3.2')]} onAdd={vi.fn()} onClose={vi.fn()} />)
     expect(screen.getByText('Example Nodes · v0.3.2')).toBeInTheDocument()

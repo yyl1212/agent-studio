@@ -149,6 +149,24 @@ describe('StudioPage', () => {
     await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
   })
 
+  it('把新节点放到当前画布视口中心', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('workflow-canvas')) {
+        return { x: 0, y: 0, width: 1280, height: 720, top: 0, right: 1280, bottom: 720, left: 0, toJSON: () => ({}) }
+      }
+      return { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0, toJSON: () => ({}) }
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+
+    await vi.waitFor(() => {
+      const saved = vi.mocked(api.saveWorkflow).mock.calls.at(-1)?.[1]
+      expect(saved?.graph.nodes.find((node) => node.type === 'template')?.position).toEqual({ x: 640, y: 360 })
+    }, { timeout: 2000 })
+  })
+
   it('归档工作流以只读模式查看且导出不触发保存', async () => {
     vi.mocked(api.getWorkflow).mockResolvedValue({ ...workflow, archivedAt: '2026-08-25T04:00:00Z' })
 	vi.spyOn(api, 'listWorkflowVersions').mockResolvedValue({ items: [], nextCursor: null, rollbackCheckpoint: null })

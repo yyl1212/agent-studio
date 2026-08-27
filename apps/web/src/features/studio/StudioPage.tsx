@@ -142,10 +142,10 @@ export function StudioPage() {
 
   const addNode = (definition: NodeDefinition) => {
     if (archived) return
-    const addedCount = nodes.filter((existing) => existing.data.nodeType !== 'start' && existing.data.nodeType !== 'end').length
+    const position = canvasRef.current?.getViewportCenter() ?? { x: 320, y: 260 }
     const node: StudioNode = {
       id: createID(definition.type), type: 'studio',
-      position: { x: 320, y: 260 + addedCount * 220 },
+      position,
       data: {
         nodeType: definition.type,
         typeVersion: definition.version,
