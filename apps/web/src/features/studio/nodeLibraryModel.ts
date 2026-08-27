@@ -85,10 +85,11 @@ export function buildNodeLibraryView(
     }
   }
 
-  const scoped =
-    options.scope.kind === 'category'
-      ? addable.filter((definition) => definition.category === options.scope.category)
-      : addable
+  let scoped = addable
+  if (options.scope.kind === 'category') {
+    const category = options.scope.category
+    scoped = addable.filter((definition) => definition.category === category)
+  }
   const recentKeys =
     options.scope.kind === 'all'
       ? new Set(recent.map(nodeDefinitionKey))
