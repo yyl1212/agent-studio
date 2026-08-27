@@ -1,4 +1,12 @@
 .studio-page { position: relative; height: calc(100vh - 64px); overflow: hidden; color: var(--as-text); background: var(--as-canvas); }
+.studio-shell { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--as-canvas); }
+.studio-shell-canvas { position: absolute; inset: 0; }
+.studio-shell-command { position: absolute; z-index: 10; top: 16px; right: 16px; left: 16px; }
+.studio-shell-tools { position: absolute; z-index: 11; top: 90px; left: 16px; }
+.studio-shell-library { position: absolute; z-index: 12; top: 90px; bottom: 16px; left: 64px; width: min(380px, calc(100% - 80px)); }
+.studio-shell-workbench { position: absolute; z-index: 12; top: 90px; right: 16px; bottom: 16px; }
+.studio-shell-library .studio-drawer { position: relative; inset: auto; width: 100%; height: 100%; }
+.studio-shell-workbench .workbench-panel { position: relative; inset: auto; width: var(--as-workbench-width); height: 100%; }
 .workbench-panel { position: absolute; z-index: 12; top: 90px; right: 16px; bottom: 16px; width: var(--as-workbench-width); padding: 22px; overflow: auto; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-surface); box-shadow: var(--as-shadow-panel); transition: width var(--as-motion-fast) ease; }
 .workbench-resizer { position: absolute; top: 0; bottom: 0; left: -6px; width: 12px; cursor: ew-resize; touch-action: none; }
 .workbench-close { position: absolute; top: 12px; right: 12px; width: 34px; padding: 5px; font-size: 20px; }
@@ -168,11 +176,18 @@
 }
 
 @media (max-width: 1023px) {
+  .studio-shell-workbench { top: auto; right: 16px; bottom: 16px; left: 16px; height: min(60vh, calc(100% - 106px)); }
+  .studio-shell-workbench .workbench-panel { width: 100%; }
   .workbench-panel { top: auto; right: 16px; bottom: 16px; left: 16px; width: auto; max-height: 60vh; transition: max-height var(--as-motion-fast) ease; }
   .workbench-resizer { display: none; }
 }
 
 @media (max-width: 639px) {
+  .studio-shell-library, .studio-shell-workbench { inset: 8px; width: auto; height: auto; max-height: none; }
   .workbench-panel { top: 8px; right: 8px; bottom: 8px; left: 8px; max-height: none; }
   .debug-page > .workbench-panel { top: 8px; right: 8px; bottom: 8px; left: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbench-panel { transition: none; }
 }
