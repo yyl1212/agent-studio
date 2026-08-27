@@ -43,7 +43,7 @@ jobs:
       - name: Select dry-run artifact version
         id: dry-version
         if: github.event_name == 'workflow_dispatch'
-        run: echo "value=v0.3.1-snapshot" >> "$GITHUB_OUTPUT"
+        run: echo "value=v0.4.0-snapshot" >> "$GITHUB_OUTPUT"
       - name: Export artifact version
         id: version
         env:
