@@ -72,15 +72,17 @@ func (preparer *fakeAgentRunPreparer) PrepareAgentOnce(context.Context, string, 
 
 type fakeAgentRunReservation struct {
 	launched      *PreparedRun
+	launchContext context.Context
 	released      bool
 	panicOnLaunch bool
 }
 
-func (reservation *fakeAgentRunReservation) Launch(prepared *PreparedRun) {
+func (reservation *fakeAgentRunReservation) Launch(ctx context.Context, prepared *PreparedRun) {
 	if reservation.panicOnLaunch {
 		panic("launch panic")
 	}
 	reservation.launched = prepared
+	reservation.launchContext = ctx
 }
 
 func (reservation *fakeAgentRunReservation) Release() {
@@ -147,8 +149,10 @@ func TestAgentRunServiceLaunchesOnlyCreatedRun(t *testing.T) {
 	preparer := &fakeAgentRunPreparer{prepared: prepared, created: true}
 	launcher := &fakeAgentRunLauncher{}
 	service := NewAgentRunService(preparer, store, launcher, nil)
-	accepted, created, err := service.Start(context.Background(), "demo", StartAgentRunInput{WorkflowVersionID: record.Version.ID, RequestKey: "key", Input: map[string]any{}})
-	if err != nil || !created || accepted.RunID != prepared.RunID || launcher.reservation.launched != prepared || launcher.reservation.released {
+	type requestKey struct{}
+	requestContext := context.WithValue(context.Background(), requestKey{}, "request-value")
+	accepted, created, err := service.Start(requestContext, "demo", StartAgentRunInput{WorkflowVersionID: record.Version.ID, RequestKey: "key", Input: map[string]any{}})
+	if err != nil || !created || accepted.RunID != prepared.RunID || launcher.reservation.launched != prepared || launcher.reservation.launchContext != requestContext || launcher.reservation.released {
 		t.Fatalf("accepted=%+v created=%v reservation=%+v error=%v", accepted, created, launcher.reservation, err)
 	}
 }

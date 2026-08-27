@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -212,6 +213,13 @@ func TestPrepareRetryRestoresSecretsValidatesAndCreatesHistoricRun(t *testing.T)
 	}
 	if prepared.RunID == "" || prepared.Mode != domain.RunModeTest || prepared.Input["webhookToken"] != "new-secret" || prepared.Input["seed"] != "visible" {
 		t.Fatalf("prepared=%+v", prepared)
+	}
+	if prepared.retryOfRunID != testRunID {
+		t.Fatalf("retry origin=%q, want=%q", prepared.retryOfRunID, testRunID)
+	}
+	encodedPrepared, _ := json.Marshal(prepared)
+	if bytes.Contains(encodedPrepared, []byte("retryOfRunID")) || bytes.Contains(encodedPrepared, []byte(testRunID)) {
+		t.Fatalf("transient retry origin serialized: %s", encodedPrepared)
 	}
 	created := store.retryRun
 	if created.RetryOfRunID == nil || *created.RetryOfRunID != testRunID || created.RetryKey == nil || *created.RetryKey != key || created.SourceRunID != nil || created.Mode != domain.RunModeTest {

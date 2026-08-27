@@ -25,6 +25,17 @@ type runTelemetry struct {
 	active   metric.Int64UpDownCounter
 }
 
+type runOrigin struct {
+	spanContext trace.SpanContext
+	requestID   string
+}
+
+type runOriginContextKey struct{}
+
+func contextWithRunOrigin(ctx context.Context, origin runOrigin) context.Context {
+	return context.WithValue(ctx, runOriginContextKey{}, origin)
+}
+
 func newRunTelemetry(providers observability.Providers) *runTelemetry {
 	meter := providers.Meter("agent-studio/workflow")
 	runs, _ := meter.Int64Counter("agent_studio.workflow.runs")
@@ -51,7 +62,14 @@ func (telemetry *runTelemetry) start(ctx context.Context, prepared *PreparedRun)
 		spanAttributes = appendOptionalRunAttribute(spanAttributes, "agent_studio.run.source_id", prepared.sourceRunID)
 		spanAttributes = appendOptionalRunAttribute(spanAttributes, "agent_studio.run.source_node_id", prepared.sourceNodeID)
 	}
-	ctx, span := telemetry.tracer.Start(ctx, "workflow.run", trace.WithAttributes(spanAttributes...))
+	spanOptions := []trace.SpanStartOption{trace.WithAttributes(spanAttributes...)}
+	if origin, ok := ctx.Value(runOriginContextKey{}).(runOrigin); ok {
+		spanOptions = append(spanOptions, trace.WithNewRoot())
+		if origin.spanContext.IsValid() {
+			spanOptions = append(spanOptions, trace.WithLinks(trace.Link{SpanContext: origin.spanContext}))
+		}
+	}
+	ctx, span := telemetry.tracer.Start(ctx, "workflow.run", spanOptions...)
 	modeAttribute := attribute.String("mode", mode)
 	telemetry.active.Add(ctx, 1, metric.WithAttributes(modeAttribute))
 	started := time.Now()

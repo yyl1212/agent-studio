@@ -88,6 +88,9 @@ func TestPrepareRerunUsesEditedEntryInputAndCreatesDebugRun(t *testing.T) {
 	if created.Mode != domain.RunModeDebug || created.SourceRunID == nil || *created.SourceRunID != "source-run" || created.SourceNodeID == nil || *created.SourceNodeID != "left" {
 		t.Fatalf("created=%+v", created)
 	}
+	if prepared.sourceRunID != "source-run" || prepared.sourceNodeID != "left" {
+		t.Fatalf("prepared source=%q/%q", prepared.sourceRunID, prepared.sourceNodeID)
+	}
 	if string(created.GraphSnapshot) != string(graph) || prepared.Scope == nil || prepared.Scope.EntryNodeID != "left" {
 		t.Fatalf("prepared=%+v graph=%s", prepared, created.GraphSnapshot)
 	}

@@ -68,7 +68,7 @@ type AgentRunPreparer interface {
 }
 
 type AgentRunReservation interface {
-	Launch(*PreparedRun)
+	Launch(context.Context, *PreparedRun)
 	Release()
 }
 
@@ -121,7 +121,7 @@ func (service *AgentRunService) Start(ctx context.Context, slug string, input St
 	if prepared == nil || prepared.WorkflowVersionID == nil {
 		return AgentRunPublicSummary{}, false, fmt.Errorf("created agent run has no prepared execution")
 	}
-	reservation.Launch(prepared)
+	reservation.Launch(ctx, prepared)
 	launched = true
 	return AgentRunPublicSummary{
 		RunID: prepared.RunID, WorkflowVersionID: *prepared.WorkflowVersionID, Version: prepared.WorkflowVersion,

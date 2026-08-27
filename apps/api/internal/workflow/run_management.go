@@ -194,7 +194,7 @@ func (service *RunManagementService) PrepareRetry(ctx context.Context, sourceRun
 	return &PreparedRun{
 		RunID: createdID, Plan: plan, Input: input, Mode: created.Mode, WorkflowID: created.WorkflowID,
 		WorkflowVersionID: cloneStringPointer(created.WorkflowVersionID), DraftRevision: cloneInt64Pointer(created.DraftRevision),
-		secretRedactor: secretRedactor,
+		secretRedactor: secretRedactor, retryOfRunID: source.ID,
 	}, nil
 }
 
