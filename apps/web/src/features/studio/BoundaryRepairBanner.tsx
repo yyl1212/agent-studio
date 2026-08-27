@@ -29,6 +29,12 @@ export function BoundaryRepairBanner(props: BoundaryRepairBannerProps) {
     wasOpen.current = open
   }, [open])
 
+  useEffect(() => {
+    if (!props.diagnosis.healthy) return
+    setOpen(false)
+    setSelection({})
+  }, [props.diagnosis.healthy])
+
   if (props.diagnosis.healthy) return null
 
   const duplicateProblems = props.diagnosis.problems.filter(

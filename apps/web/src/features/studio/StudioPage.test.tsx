@@ -390,6 +390,14 @@ describe('StudioPage', () => {
     expect(
       screen.getByRole('dialog', { name: '修复工作流边界' }),
     ).toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: '重试保存' }),
+    ).not.toBeInTheDocument()
+    if (failure.status === 409) {
+      expect(
+        screen.getByRole('button', { name: '刷新工作流' }),
+      ).toBeVisible()
+    }
   })
 
   it('只有开始和结束节点时显示首节点引导并打开节点库', async () => {

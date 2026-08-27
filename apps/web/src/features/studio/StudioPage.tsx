@@ -593,7 +593,7 @@ export function StudioPage() {
           onAgentPresentation={() => requestIntent({ kind: 'agent-presentation' })}
           onVersionHistory={() => { rememberTrigger(moreActionsTriggerRef.current); requestIntent({ kind: 'version-history' }) }}
           onExport={() => requestIntent({ kind: 'export' })}
-          onRetrySave={retrySave}
+          onRetrySave={boundaryBlocked ? undefined : retrySave}
           onRefreshConflict={() => window.location.reload()}
         />}
         quickTools={<StudioQuickTools

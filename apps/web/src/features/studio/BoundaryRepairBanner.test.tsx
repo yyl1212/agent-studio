@@ -124,3 +124,52 @@ it('取消修复零回调并恢复横幅触发点焦点', async () => {
   expect(onConfirm).not.toHaveBeenCalled()
   expect(trigger).toHaveFocus()
 })
+
+it('修复健康后清理对话框状态，再次异常时不会自动打开', async () => {
+  const user = userEvent.setup()
+  const onConfirm = vi.fn()
+  const invalidNodes = [studioNode('end', 'end')]
+  const healthyNodes = [studioNode('start', 'start'), studioNode('end', 'end')]
+  const { rerender } = render(
+    <BoundaryRepairBanner
+      diagnosis={diagnoseWorkflowBoundaries(invalidNodes)}
+      nodes={invalidNodes}
+      edges={[]}
+      busy={false}
+      error=""
+      onConfirm={onConfirm}
+    />,
+  )
+  await user.click(screen.getByRole('button', { name: '修复工作流边界' }))
+  expect(
+    screen.getByRole('dialog', { name: '修复工作流边界' }),
+  ).toBeVisible()
+
+  rerender(
+    <BoundaryRepairBanner
+      diagnosis={diagnoseWorkflowBoundaries(healthyNodes)}
+      nodes={healthyNodes}
+      edges={[]}
+      busy={false}
+      error=""
+      onConfirm={onConfirm}
+    />,
+  )
+  rerender(
+    <BoundaryRepairBanner
+      diagnosis={diagnoseWorkflowBoundaries(invalidNodes)}
+      nodes={invalidNodes}
+      edges={[]}
+      busy={false}
+      error=""
+      onConfirm={onConfirm}
+    />,
+  )
+
+  expect(
+    screen.queryByRole('dialog', { name: '修复工作流边界' }),
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: '修复工作流边界' }),
+  ).toBeVisible()
+})
