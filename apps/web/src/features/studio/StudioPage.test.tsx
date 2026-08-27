@@ -4,7 +4,7 @@ import { StrictMode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { APIError, api, type NodeDefinition } from '../../lib/api/client'
+import { APIError, api, type NodeDefinition, type Workflow } from '../../lib/api/client'
 import type { RunEvent } from '../../lib/api/ndjson'
 import { activeRunNodeID, connectionIssue, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
 import type { StudioEdge, StudioNode } from './types'
@@ -27,6 +27,47 @@ const workflow = {
   },
   createdAt: '2026-08-17T00:00:00Z', updatedAt: '2026-08-17T00:00:00Z',
 }
+
+const workflowWithoutStart = {
+  ...workflow,
+  draftGraph: {
+    ...workflow.draftGraph,
+    nodes: workflow.draftGraph.nodes.filter((node) => node.type !== 'start'),
+  },
+}
+
+const workflowWithDuplicateEnd = {
+  ...workflow,
+  draftGraph: {
+    ...workflow.draftGraph,
+    nodes: [
+      ...workflow.draftGraph.nodes,
+      {
+        ...workflow.draftGraph.nodes.find((node) => node.type === 'end')!,
+        id: 'end-duplicate',
+      },
+    ],
+  },
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+const renderStudio = () =>
+  render(
+    <MemoryRouter initialEntries={['/workflows/w1']}>
+      <Routes>
+        <Route path="/workflows/:id" element={<StudioPage />} />
+      </Routes>
+    </MemoryRouter>,
+  )
 
 const rawDefinitions = [
   { type: 'start', version: '1', title: '开始', description: '', category: '流程', configSchema: { type: 'object' }, inputs: [], outputs: [] },
@@ -242,22 +283,149 @@ describe('StudioPage', () => {
       ...workflow,
       draftGraph: {
         ...workflow.draftGraph,
-        edges: [{ id: 'start-end', source: 'start', sourcePort: 'value', target: 'end', targetPort: 'result' }],
+        nodes: [
+          workflow.draftGraph.nodes[0],
+          {
+            id: 'template',
+            type: 'template',
+            typeVersion: '1',
+            position: { x: 300, y: 100 },
+            config: { template: '' },
+          },
+          workflow.draftGraph.nodes[1],
+        ],
+        edges: [
+          { id: 'start-template', source: 'start', sourcePort: 'value', target: 'template', targetPort: 'input' },
+          { id: 'template-end', source: 'template', sourcePort: 'text', target: 'end', targetPort: 'result' },
+        ],
       },
     })
-    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    renderStudio()
     await screen.findByText('演示助手')
-    const flowNode = screen.getByTestId('node-start').closest<HTMLElement>('.react-flow__node')
-    if (!flowNode) throw new Error('找不到开始节点容器')
+    const flowNode = screen.getByTestId('node-template').closest<HTMLElement>('.react-flow__node')
+    if (!flowNode) throw new Error('找不到模板节点容器')
 
     fireEvent.click(flowNode)
     fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' })
 
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
     expect(vi.mocked(api.saveWorkflow).mock.calls[0][1].graph).toEqual(expect.objectContaining({
-      nodes: [expect.objectContaining({ id: 'end' })],
+      nodes: [
+        expect.objectContaining({ id: 'start' }),
+        expect.objectContaining({ id: 'end' }),
+      ],
       edges: [],
     }))
+  })
+
+  it('删除开始节点不会改图或保存', async () => {
+    renderStudio()
+    const start = await screen.findByTestId('node-start')
+    fireEvent.click(start.closest('.react-flow__node')!)
+    fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' })
+
+    await vi.waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(
+        '开始和结束节点不可删除',
+      ),
+    )
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+    expect(screen.getByTestId('node-start')).toBeInTheDocument()
+  })
+
+  it('复制或剪切边界节点不会创建副本或进入保存队列', async () => {
+    renderStudio()
+    const start = await screen.findByTestId('node-start')
+    fireEvent.click(start.closest('.react-flow__node')!)
+    await userEvent.keyboard('{Control>}c{/Control}{Control>}x{/Control}')
+
+    expect(screen.getAllByTestId('node-start')).toHaveLength(1)
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('边界修复保存成功后才替换页面图', async () => {
+    const pending = deferred<Workflow>()
+    vi.mocked(api.getWorkflow).mockResolvedValue(workflowWithoutStart)
+    vi.mocked(api.saveWorkflow).mockReturnValue(pending.promise)
+    renderStudio()
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: '修复工作流边界' }),
+    )
+    await userEvent.click(screen.getByRole('button', { name: '确认修复' }))
+    expect(screen.queryByTestId('node-start')).not.toBeInTheDocument()
+
+    pending.resolve({ ...workflow, draftRevision: 2 })
+    expect(await screen.findByTestId('node-start')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['缺少开始节点', workflowWithoutStart],
+    ['重复结束节点', workflowWithDuplicateEnd],
+  ] as const)('%s 时阻塞普通写操作', async (_name, loaded) => {
+    vi.mocked(api.getWorkflow).mockResolvedValue(loaded)
+    renderStudio()
+
+    await screen.findByRole('button', { name: '修复工作流边界' })
+    expect(screen.getByRole('button', { name: '添加节点' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+  })
+
+  it.each([
+    [new APIError(503, 'TEMPORARY_UNAVAILABLE', '保存失败'), '保存失败'],
+    [new APIError(409, 'REVISION_CONFLICT', '草稿冲突'), '草稿冲突'],
+  ] as const)('修复保存失败或冲突都保留原图和修复对话框', async (failure, message) => {
+    vi.mocked(api.getWorkflow).mockResolvedValue(workflowWithoutStart)
+    vi.mocked(api.saveWorkflow).mockRejectedValueOnce(failure)
+    renderStudio()
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: '修复工作流边界' }),
+    )
+    await userEvent.click(screen.getByRole('button', { name: '确认修复' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    expect(screen.queryByTestId('node-start')).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('dialog', { name: '修复工作流边界' }),
+    ).toBeVisible()
+  })
+
+  it('只有开始和结束节点时显示首节点引导并打开节点库', async () => {
+    renderStudio()
+    await screen.findByText('演示助手')
+
+    await userEvent.click(
+      screen.getByRole('button', { name: '在这里添加第一个节点' }),
+    )
+    expect(screen.getByRole('dialog', { name: '节点库' })).toBeVisible()
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('已有普通节点时不显示首节点引导', async () => {
+    vi.mocked(api.getWorkflow).mockResolvedValue({
+      ...workflow,
+      draftGraph: {
+        ...workflow.draftGraph,
+        nodes: [
+          ...workflow.draftGraph.nodes,
+          {
+            id: 'template',
+            type: 'template',
+            typeVersion: '1',
+            position: { x: 300, y: 100 },
+            config: { template: '' },
+          },
+        ],
+      },
+    })
+    renderStudio()
+    await screen.findByTestId('node-template')
+
+    expect(
+      screen.queryByRole('button', { name: '在这里添加第一个节点' }),
+    ).not.toBeInTheDocument()
   })
 
   it('只高亮尚未结束的最新运行节点并保留中文状态所需数据', () => {

@@ -13,6 +13,7 @@ export function CanvasEmptyGuide(props: CanvasEmptyGuideProps) {
       className="canvas-empty-guide"
       style={{
         transform: `translate(${props.position.x}px, ${props.position.y}px)`,
+        pointerEvents: 'all',
       }}
     >
       <span aria-hidden="true">＋</span>
