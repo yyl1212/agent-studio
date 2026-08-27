@@ -18,7 +18,7 @@ SDK 版本与应用构建版本独立：
 - `agentnode.Version = 0.4.0` 表示公开 Go SDK 契约。
 - `agentnode.APIVersion = agent-studio.dev/v1alpha1` 表示节点协议。
 - 本地源码构建显示 `0.4.0-dev`。
-- 从 tag 安装的 CLI 显示对应模块版本，例如 `v0.4.0-rc.1`。
+- 从 tag 安装的 CLI 显示对应模块版本，例如 `v0.4.0`。通过 Go Module 缓存安装时，构建信息可能不包含 VCS revision；此时应以模块版本、SDK 版本和 API Version 为准，原生发布附件则会写入精确提交。
 
 应用构建版本变化不自动改变 SDK 或节点协议；只有公开契约变化时才按
 本文件的兼容规则提升 SDK/API 版本。
