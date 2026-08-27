@@ -16,21 +16,21 @@ flowchart LR
 
 ## 开发者预览版本
 
-当前准备发布的候选开发者预览版本为 `v0.4.0-rc.1`，面向源码使用者、工作流作者和节点包开发者。它集中交付调试回放与安全局部重跑、Studio 聚焦工作台、工作流与运行管理恢复、聚焦式 Agent 页面和工作流版本治理；仍不是生产稳定版，也不提供 v1 兼容承诺。本次发布准备不预先声明远端 Tag 或 GitHub Release 已存在；源码安装仅在远端 Tag 存在后可用，附件下载仅在标签工作流成功公开 Pre-release 后可用，使用时以远端状态为准。完整边界见 [v0.4.0-rc.1 Release Notes](docs/releases/v0.4.0-rc.1.md)。
+当前开发者预览版本为 `v0.4.0`，面向源码使用者、工作流作者和节点包开发者。它集中交付调试回放与安全局部重跑、Studio 聚焦工作台、工作流与运行管理恢复、聚焦式 Agent 页面和工作流版本治理；仍不是生产稳定版，也不提供 v1 兼容承诺。本次发布准备不预先声明远端 Tag 或 GitHub Release 已存在；源码安装和附件下载仅在标签工作流成功公开正式 Release 后可用，使用时以远端状态为准。完整边界见 [v0.4.0 Release Notes](docs/releases/v0.4.0.md)。
 
 标签创建后的源码安装命令：
 
 ```bash
-CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.4.0-rc.1
+CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.4.0
 agent-studio version
 ```
 
 ### 预编译 CLI 附件
 
-`v0.4.0-rc.1` 仅在标签工作流全部成功并公开 GitHub Pre-release 后提供 Linux/macOS 的 amd64、arm64 CLI 归档、SHA-256 校验和与逐归档 SPDX JSON SBOM。下载示例：
+`v0.4.0` 仅在标签工作流全部成功并公开 GitHub Release 后提供 Linux/macOS 的 amd64、arm64 CLI 归档、SHA-256 校验和与逐归档 SPDX JSON SBOM。下载示例：
 
 ```bash
-VERSION=v0.4.0-rc.1
+VERSION=v0.4.0
 OS=darwin
 ARCH=arm64
 ARCHIVE="agent-studio_${VERSION}_${OS}_${ARCH}.tar.gz"
