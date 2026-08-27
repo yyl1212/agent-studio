@@ -617,20 +617,43 @@ func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 	}
 	for key, want := range map[string]any{
 		"run_id": "run-structured-error", "node_id": "llm-1", "node_type": "llm",
-		"error_kind": "input", "error_code": "missing_input",
+		"error_category": "node_execution", "error_kind": "input", "error_code": "missing_input",
 	} {
 		if got := record[key]; got != want {
 			t.Fatalf("log field %s = %v, want %v; record=%v", key, got, want, record)
 		}
 	}
-	details, ok := record["error_details"].(map[string]any)
-	nested, nestedOK := details["nested"].(map[string]any)
-	if !ok || details["Authorization"] != "[REDACTED]" || details["field"] != "[REDACTED]" || !nestedOK || nested["[REDACTED]"] != "value" {
-		t.Fatalf("redacted details = %#v", record["error_details"])
+	for _, forbidden := range []string{"error_details", "error_causes", "top-secret", "Bearer"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("log contains forbidden value %q: %s", forbidden, logs.String())
+		}
 	}
-	causes, ok := record["error_causes"].([]any)
-	if !ok || len(causes) < 3 {
-		t.Fatalf("error causes = %#v", record["error_causes"])
+}
+
+func TestRunServiceLogsOnlyAllowlistedNodeErrorFields(t *testing.T) {
+	store := newFakeStore(t)
+	const runID = "run-untrusted-error-fields"
+	if err := store.CreateRun(context.Background(), domain.Run{ID: runID, Status: domain.RunRunning}); err != nil {
+		t.Fatal(err)
+	}
+	const sentinel = "authorization_bearer_secret123"
+	nodeErr := agentnode.NewError(agentnode.ErrorKind(sentinel), sentinel, errors.New("private"), nil)
+	runErr := &engine.NodeExecutionError{NodeID: "extension-1", NodeType: "third-party", Err: nodeErr}
+	var logs bytes.Buffer
+	service := NewRunService(store, newRealCompiler(t), failingRunEngine{err: runErr}, WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	_, err := service.Execute(context.Background(), &PreparedRun{RunID: runID, Plan: &engine.Plan{}}, &recordingObserver{})
+	if !errors.Is(err, nodeErr) {
+		t.Fatalf("execute error = %v", err)
+	}
+	if strings.Contains(logs.String(), sentinel) {
+		t.Fatalf("structured log leaked untrusted error fields: %s", logs.String())
+	}
+	var record map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["error_kind"] != "internal" || record["error_code"] != "execution_failed" {
+		t.Fatalf("sanitized fields = %v/%v, record=%v", record["error_kind"], record["error_code"], record)
 	}
 }
 

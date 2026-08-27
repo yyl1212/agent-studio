@@ -1,12 +1,14 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ type fakeCoordinationStore struct {
 	finalizeCalls     [][2]int
 	finalizeCompleted chan struct{}
 	heartbeatErr      error
+	finalizeErr       error
 }
 
 func (store *fakeCoordinationStore) HeartbeatRuns(_ context.Context, ids []string) ([]string, error) {
@@ -44,7 +47,7 @@ func (store *fakeCoordinationStore) FinalizeInterruptedRuns(_ context.Context, s
 	if store.finalizeCompleted != nil {
 		store.finalizeCompleted <- struct{}{}
 	}
-	return 0, nil
+	return 0, store.finalizeErr
 }
 
 type manualTicker struct {
@@ -218,6 +221,27 @@ func TestRunCoordinatorLoopUsesManualTicksAndCancelsAllOnExit(t *testing.T) {
 	}
 	if len(store.finalizeCalls) != 1 || store.finalizeCalls[0] != [2]int{15, 500} {
 		t.Fatalf("finalize calls=%v", store.finalizeCalls)
+	}
+}
+
+func TestRunCoordinatorLogsSafePersistenceCategory(t *testing.T) {
+	clock := newManualCoordinatorClock()
+	sentinel := "postgres://user:password@db SQL SELECT sentinel-coordinator"
+	store := &fakeCoordinationStore{heartbeatErr: errors.New(sentinel)}
+	var logs bytes.Buffer
+	coordinator := NewRunCoordinator(store, WithCoordinatorClock(clock), WithCoordinatorLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	_, release := coordinator.Register(context.Background(), "run-safe-log")
+	defer release()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- coordinator.Run(ctx) }()
+	clock.tick(coordinatorHeartbeatInterval)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), sentinel) || strings.Contains(logs.String(), "postgres://") || strings.Contains(logs.String(), "SELECT") || !strings.Contains(logs.String(), `"error_category":"persistence"`) {
+		t.Fatalf("unsafe coordinator log=%s", logs.String())
 	}
 }
 

@@ -65,7 +65,11 @@ func (compiler *Compiler) Compile(graph domain.Graph) (*Plan, []domain.Validatio
 			issues = append(issues, issue("NODE_RESOLVE_FAILED", "节点动态端口解析失败", nodeID, "", "config"))
 			continue
 		}
-		compiledNodes[nodeID] = CompiledNode{Node: node, Executor: executor, Ports: ports}
+		definition := executor.Definition()
+		compiledNodes[nodeID] = CompiledNode{
+			Node: node, Executor: executor, Ports: ports,
+			ExecutionSafety: definition.ExecutionSafety,
+		}
 	}
 
 	structuralOutgoing := make(map[string][]string, len(nodeByID))

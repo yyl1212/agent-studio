@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"reflect"
 	"sort"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -33,6 +33,9 @@ type PreparedRun struct {
 	StartedAt         time.Time
 	Scope             *engine.ExecutionScope
 	secretRedactor    *SecretRedactor
+	sourceRunID       string
+	sourceNodeID      string
+	retryOfRunID      string
 }
 
 type RunService struct {
@@ -41,6 +44,7 @@ type RunService struct {
 	engine      Engine
 	logger      *slog.Logger
 	coordinator RunExecutionCoordinator
+	telemetry   *runTelemetry
 }
 
 type RunOption func(*RunService)
@@ -59,12 +63,19 @@ func WithRunCoordinator(coordinator RunExecutionCoordinator) RunOption {
 	}
 }
 
+func WithRunTelemetry(providers observability.Providers) RunOption {
+	return func(service *RunService) {
+		service.telemetry = newRunTelemetry(providers)
+	}
+}
+
 func NewRunService(store Store, compiler Compiler, runtime Engine, options ...RunOption) *RunService {
 	service := &RunService{
-		store:    store,
-		compiler: compiler,
-		engine:   runtime,
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		store:     store,
+		compiler:  compiler,
+		engine:    runtime,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		telemetry: newRunTelemetry(observability.Providers{}),
 	}
 	for _, option := range options {
 		option(service)
@@ -210,10 +221,13 @@ func persistedRunInput(input map[string]any) (json.RawMessage, []string, *Secret
 }
 
 func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, observer engine.Observer) (engine.RunResult, error) {
-	executionContext := ctx
+	executionContext, finishTelemetry := service.telemetry.start(ctx, prepared)
+	telemetryStatus := domain.RunFailed
+	telemetryCategory := observability.ErrorCategoryInternal
+	defer func() { finishTelemetry(telemetryStatus, telemetryCategory) }()
 	release := func() {}
 	if service.coordinator != nil {
-		executionContext, release = service.coordinator.Register(ctx, prepared.RunID)
+		executionContext, release = service.coordinator.Register(executionContext, prepared.RunID)
 	}
 	defer release()
 	persistence := &persistenceObserver{
@@ -234,7 +248,7 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	}
 	result.Output = redactPreparedValue(prepared, result.Output).Value
 	if runErr != nil {
-		service.logRunError(prepared, runErr)
+		service.logRunError(executionContext, prepared, runErr)
 	}
 	status := domain.RunCompleted
 	var publicError *domain.PublicError
@@ -257,6 +271,8 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 			publicError = domain.NewPublicRunError(runErr)
 		}
 	}
+	telemetryStatus = status
+	telemetryCategory = classifyRunError(runErr)
 	finishContext, cancel := context.WithTimeout(context.WithoutCancel(executionContext), 5*time.Second)
 	defer cancel()
 	if persistence.terminal == nil {
@@ -273,6 +289,7 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 			if runErr != nil {
 				return result, runErr
 			}
+			telemetryCategory = observability.ErrorCategoryPersistence
 			return result, err
 		}
 	}
@@ -288,42 +305,54 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 		return result, runErr
 	}
 	if finishErr != nil {
+		telemetryCategory = observability.ErrorCategoryPersistence
 		return result, finishErr
 	}
+	telemetryCategory = ""
 	return result, nil
 }
 
-func (service *RunService) logRunError(prepared *PreparedRun, err error) {
+func (service *RunService) logRunError(ctx context.Context, prepared *PreparedRun, err error) {
 	var executionErr *engine.NodeExecutionError
 	if !errors.As(err, &executionErr) {
 		return
 	}
-	kind := agentnode.KindOf(executionErr.Err)
+	kind := safeErrorKind(agentnode.KindOf(executionErr.Err))
 	code := "execution_failed"
-	var details map[string]any
 	var nodeErr *agentnode.NodeError
 	if errors.As(executionErr.Err, &nodeErr) {
-		code = nodeErr.Code
-		details, _ = redactPreparedValue(prepared, nodeErr.Details).Value.(map[string]any)
+		code = safeErrorCode(nodeErr.Code)
 	}
-	service.logger.Error(
+	observability.Log(ctx, service.logger, slog.LevelError,
 		"node execution failed",
-		"run_id", prepared.RunID,
-		"node_id", executionErr.NodeID,
-		"node_type", executionErr.NodeType,
-		"error_kind", kind,
-		"error_code", code,
-		"error_causes", errorCauseTypes(err),
-		"error_details", details,
+		observability.IDs{RunID: preparedRunID(prepared), NodeID: executionErr.NodeID},
+		slog.String("node_type", executionErr.NodeType),
+		slog.String("error_category", string(observability.ErrorCategoryNodeExecution)),
+		slog.String("error_kind", string(kind)),
+		slog.String("error_code", code),
 	)
 }
 
-func errorCauseTypes(err error) []string {
-	causes := make([]string, 0, 4)
-	for current := err; current != nil; current = errors.Unwrap(current) {
-		causes = append(causes, reflect.TypeOf(current).String())
+func safeErrorCode(code string) string {
+	switch code {
+	case "invalid_config", "invalid_input", "missing_input", "invalid_query", "invalid_text",
+		"invalid_body", "webhook_rejected", "missing_webhook_configuration", "upstream_failed",
+		"execution_failed", "run_canceled", "upstream_timeout", "upstream_unavailable",
+		"model_structured_output_rejected", "model_provider_auth_failed", "model_refused", "model_output_invalid":
+		return code
+	default:
+		return "execution_failed"
 	}
-	return causes
+}
+
+func safeErrorKind(kind agentnode.ErrorKind) agentnode.ErrorKind {
+	switch kind {
+	case agentnode.ErrorKindConfig, agentnode.ErrorKindInput, agentnode.ErrorKindTemporary,
+		agentnode.ErrorKindCanceled, agentnode.ErrorKindInternal:
+		return kind
+	default:
+		return agentnode.ErrorKindInternal
+	}
 }
 
 func compileRunGraph(compiler Compiler, raw json.RawMessage) (domain.Graph, *engine.Plan, error) {

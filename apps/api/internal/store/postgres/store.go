@@ -16,7 +16,8 @@ var (
 )
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool            *pgxpool.Pool
+	poolStatsSource poolStatsSource
 }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
@@ -32,7 +33,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, poolStatsSource: pgxPoolStatsSource{pool: pool}}, nil
 }
 
 func (store *Store) Close() {

@@ -17,6 +17,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 	"github.com/yyl1212/agent-studio/extensions/echo"
@@ -40,6 +41,7 @@ type fixtureWorkflowService struct {
 	lastPresentationID       string
 	lastPresentationRevision int64
 	lastPresentation         domain.AgentPresentation
+	lastRequestID            string
 }
 
 func (service *fixtureWorkflowService) List(context.Context) ([]domain.Workflow, error) {
@@ -49,7 +51,8 @@ func (service *fixtureWorkflowService) List(context.Context) ([]domain.Workflow,
 	return []domain.Workflow{service.workflow}, nil
 }
 
-func (service *fixtureWorkflowService) Get(context.Context, string) (domain.Workflow, error) {
+func (service *fixtureWorkflowService) Get(ctx context.Context, _ string) (domain.Workflow, error) {
+	service.lastRequestID = observability.RequestIDFromContext(ctx)
 	return service.workflow, nil
 }
 

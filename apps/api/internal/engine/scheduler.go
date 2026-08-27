@@ -6,6 +6,7 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
 )
 
 var ErrSchedulerDeadlock = errors.New("workflow scheduler deadlock")
@@ -111,9 +112,24 @@ func descendantSet(plan *Plan, source string) map[string]bool {
 	return descendants
 }
 
-func executeNode(ctx context.Context, plan *Plan, nodeID string, runInput map[string]any, inputs map[string][]any, eventInput any, results chan<- workerResult) {
+func executeNode(ctx context.Context, plan *Plan, nodeID string, runInput map[string]any, inputs map[string][]any, eventInput any, telemetry *nodeTelemetry, results chan<- workerResult) {
 	compiled := plan.Nodes[nodeID]
-	result, err := compiled.Executor.Execute(ctx, domain.NodeRequest{
+	nodeContext, finishTelemetry := telemetry.start(ctx, compiled)
+	var result domain.NodeResult
+	var err error
+	category := observability.ErrorCategory("")
+	defer func() {
+		if recover() != nil {
+			err = errNodeExecutionPanic
+			category = observability.ErrorCategoryPanic
+		}
+		if err != nil && category == "" {
+			category = classifyNodeError(err)
+		}
+		finishTelemetry(nodeTelemetryStatus(err), category)
+		results <- workerResult{nodeID: nodeID, input: eventInput, result: result, err: err}
+	}()
+	result, err = compiled.Executor.Execute(nodeContext, domain.NodeRequest{
 		Inputs:   inputs,
 		RunInput: runInput,
 		Config:   compiled.Node.Config,
@@ -121,5 +137,4 @@ func executeNode(ctx context.Context, plan *Plan, nodeID string, runInput map[st
 	if err == nil {
 		result, err = nodes.NormalizeResult(result, compiled.Ports)
 	}
-	results <- workerResult{nodeID: nodeID, input: eventInput, result: result, err: err}
 }

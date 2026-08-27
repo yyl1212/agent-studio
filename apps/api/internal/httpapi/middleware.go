@@ -1,17 +1,23 @@
 package httpapi
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
-	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (handler *handler) recoverMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		defer func() {
-			if recovered := recover(); recovered != nil {
-				handler.dependencies.Logger.Error("HTTP panic recovered", "requestId", chimiddleware.GetReqID(request.Context()))
+			if recover() != nil {
+				trace.SpanFromContext(request.Context()).SetStatus(codes.Error, "panic")
+				observability.Log(request.Context(), handler.dependencies.Logger, slog.LevelError, "HTTP panic recovered", observability.IDs{},
+					slog.String("error_category", string(observability.ErrorCategoryPanic)),
+				)
 				writeError(writer, request, errHandlerPanic)
 			}
 		}()
@@ -22,15 +28,23 @@ func (handler *handler) recoverMiddleware(next http.Handler) http.Handler {
 func (handler *handler) accessLogMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		started := time.Now()
-		wrapped := chimiddleware.NewWrapResponseWriter(writer, request.ProtoMajor)
+		wrapped := responseWriter(writer, request)
+		completed := false
+		defer func() {
+			writtenStatus := wrapped.Status()
+			status := normalizedHTTPStatus(writtenStatus)
+			if !completed && writtenStatus == 0 {
+				status = http.StatusInternalServerError
+			}
+			observability.Log(request.Context(), handler.dependencies.Logger, slog.LevelInfo, "HTTP request", observability.IDs{},
+				slog.String("method", normalizedHTTPMethod(request.Method)),
+				slog.String("route", routeTemplate(request)),
+				slog.Int("status", status),
+				slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+			)
+		}()
 		next.ServeHTTP(wrapped, request)
-		handler.dependencies.Logger.Info("HTTP request",
-			"requestId", chimiddleware.GetReqID(request.Context()),
-			"method", request.Method,
-			"path", request.URL.Path,
-			"status", wrapped.Status(),
-			"durationMs", time.Since(started).Milliseconds(),
-		)
+		completed = true
 	})
 }
 

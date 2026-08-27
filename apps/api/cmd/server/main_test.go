@@ -9,9 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/yyl1212/agent-studio/apps/api/internal/config"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
+	"github.com/yyl1212/agent-studio/apps/api/internal/store/postgres"
 	"github.com/yyl1212/agent-studio/internal/buildinfo"
 	"github.com/yyl1212/agent-studio/internal/nodeindex"
 	"github.com/yyl1212/agent-studio/internal/nodepackage"
@@ -27,39 +31,73 @@ type recordingShutdownSupervisor struct {
 }
 
 func (supervisor recordingShutdownSupervisor) BeginShutdown() {
-	*supervisor.events = append(*supervisor.events, "supervisor-begin")
+	*supervisor.events = append(*supervisor.events, "agent-runs-begin-shutdown")
 }
 
 func (supervisor recordingShutdownSupervisor) Wait(context.Context) error {
-	*supervisor.events = append(*supervisor.events, "supervisor-wait")
+	*supervisor.events = append(*supervisor.events, "agent-runs-wait")
 	return nil
 }
 
 func (coordinator recordingShutdownCoordinator) BeginShutdown() {
-	*coordinator.events = append(*coordinator.events, "coordinator-begin")
+	*coordinator.events = append(*coordinator.events, "coordinator-stop")
 }
+
+type recordingPoolRegistration struct{ events *[]string }
+
+func (registration recordingPoolRegistration) Unregister() error {
+	*registration.events = append(*registration.events, "pool-metrics-unregister")
+	return nil
+}
+
+type recordingTelemetryRuntime struct {
+	events      *[]string
+	shutdownErr error
+	shutdowns   int
+}
+
+func (runtime *recordingTelemetryRuntime) Providers() observability.Providers {
+	return observability.Providers{}
+}
+func (runtime *recordingTelemetryRuntime) Shutdown(context.Context) error {
+	runtime.shutdowns++
+	if runtime.events != nil {
+		*runtime.events = append(*runtime.events, "telemetry-shutdown")
+	}
+	return runtime.shutdownErr
+}
+
+type recordingStoreCloser struct{ events *[]string }
+
+func (store recordingStoreCloser) Close() { *store.events = append(*store.events, "store-close") }
 
 func TestShutdownRuntimeCancelsRunsBeforeHTTPAndStopsLoopLast(t *testing.T) {
 	events := []string{}
 	done := make(chan error, 1)
 	stop := func() {
-		events = append(events, "coordinator-stop")
 		done <- nil
 	}
 	shutdownHTTP := func(context.Context) error {
 		events = append(events, "http-shutdown")
 		return nil
 	}
+	telemetry := &recordingTelemetryRuntime{events: &events}
 	err := shutdownRuntime(
 		context.Background(),
+		slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 		recordingShutdownSupervisor{events: &events},
 		recordingShutdownCoordinator{events: &events},
 		shutdownHTTP, stop, done,
+		recordingPoolRegistration{events: &events}, telemetry, recordingStoreCloser{events: &events},
+		func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"supervisor-begin", "coordinator-begin", "http-shutdown", "supervisor-wait", "coordinator-stop"}
+	want := []string{
+		"agent-runs-begin-shutdown", "coordinator-stop", "http-shutdown", "agent-runs-wait",
+		"pool-metrics-unregister", "telemetry-shutdown", "store-close",
+	}
 	if len(events) != len(want) {
 		t.Fatalf("shutdown events=%v", events)
 	}
@@ -67,6 +105,52 @@ func TestShutdownRuntimeCancelsRunsBeforeHTTPAndStopsLoopLast(t *testing.T) {
 		if events[index] != want[index] {
 			t.Fatalf("shutdown events=%v, want %v", events, want)
 		}
+	}
+}
+
+func TestShutdownRuntimeBoundsAndSanitizesTelemetryFailure(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	telemetry := &recordingTelemetryRuntime{shutdownErr: errors.New("postgres://secret sentinel-telemetry-shutdown")}
+	done := make(chan error, 1)
+	done <- nil
+	deadlineSeen := make(chan time.Duration, 1)
+	err := shutdownRuntime(
+		context.Background(), logger,
+		recordingShutdownSupervisor{events: &[]string{}}, recordingShutdownCoordinator{events: &[]string{}},
+		func(context.Context) error { return nil }, func() {}, done,
+		recordingPoolRegistration{events: &[]string{}}, telemetry, recordingStoreCloser{events: &[]string{}},
+		func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			deadline, _ := ctx.Deadline()
+			deadlineSeen <- time.Until(deadline)
+			return ctx, cancel
+		},
+	)
+	if err != nil {
+		t.Fatalf("telemetry failure changed shutdown result: %v", err)
+	}
+	if budget := <-deadlineSeen; budget <= 0 || budget > 5*time.Second {
+		t.Fatalf("telemetry shutdown budget=%v", budget)
+	}
+	if strings.Contains(logs.String(), "sentinel-telemetry-shutdown") || strings.Contains(logs.String(), "postgres://") || !strings.Contains(logs.String(), `"component":"telemetry"`) || !strings.Contains(logs.String(), `"reason":"shutdown"`) {
+		t.Fatalf("unsafe telemetry shutdown log=%s", logs.String())
+	}
+}
+
+func TestAssemblyClosesTelemetryWhenStoreOpenFails(t *testing.T) {
+	telemetry := &recordingTelemetryRuntime{}
+	wantErr := errors.New("sentinel-store-open")
+	_, _, err := openRuntimeAndStore(
+		context.Background(), config.Config{}, buildinfo.Info{}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		func(context.Context, observability.Options, *slog.Logger) (telemetryRuntime, error) {
+			return telemetry, nil
+		},
+		func(context.Context, string) (*postgres.Store, error) { return nil, wantErr },
+		func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+	)
+	if !errors.Is(err, wantErr) || telemetry.shutdowns != 1 {
+		t.Fatalf("error=%v shutdowns=%d", err, telemetry.shutdowns)
 	}
 }
 

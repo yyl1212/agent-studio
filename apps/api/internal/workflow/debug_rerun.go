@@ -89,6 +89,8 @@ func (service *DebugService) PrepareRerun(ctx context.Context, runID, nodeID str
 		WorkflowID:     built.source.WorkflowID,
 		Scope:          &built.scope,
 		secretRedactor: secretRedactor,
+		sourceRunID:    sourceRunID,
+		sourceNodeID:   sourceNodeID,
 	}, nil
 }
 
