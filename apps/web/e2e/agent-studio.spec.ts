@@ -37,6 +37,59 @@ test('全画布内应用配置并试运行最新草稿', async ({ page }) => {
   await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
 })
 
+test('分层节点库支持分类、最近、拖放和移动端降级', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  await createWorkflow(page, `node-library-${suffix}`, `节点库体验 ${suffix}`)
+
+  await page.getByRole('button', { name: '添加节点' }).click()
+  const library = page.getByRole('dialog', { name: '节点库' })
+  await expect(library).toBeVisible()
+  await library.getByRole('button', { name: '文本', exact: true }).click()
+  await expect(page.getByRole('button', { name: /^提示词模板/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^LLM/ })).toHaveCount(0)
+  const desktopColumns = await page.locator('.node-library-grid').first().evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
+  )
+  expect(desktopColumns).toBe(2)
+
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await library.getByRole('button', { name: '最近', exact: true }).click()
+  await expect(page.getByRole('button', { name: /^提示词模板/ })).toBeVisible()
+
+  await page.reload()
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('dialog', { name: '节点库' }).getByRole('button', { name: '最近', exact: true }).click()
+  await expect(page.getByRole('button', { name: /^提示词模板/ })).toBeVisible()
+  await page.getByRole('dialog', { name: '节点库' }).getByRole('button', { name: '全部', exact: true }).click()
+  await page.getByRole('button', { name: /^LLM · 结构化输出/ }).dragTo(
+    page.getByLabel('工作流画布'),
+    { targetPosition: { x: 760, y: 280 } },
+  )
+  await expect(page.getByRole('dialog', { name: 'LLM · 结构化输出' })).toBeVisible()
+
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await expect(page.locator('.node-library-grid').first()).toHaveCSS(
+    'grid-template-columns',
+    /.+/,
+  )
+  const columns = await page.locator('.node-library-grid').first().evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
+  )
+  expect(columns).toBe(1)
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true)
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+})
+
 test('无效配置聚焦首错且输入时快捷键不打断编辑', async ({ page }) => {
   const suffix = Date.now().toString(36)
   await createWorkflow(page, `shortcut-guard-${suffix}`, `快捷键守卫 ${suffix}`)
