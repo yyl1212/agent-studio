@@ -59,6 +59,16 @@ it('通过窄接口返回当前视口中心并允许手动适配', async () => {
   expect(fitView).toHaveBeenCalledTimes(2)
 })
 
+it('通过窄接口转换任意屏幕坐标', () => {
+  const ref = createRef<WorkflowCanvasHandle>()
+  render(<WorkflowCanvas ref={ref} {...baseProps} nodes={[node('a')]} />)
+  expect(ref.current?.screenToFlowPosition({ x: 900, y: 500 })).toEqual({
+    x: 420,
+    y: 260,
+  })
+  expect(screenToFlowPosition).toHaveBeenCalledWith({ x: 900, y: 500 })
+})
+
 it('把被点击的画布节点作为焦点回退目标上报', () => {
   const onNodeClick = vi.fn()
   render(<WorkflowCanvas {...baseProps} nodes={[node('a')]} onNodeClick={onNodeClick} />)
@@ -112,6 +122,76 @@ it('fitRequest 推进时主动重新适配服务端替换后的画布', () => {
 	expect(fitView).toHaveBeenCalledTimes(1)
 	rerender(<WorkflowCanvas {...baseProps} nodes={[node('a')]} fitRequest={1} />)
 	expect(fitView).toHaveBeenCalledTimes(2)
+})
+
+const transfer = (
+  key: string,
+  types = ['application/x-agent-studio-node'],
+) => ({
+  types,
+  getData: vi.fn((type: string) =>
+    type === 'application/x-agent-studio-node' ? key : '',
+  ),
+  setData: vi.fn(),
+  dropEffect: 'none',
+  effectAllowed: 'copy',
+}) as unknown as DataTransfer
+
+it('只接收固定 MIME 并上报转换后的画布坐标', () => {
+  const onNodeDefinitionDrop = vi.fn()
+  render(
+    <WorkflowCanvas
+      {...baseProps}
+      nodes={[node('a')]}
+      onNodeDefinitionDrop={onNodeDefinitionDrop}
+    />,
+  )
+  const canvas = screen.getByLabelText('工作流画布')
+  const dataTransfer = transfer('template@1')
+  fireEvent.dragOver(canvas, { dataTransfer })
+  expect(canvas).toHaveAttribute('data-node-drop-active', 'true')
+  fireEvent.drop(canvas, { dataTransfer, clientX: 900, clientY: 500 })
+  expect(onNodeDefinitionDrop).toHaveBeenCalledWith('template@1', {
+    x: 420,
+    y: 260,
+  })
+  expect(canvas).toHaveAttribute('data-node-drop-active', 'false')
+})
+
+it('忽略错误 MIME、空载荷和只读画布', () => {
+  const onNodeDefinitionDrop = vi.fn()
+  const { rerender } = render(
+    <WorkflowCanvas
+      {...baseProps}
+      nodes={[node('a')]}
+      onNodeDefinitionDrop={onNodeDefinitionDrop}
+    />,
+  )
+  const canvas = screen.getByLabelText('工作流画布')
+  fireEvent.drop(canvas, {
+    dataTransfer: transfer('template@1', ['text/plain']),
+    clientX: 10,
+    clientY: 10,
+  })
+  fireEvent.drop(canvas, {
+    dataTransfer: transfer(''),
+    clientX: 10,
+    clientY: 10,
+  })
+  rerender(
+    <WorkflowCanvas
+      {...baseProps}
+      nodes={[node('a')]}
+      onNodeDefinitionDrop={onNodeDefinitionDrop}
+      readOnly
+    />,
+  )
+  fireEvent.drop(canvas, {
+    dataTransfer: transfer('template@1'),
+    clientX: 10,
+    clientY: 10,
+  })
+  expect(onNodeDefinitionDrop).not.toHaveBeenCalled()
 })
 
 function node(id: string): StudioNode {

@@ -3,7 +3,7 @@
 .studio-shell-canvas { position: absolute; inset: 80px 0 0; }
 .studio-shell-command { position: absolute; z-index: 20; top: 16px; right: 16px; left: 16px; }
 .studio-shell-tools { position: absolute; z-index: 11; top: 90px; left: 16px; }
-.studio-shell-library { position: absolute; z-index: 12; top: 90px; bottom: 16px; left: 64px; width: min(380px, calc(100% - 80px)); }
+.studio-shell-library { position: absolute; z-index: 12; top: 90px; bottom: 16px; left: 64px; width: min(520px, calc(100% - 80px)); }
 .studio-shell-workbench { position: absolute; z-index: 12; top: 90px; right: 16px; bottom: 16px; }
 .studio-shell-library .studio-drawer { position: relative; inset: auto; width: 100%; height: 100%; }
 .studio-shell-workbench .workbench-panel { position: relative; inset: auto; width: var(--as-workbench-width); height: 100%; }
@@ -59,7 +59,7 @@
 .agent-settings-preview button { padding: 11px 14px; border: 0; border-radius: var(--as-radius-sm); color: white; background: var(--preview-accent); font-weight: 750; }
 .agent-settings-discard { padding: 28px; }
 .agent-settings-discard h3 { margin-top: 0; }
-.workflow-canvas { width: 100%; height: 100%; }
+.workflow-canvas { width: 100%; height: 100%; transition: box-shadow var(--as-motion-fast) ease; }
 .generic-node { position: relative; display: grid; min-width: 190px; gap: 4px; padding: 16px 18px; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); color: var(--as-text); background: var(--as-surface); box-shadow: 0 9px 24px rgb(73 52 32 / 10%); }
 .generic-node.selected { border-color: var(--as-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--as-primary) 16%, transparent), 0 9px 24px rgb(73 52 32 / 10%); }
 .generic-node.invalid { border-color: #d92d20; }
@@ -74,18 +74,31 @@
 .generic-node.debug-skipped .node-debug-status, .generic-node.debug-cancelled .node-debug-status { color: #667085; }
 .generic-node.debug-running .node-debug-status { color: #175cd3; }
 .react-flow__handle { width: 10px; height: 10px; border: 2px solid var(--as-surface); background: var(--as-primary); }
-.studio-drawer { position: absolute; z-index: 12; top: 90px; bottom: 16px; width: min(380px, calc(100% - 32px)); padding: 22px; overflow: auto; border: 1px solid #dce3ee; background: white; box-shadow: 0 20px 60px rgb(23 32 51 / 18%); }
-.studio-drawer.left { left: 16px; border-radius: 16px; }
-.studio-drawer.right { right: 16px; border-radius: 16px; }
-.drawer-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-.drawer-heading h2 { margin: 0; font-size: 21px; }
-.drawer-heading > button { width: 32px; height: 32px; border: 0; border-radius: 8px; background: #f0f3f8; font-size: 22px; }
+.studio-drawer { position: absolute; z-index: 12; top: 90px; bottom: 16px; width: min(380px, calc(100% - 32px)); padding: 22px; overflow: auto; border: 1px solid var(--as-border); background: var(--as-surface); box-shadow: var(--as-shadow-panel); }
+.studio-drawer.left { left: 16px; border-radius: var(--as-radius-md); }
+.studio-drawer.right { right: 16px; border-radius: var(--as-radius-md); }
 .search-field { display: grid; gap: 7px; margin: 20px 0; font-weight: 650; }
-.search-field input { padding: 10px 12px; border: 1px solid #ccd5e3; border-radius: 9px; }
-.studio-drawer section h3 { margin: 24px 0 8px; color: #687387; font-size: 12px; text-transform: uppercase; }
-.library-node { display: grid; width: 100%; gap: 4px; margin: 8px 0; padding: 14px; border: 1px solid #dce3ee; border-radius: 11px; text-align: left; background: #fbfcfe; }
-.library-node small { color: #6d7687; }
-.library-node .package-summary { color: #475467; font-weight: 600; }
+.search-field input { padding: 10px 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface); }
+.studio-drawer section h3 { margin: 24px 0 8px; color: var(--as-text-muted); font-size: 12px; text-transform: uppercase; }
+.node-library-drawer { display: grid; grid-template: auto minmax(0, 1fr) / 76px minmax(0, 1fr); padding: 0; overflow: hidden; border-color: var(--as-border); border-radius: var(--as-radius-md); background: var(--as-surface); box-shadow: var(--as-shadow-panel); }
+.node-library-heading { grid-column: 1 / -1; display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 18px 18px 14px; border-bottom: 1px solid var(--as-border); }
+.node-library-heading h2 { margin: 2px 0 0; font-size: 21px; }
+.node-library-heading > button { width: 34px; height: 34px; border: 0; border-radius: var(--as-radius-sm); background: var(--as-surface-muted); font-size: 22px; }
+.node-library-categories { display: grid; align-content: start; gap: 6px; min-height: 0; padding: 10px 7px; overflow-y: auto; background: var(--as-surface-muted); }
+.node-library-categories button { width: 100%; padding: 8px 4px; border: 0; border-radius: var(--as-radius-sm); color: var(--as-text-muted); background: transparent; font-size: 12px; }
+.node-library-categories button[aria-pressed="true"] { color: var(--as-surface); background: var(--as-primary); font-weight: 750; }
+.node-library-catalog { min-width: 0; min-height: 0; padding: 0 16px 18px; overflow-y: auto; }
+.node-library-catalog .search-field { position: sticky; z-index: 2; top: 0; margin: 0 -2px 12px; padding: 14px 2px 4px; background: var(--as-surface); }
+.node-library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.node-library-catalog section h3 { margin: 15px 0 8px; color: var(--as-text-muted); font-size: 12px; text-transform: none; }
+.library-node { display: grid; min-width: 0; gap: 5px; margin: 0; padding: 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); color: var(--as-text); text-align: left; background: var(--as-surface); cursor: grab; }
+.library-node:hover { border-color: color-mix(in srgb, var(--as-primary) 42%, var(--as-border)); background: color-mix(in srgb, var(--as-primary) 4%, var(--as-surface)); }
+.library-node:focus-visible { outline: 3px solid color-mix(in srgb, var(--as-primary) 28%, transparent); outline-offset: 2px; }
+.library-node-description { display: -webkit-box; min-height: 2.7em; overflow: hidden; color: var(--as-text-muted); -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.library-node .package-summary { overflow: hidden; color: var(--as-text-muted); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.node-library-empty { display: grid; justify-items: start; gap: 8px; padding: 20px 2px; color: var(--as-text-muted); }
+.node-library-error { margin: 8px 0; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--as-danger) 28%, var(--as-border)); border-radius: var(--as-radius-sm); color: var(--as-danger); background: color-mix(in srgb, var(--as-danger) 5%, var(--as-surface)); }
+.workflow-canvas[data-node-drop-active="true"] { box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--as-primary) 46%, transparent); }
 .test-run-drawer { position: absolute; z-index: 13; right: 16px; bottom: 16px; left: 16px; max-height: 68%; padding: 22px; overflow: auto; border: 1px solid #dce3ee; border-radius: 16px; background: white; box-shadow: 0 -16px 55px rgb(23 32 51 / 18%); }
 .test-columns { display: grid; grid-template-columns: minmax(260px, 420px) 1fr; gap: 28px; }
 .run-output { max-height: 220px; padding: 14px; overflow: auto; border-radius: 10px; color: #d9e2f1; background: #172033; white-space: pre-wrap; }
@@ -200,8 +213,16 @@
   .studio-shell-library, .studio-shell-workbench { z-index: 21; }
   .workbench-panel { top: 8px; right: 8px; bottom: 8px; left: 8px; max-height: none; }
   .debug-page > .workbench-panel { top: 8px; right: 8px; bottom: 8px; left: 8px; }
+  .node-library-drawer { grid-template: auto auto minmax(0, 1fr) / minmax(0, 1fr); }
+  .node-library-heading { grid-column: 1; }
+  .node-library-categories { display: flex; padding: 8px 10px; overflow-x: auto; overflow-y: hidden; }
+  .node-library-categories button { flex: 0 0 auto; width: auto; min-width: 58px; }
+  .node-library-catalog { padding-right: 14px; padding-left: 14px; }
+  .node-library-grid { grid-template-columns: minmax(0, 1fr); }
+  .library-node { cursor: pointer; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .workbench-panel { transition: none; }
+  .workflow-canvas[data-node-drop-active="true"] { transition: none; }
 }

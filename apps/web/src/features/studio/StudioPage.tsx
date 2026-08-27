@@ -20,6 +20,12 @@ import { fromFlowGraph, portsFromDefinition } from './graphAdapter'
 import { hydrateWorkflowGraph } from './hydrateWorkflowGraph'
 import { NodeConfigPanel } from './NodeConfigPanel'
 import { NodeLibraryDrawer } from './NodeLibraryDrawer'
+import {
+  nodeDefinitionKey,
+  readRecentNodeKeys,
+  rememberRecentNodeKey,
+} from './nodeLibraryModel'
+import { availableNodePosition, dropNodePosition } from './nodePlacement'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
 import { StudioCommandBar } from './StudioCommandBar'
@@ -42,6 +48,11 @@ export function StudioPage() {
   const [nodes, setNodes] = useState<StudioNode[]>([])
   const [edges, setEdges] = useState<StudioEdge[]>([])
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [recentNodeKeys, setRecentNodeKeys] = useState<string[]>(() =>
+    readRecentNodeKeys(),
+  )
+  const recentNodeKeysRef = useRef(recentNodeKeys)
+  const [nodeLibraryError, setNodeLibraryError] = useState('')
   const [activeDisclosure, setActiveDisclosure] = useState<'commands' | 'shortcuts'>()
   const [publishOpen, setPublishOpen] = useState(false)
   const [publishedVersion, setPublishedVersion] = useState<number>()
@@ -154,9 +165,17 @@ export function StudioPage() {
     commit(next.nodes, next.edges)
   }
 
-  const addNode = (definition: NodeDefinition) => {
-    if (archived) return
-    const position = availableNodePosition(canvasRef.current?.getViewportCenter() ?? { x: 320, y: 260 }, nodes)
+  const addNode = (
+    definition: NodeDefinition,
+    requestedPosition?: XYPosition,
+  ) => {
+    if (archived || versionLocked) return
+    const position = requestedPosition
+      ? dropNodePosition(requestedPosition, nodes)
+      : availableNodePosition(
+          canvasRef.current?.getViewportCenter() ?? { x: 320, y: 260 },
+          nodes,
+        )
     const node: StudioNode = {
       id: createID(definition.type), type: 'studio',
       position,
@@ -171,9 +190,28 @@ export function StudioPage() {
     }
     const next = [...nodes, node]
     setNodes(next)
+    const validDefinitionKeys = new Set(definitions.map(nodeDefinitionKey))
+    const nextRecentNodeKeys = rememberRecentNodeKey(
+      recentNodeKeysRef.current.filter((key) => validDefinitionKeys.has(key)),
+      nodeDefinitionKey(definition),
+    )
+    recentNodeKeysRef.current = nextRecentNodeKeys
+    setRecentNodeKeys(nextRecentNodeKeys)
+    setNodeLibraryError('')
     setLibraryOpen(false)
     workbench.request({ kind: 'config', nodeId: node.id }, false)
     commit(next, edges)
+  }
+
+  const dropNodeDefinition = (nodeKey: string, position: XYPosition) => {
+    const definition = definitions.find(
+      (candidate) => nodeDefinitionKey(candidate) === nodeKey,
+    )
+    if (!definition) {
+      setNodeLibraryError('节点定义已更新，请重新选择')
+      return
+    }
+    addNode(definition, position)
   }
 
   const applySelectedConfig = (config: Record<string, unknown>, ports: ResolvedPorts) => {
@@ -354,6 +392,7 @@ export function StudioPage() {
     if (intent.kind === 'open-library') {
       workbench.request({ kind: 'close' }, false)
       setActiveDisclosure(undefined)
+      setNodeLibraryError('')
       setLibraryOpen(true)
       return
     }
@@ -404,6 +443,7 @@ export function StudioPage() {
       return
     }
     if (libraryOpen) {
+      setNodeLibraryError('')
       setLibraryOpen(false)
       return
     }
@@ -514,12 +554,22 @@ export function StudioPage() {
               clientY: Math.max(8, Math.min(clientY, window.innerHeight - 100)),
             })
           }}
+          onNodeDefinitionDrop={libraryOpen ? dropNodeDefinition : undefined}
           onNodeClick={(node, trigger) => {
             rememberTrigger(trigger)
             if (!archived && !versionLocked) requestIntent({ kind: 'config', nodeId: node.id })
           }}
         />}
-        nodeLibrary={libraryOpen ? <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} /> : undefined}
+        nodeLibrary={libraryOpen ? <NodeLibraryDrawer
+          definitions={definitions}
+          recentNodeKeys={recentNodeKeys}
+          error={nodeLibraryError}
+          onAdd={(definition) => addNode(definition)}
+          onClose={() => {
+            setNodeLibraryError('')
+            setLibraryOpen(false)
+          }}
+        /> : undefined}
         workbench={workbench.mode.kind !== 'closed' ? <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={closeTopLayer}>
           {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={(config, ports) => { applySelectedConfig(config, ports) }} onApplyAndTest={applyAndOpenTest} />}
           {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} cancelled={runCancelled} error={runError} onRun={runDraft} onCancel={cancelRun} /></>}
@@ -557,15 +607,6 @@ export function StudioPage() {
 
 function createID(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
-}
-
-export function availableNodePosition(center: XYPosition, nodes: StudioNode[]): XYPosition {
-  for (let step = 0; step <= nodes.length; step += 1) {
-    const candidate = { x: center.x, y: center.y + step * 190 }
-    const overlaps = nodes.some((node) => Math.abs(node.position.x - candidate.x) < 280 && Math.abs(node.position.y - candidate.y) < 170)
-    if (!overlaps) return candidate
-  }
-  return { x: center.x, y: center.y + (nodes.length + 1) * 190 }
 }
 
 export function graphAfterDelete(nodes: StudioNode[], edges: StudioEdge[], deletedNodes: StudioNode[], deletedEdges: StudioEdge[]) {
