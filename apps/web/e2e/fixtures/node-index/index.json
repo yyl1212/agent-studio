@@ -31,8 +31,8 @@
             "indexCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           },
           "lifecycle": {
-            "status": "deprecated",
-            "message": "等待兼容当前 Runtime 的替代版本"
+            "status": "active",
+            "message": ""
           },
           "manifest": {
             "apiVersion": "agent-studio.dev/v1alpha1",
@@ -40,7 +40,7 @@
             "metadata": {
               "name": "github.com/example/future-nodes",
               "displayName": "Future Integration Nodes",
-              "description": "Deprecated nodes for a future runtime",
+              "description": "Nodes for a future runtime",
               "license": "Apache-2.0",
               "repository": "https://github.com/example/future-nodes"
             },
