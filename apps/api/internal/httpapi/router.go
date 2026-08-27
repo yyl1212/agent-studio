@@ -12,6 +12,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 	"github.com/yyl1212/agent-studio/apps/api/internal/workflowtemplate"
 	"github.com/yyl1212/agent-studio/internal/nodeindex"
@@ -101,6 +102,7 @@ type Dependencies struct {
 	NodePackages       NodePackageCatalog
 	WebOrigin          string
 	Logger             *slog.Logger
+	Telemetry          observability.Providers
 }
 
 type handler struct {
@@ -112,8 +114,10 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		dependencies.Logger = slog.New(slog.NewTextHandler(discardWriter{}, nil))
 	}
 	handler := &handler{dependencies: dependencies}
+	telemetry := newHTTPTelemetry(dependencies.Telemetry)
 	router := chi.NewRouter()
 	router.Use(chimiddleware.RequestID)
+	router.Use(telemetry.middleware)
 	router.Use(handler.recoverMiddleware)
 	router.Use(handler.accessLogMiddleware)
 	router.Use(corsMiddleware(dependencies.WebOrigin))
