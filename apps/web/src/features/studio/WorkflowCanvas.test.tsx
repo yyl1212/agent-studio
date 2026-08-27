@@ -32,6 +32,15 @@ it('节点或工作台状态变化时不会重复重置画布视口', () => {
   expect(fitView).toHaveBeenCalledTimes(1)
 })
 
+it('fitRequest 推进时主动重新适配服务端替换后的画布', () => {
+	fitView.mockClear()
+	const props = { edges: [], nodes: [node('a')], onNodesChange: vi.fn(), onEdgesChange: vi.fn(), onConnect: vi.fn(), isValidConnection: vi.fn(), onNodeClick: vi.fn() }
+	const { rerender } = render(<WorkflowCanvas {...props} fitRequest={0} />)
+	expect(fitView).toHaveBeenCalledTimes(1)
+	rerender(<WorkflowCanvas {...props} fitRequest={1} />)
+	expect(fitView).toHaveBeenCalledTimes(2)
+})
+
 function node(id: string): StudioNode {
   return { id, type: 'studio', position: { x: 0, y: 0 }, data: { nodeType: 'template', typeVersion: '1', config: {}, ports: { inputs: [], outputs: [] }, issues: [] } }
 }

@@ -15,7 +15,8 @@ import { APIError, api, type AgentPresentation, type NodeDefinition, type Workfl
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { applyNodeConfig } from './configDraft'
 import { AgentPageSettingsDialog } from './AgentPageSettingsDialog'
-import { fromFlowGraph, portsFromDefinition, toFlowGraph } from './graphAdapter'
+import { fromFlowGraph, portsFromDefinition } from './graphAdapter'
+import { hydrateWorkflowGraph } from './hydrateWorkflowGraph'
 import { NodeConfigPanel } from './NodeConfigPanel'
 import { NodeLibraryDrawer } from './NodeLibraryDrawer'
 import { PublishDialog } from './PublishDialog'
@@ -26,6 +27,7 @@ import { useNodeConfigDraft } from './useNodeConfigDraft'
 import { useStudioWorkbench, type WorkbenchIntent } from './useStudioWorkbench'
 import { WorkbenchPanel } from './WorkbenchPanel'
 import { WorkflowCanvas } from './WorkflowCanvas'
+import { VersionGovernancePanel } from './VersionGovernancePanel'
 import '@xyflow/react/dist/style.css'
 import './studio.css'
 
@@ -50,28 +52,28 @@ export function StudioPage() {
   const [events, setEvents] = useState<RunEvent[]>([])
   const [runError, setRunError] = useState('')
   const [running, setRunning] = useState(false)
+	const [draftEditSerial, setDraftEditSerial] = useState(0)
+	const [versionLocked, setVersionLocked] = useState(false)
+	const [versionError, setVersionError] = useState('')
+	const [fitRequest, setFitRequest] = useState(0)
   const saveQueue = useRef<SaveQueue | undefined>(undefined)
   const runController = useRef<AbortController | undefined>(undefined)
   const exportController = useRef<AbortController | undefined>(undefined)
+	const hydrateController = useRef<AbortController | undefined>(undefined)
+	const versionButtonRef = useRef<HTMLButtonElement>(null)
   const workbench = useStudioWorkbench()
 
   useEffect(() => () => {
     exportController.current?.abort()
     runController.current?.abort()
+		hydrateController.current?.abort()
   }, [])
 
   useEffect(() => {
     const controller = new AbortController()
     Promise.all([api.getWorkflow(id, controller.signal), api.listNodeTypes(controller.signal)])
       .then(async ([loadedWorkflow, loadedDefinitions]) => {
-        const resolvedEntries = await Promise.all(loadedWorkflow.draftGraph.nodes.map(async (node) => {
-          try {
-            return [node.id, await api.resolveNodeType(node.type, node.typeVersion, node.config, controller.signal)] as const
-          } catch {
-            return [node.id, portsFromDefinition(loadedDefinitions.find((definition) => definition.type === node.type && definition.version === node.typeVersion))] as const
-          }
-        }))
-        const flow = toFlowGraph(loadedWorkflow.draftGraph, loadedDefinitions, Object.fromEntries(resolvedEntries))
+		const flow = await hydrateWorkflowGraph(loadedWorkflow, loadedDefinitions, api.resolveNodeType, controller.signal)
         setWorkflow(loadedWorkflow)
         setDefinitions(loadedDefinitions)
         setNodes(flow.nodes)
@@ -100,13 +102,16 @@ export function StudioPage() {
   const configDraft = useNodeConfigDraft({ node: selectedNode, edges, resolve: resolveNodePorts })
 
   const commit = (nextNodes: StudioNode[], nextEdges: StudioEdge[]) => {
-    if (!archived) saveQueue.current?.enqueue(fromFlowGraph(nextNodes, nextEdges))
+		if (!archived && saveQueue.current) {
+			setDraftEditSerial((value) => value + 1)
+			saveQueue.current.enqueue(fromFlowGraph(nextNodes, nextEdges))
+		}
   }
   const handleNodesChange = (changes: NodeChange<StudioNode>[]) => {
     if (archived) return
     setNodes((current) => {
       const next = applyNodeChanges(changes, current)
-      commit(next, edges)
+		  if (changes.some(isPersistentNodeChange)) commit(next, edges)
       return next
     })
   }
@@ -114,7 +119,7 @@ export function StudioPage() {
     if (archived) return
     setEdges((current) => {
       const next = applyEdgeChanges(changes, current)
-      commit(nodes, next)
+		  if (changes.some(isPersistentEdgeChange)) commit(nodes, next)
       return next
     })
   }
@@ -263,6 +268,7 @@ export function StudioPage() {
       })
       saveQueue.current.adoptRevision(updated.draftRevision)
       setWorkflow(updated)
+		setDraftEditSerial((value) => value + 1)
       setAgentSettingsOpen(false)
     } catch (error) {
       if (error instanceof APIError && error.status === 409) {
@@ -275,8 +281,33 @@ export function StudioPage() {
     }
   }
 
+  const applyVersionWorkflow = async (updated: Workflow) => {
+		await saveQueue.current?.flush()
+		hydrateController.current?.abort()
+		const controller = new AbortController()
+		hydrateController.current = controller
+		const flow = await hydrateWorkflowGraph(updated, definitions, api.resolveNodeType, controller.signal)
+		if (controller.signal.aborted) return
+		saveQueue.current?.adoptRevision(updated.draftRevision)
+		setWorkflow(updated)
+		setNodes(flow.nodes)
+		setEdges(flow.edges)
+		setEvents([])
+		setRunError('')
+		setRunning(false)
+		setFitRequest((value) => value + 1)
+	}
+
   const executeIntent = (intent: WorkbenchIntent) => {
     if (workbench.mode.kind === 'test' && intent.kind !== 'test') runController.current?.abort()
+		if (intent.kind === 'version-history') {
+			setVersionError('')
+			void Promise.resolve(saveQueue.current?.flush()).then(() => {
+				setLibraryOpen(false)
+				workbench.request(intent, false)
+			}).catch((error: unknown) => setVersionError(publicMessage(error)))
+			return
+		}
     if (intent.kind === 'open-library') {
       workbench.request({ kind: 'close' }, false)
       setLibraryOpen(true)
@@ -296,12 +327,17 @@ export function StudioPage() {
       void openAgentSettings()
       return
     }
+		if (intent.kind === 'close' && workbench.mode.kind === 'versions') {
+			workbench.request(intent, false)
+			window.requestAnimationFrame(() => versionButtonRef.current?.focus())
+			return
+		}
     setLibraryOpen(false)
     workbench.request(intent, false)
   }
 
   const requestIntent = (intent: WorkbenchIntent) => {
-    if (archived && intent.kind !== 'export' && intent.kind !== 'close') return
+    if (archived && intent.kind !== 'export' && intent.kind !== 'close' && intent.kind !== 'version-history') return
     if (intent.kind === 'config' && workbench.mode.kind === 'config' && intent.nodeId === workbench.mode.nodeId) return
     if (configDraft.dirty && workbench.mode.kind === 'config') workbench.request(intent, true)
     else executeIntent(intent)
@@ -330,17 +366,19 @@ export function StudioPage() {
           <button type="button" onClick={() => requestIntent({ kind: 'open-library' })} disabled={archived}>添加节点</button>
           <button type="button" onClick={() => requestIntent({ kind: 'test' })} disabled={archived}>测试运行</button>
           <button type="button" onClick={() => requestIntent({ kind: 'agent-presentation' })} disabled={archived}>Agent 页面设置</button>
+		  <button ref={versionButtonRef} type="button" onClick={() => requestIntent({ kind: 'version-history' })}>版本历史</button>
           <button type="button" onClick={() => requestIntent({ kind: 'export' })} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
           <button className="primary-button" type="button" onClick={() => requestIntent({ kind: 'publish' })} disabled={archived}>发布</button>
-          {(exportError || (!agentSettingsOpen && agentSettingsError)) && <span className="studio-toolbar-error" role="alert">{exportError || agentSettingsError}</span>}
+		  {(exportError || versionError || (!agentSettingsOpen && agentSettingsError)) && <span className="studio-toolbar-error" role="alert">{exportError || versionError || agentSettingsError}</span>}
         </div>
       </header>
       {archived && <div className="studio-archive-banner" role="status">已归档，只读模式。恢复后才能保存、测试或发布。</div>}
-      <WorkflowCanvas readOnly={archived} nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => { if (!archived) requestIntent({ kind: 'config', nodeId: node.id }) }} />
+	  <WorkflowCanvas readOnly={archived || versionLocked} fitRequest={fitRequest} nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => { if (!archived && !versionLocked) requestIntent({ kind: 'config', nodeId: node.id }) }} />
       {libraryOpen && <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} />}
-      {workbench.mode.kind !== 'closed' && <WorkbenchPanel titleId="studio-workbench-title" onRequestClose={() => requestIntent({ kind: 'close' })}>
+	  {workbench.mode.kind !== 'closed' && <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={() => requestIntent({ kind: 'close' })}>
         {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={applySelectedConfig} />}
         {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} error={runError} onRun={runDraft} onCancel={() => runController.current?.abort()} /></>}
+		{workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
       </WorkbenchPanel>}
       <ConfirmDialog
         open={Boolean(workbench.pendingIntent)}
@@ -371,6 +409,14 @@ export function StudioPage() {
 
 function createID(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
+}
+
+export function isPersistentNodeChange(change: NodeChange<StudioNode>) {
+	return change.type === 'position' || change.type === 'add' || change.type === 'remove' || change.type === 'replace'
+}
+
+export function isPersistentEdgeChange(change: EdgeChange<StudioEdge>) {
+	return change.type === 'add' || change.type === 'remove' || change.type === 'replace'
 }
 
 function defaultValue(schema: JSONSchema): unknown {

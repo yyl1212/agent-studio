@@ -103,6 +103,8 @@ make dev-web
 
 Studio 使用画布旁的单一上下文工作台。节点输入先保存在本地草稿中，端口解析完成后需显式点击“应用配置”；切换节点、测试、发布或导出时会保护未应用草稿。完整操作与响应式边界见 [Studio 聚焦工作台使用指南](docs/frontend-workbench.md)。
 
+Studio 顶部“版本历史”已支持发布版本时间线、任意两个快照的五组语义比较、受保护的“恢复为草稿”和单级撤销。草稿回滚不会改变线上 Agent 或历史运行绑定；操作步骤、并发语义和安全边界见 [工作流版本治理](docs/workflow-versions.md)。
+
 顶部“节点包”导航提供只读的本地索引目录；使用与安全边界见[官方节点包索引](docs/node-index.md)。
 
 顶部“运行”导航提供全局筛选、3 秒智能刷新、协作取消和安全完整重试；操作步骤、幂等语义与秘密边界见[运行管理与恢复](docs/run-management.md)。
@@ -251,7 +253,7 @@ corepack pnpm@10.34.5 build
 - [Studio 聚焦工作台](docs/frontend-workbench.md)：节点草稿、动态端口、测试调试、快捷键和响应式行为。
 - [节点包开发与兼容检查](docs/node-packages.md)：节点包清单、离线检查、手工安装和模板依赖提示。
 - [官方节点包索引](docs/node-index.md)：离线搜索、显式刷新、缓存恢复和人工源码审核流程。
-- [工作流版本治理 API](docs/workflow-versions.md)：版本列表、结构化比较、安全回滚与单级撤销；当前仅提供管理 API，Studio 版本历史页面将在后续 PR 交付。
+- [工作流版本治理](docs/workflow-versions.md)：Studio 版本历史入口、结构化比较、安全回滚、单级撤销与管理 API。
 - `docs/node-development.md`：无需修改前端的节点扩展示例。
 - `docs/sdk/quickstart.md`：仓库节点创建、测试、生成和画布验证的黄金路径。
 

@@ -32,4 +32,15 @@ describe('WorkbenchPanel', () => {
     await userEvent.keyboard('{Escape}')
     expect(onClose).toHaveBeenCalledOnce()
   })
+
+	 it('关闭被锁定时禁用按钮并拦截 Escape，解锁后恢复', async () => {
+		const onClose = vi.fn()
+		const { rerender } = render(<WorkbenchPanel titleId="panel-title" onRequestClose={onClose} closeDisabled><h2 id="panel-title">版本记录</h2></WorkbenchPanel>)
+		expect(screen.getByRole('button', { name: '关闭工作台' })).toBeDisabled()
+		await userEvent.keyboard('{Escape}')
+		expect(onClose).not.toHaveBeenCalled()
+		rerender(<WorkbenchPanel titleId="panel-title" onRequestClose={onClose} closeDisabled={false}><h2 id="panel-title">版本记录</h2></WorkbenchPanel>)
+		await userEvent.keyboard('{Escape}')
+		expect(onClose).toHaveBeenCalledOnce()
+	 })
 })

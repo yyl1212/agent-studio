@@ -54,4 +54,15 @@ describe('useStudioWorkbench', () => {
     expect(result.current.pendingIntent).toBeUndefined()
     expect(result.current.mode).toEqual({ kind: 'config', nodeId: 'a' })
   })
+
+	it('直接或经过脏配置确认后进入版本历史工作台', () => {
+		const { result } = renderHook(() => useStudioWorkbench())
+		act(() => result.current.request({ kind: 'version-history' }, false))
+		expect(result.current.mode).toEqual({ kind: 'versions' })
+		act(() => result.current.request({ kind: 'config', nodeId: 'a' }, false))
+		act(() => result.current.request({ kind: 'version-history' }, true))
+		expect(result.current.pendingIntent).toEqual({ kind: 'version-history' })
+		act(() => result.current.resolveDirty('discard'))
+		expect(result.current.mode).toEqual({ kind: 'versions' })
+	})
 })
