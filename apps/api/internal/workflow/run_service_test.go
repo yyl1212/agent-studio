@@ -617,20 +617,16 @@ func TestRunServiceLogsStructuredSafeNodeError(t *testing.T) {
 	}
 	for key, want := range map[string]any{
 		"run_id": "run-structured-error", "node_id": "llm-1", "node_type": "llm",
-		"error_kind": "input", "error_code": "missing_input",
+		"error_category": "node_execution", "error_kind": "input", "error_code": "missing_input",
 	} {
 		if got := record[key]; got != want {
 			t.Fatalf("log field %s = %v, want %v; record=%v", key, got, want, record)
 		}
 	}
-	details, ok := record["error_details"].(map[string]any)
-	nested, nestedOK := details["nested"].(map[string]any)
-	if !ok || details["Authorization"] != "[REDACTED]" || details["field"] != "[REDACTED]" || !nestedOK || nested["[REDACTED]"] != "value" {
-		t.Fatalf("redacted details = %#v", record["error_details"])
-	}
-	causes, ok := record["error_causes"].([]any)
-	if !ok || len(causes) < 3 {
-		t.Fatalf("error causes = %#v", record["error_causes"])
+	for _, forbidden := range []string{"error_details", "error_causes", "top-secret", "Bearer"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("log contains forbidden value %q: %s", forbidden, logs.String())
+		}
 	}
 }
 
