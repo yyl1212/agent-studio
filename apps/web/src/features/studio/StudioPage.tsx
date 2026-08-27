@@ -667,7 +667,7 @@ export function StudioPage() {
         error={boundaryRepairError}
         onConfirm={handleBoundaryRepair}
       />
-      {canvasNotice && <output className="studio-canvas-status" aria-live="polite">{canvasNotice}</output>}
+      {canvasNotice && <output className="studio-canvas-status studio-canvas-notice" aria-live="polite">{canvasNotice}</output>}
       {connectionStatus && <output className="studio-canvas-status" aria-live="polite" style={{ left: connectionStatus.clientX, top: connectionStatus.clientY }}>{connectionStatus.message}</output>}
       {archived && <div className="studio-archive-banner" role="status">已归档，只读模式。恢复后才能保存、测试或发布。</div>}
       <ConfirmDialog
