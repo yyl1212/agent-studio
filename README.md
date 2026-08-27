@@ -83,6 +83,8 @@ cp .env.example .env
 make db-up
 ```
 
+可观测性默认关闭。需要在本机查看 Metrics 与 Traces 时，可运行 `make observability-up`，然后访问 Prometheus `http://127.0.0.1:9090` 和 Jaeger `http://127.0.0.1:16686`。配置、验证与故障处理见[可观测性运行手册](docs/observability.md)；真实闭环可运行 `make observability-verify`。
+
 终端一启动 API（启动时自动执行幂等 migration）：
 
 ```bash
