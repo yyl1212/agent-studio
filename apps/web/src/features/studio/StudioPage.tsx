@@ -5,7 +5,6 @@ import {
   type Connection,
   type EdgeChange,
   type NodeChange,
-  type XYPosition,
 } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
@@ -20,6 +19,7 @@ import { fromFlowGraph, portsFromDefinition } from './graphAdapter'
 import { hydrateWorkflowGraph } from './hydrateWorkflowGraph'
 import { NodeConfigPanel } from './NodeConfigPanel'
 import { NodeLibraryDrawer } from './NodeLibraryDrawer'
+import { availableNodePosition } from './nodePlacement'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
 import { StudioCommandBar } from './StudioCommandBar'
@@ -557,15 +557,6 @@ export function StudioPage() {
 
 function createID(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
-}
-
-export function availableNodePosition(center: XYPosition, nodes: StudioNode[]): XYPosition {
-  for (let step = 0; step <= nodes.length; step += 1) {
-    const candidate = { x: center.x, y: center.y + step * 190 }
-    const overlaps = nodes.some((node) => Math.abs(node.position.x - candidate.x) < 280 && Math.abs(node.position.y - candidate.y) < 170)
-    if (!overlaps) return candidate
-  }
-  return { x: center.x, y: center.y + (nodes.length + 1) * 190 }
 }
 
 export function graphAfterDelete(nodes: StudioNode[], edges: StudioEdge[], deletedNodes: StudioNode[], deletedEdges: StudioEdge[]) {

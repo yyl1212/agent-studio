@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition } from '../../lib/api/client'
 import type { RunEvent } from '../../lib/api/ndjson'
-import { activeRunNodeID, availableNodePosition, connectionIssue, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
+import { activeRunNodeID, connectionIssue, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
 import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -294,11 +294,6 @@ describe('StudioPage', () => {
       const saved = vi.mocked(api.saveWorkflow).mock.calls.at(-1)?.[1]
       expect(saved?.graph.nodes.find((node) => node.type === 'template')?.position).toEqual({ x: 640, y: 360 })
     }, { timeout: 2000 })
-  })
-
-  it('视口中心被占用时向下寻找不会遮挡端口的位置', () => {
-    const occupied = { ...studioNode('occupied', 'end', { inputs: [], outputs: [] }), position: { x: 320, y: 260 } }
-    expect(availableNodePosition({ x: 320, y: 260 }, [occupied])).toEqual({ x: 320, y: 450 })
   })
 
   it('归档工作流以只读模式查看且导出不触发保存', async () => {
