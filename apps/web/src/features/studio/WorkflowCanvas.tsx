@@ -11,9 +11,19 @@ import {
   type Viewport,
   type XYPosition,
 } from '@xyflow/react'
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, type ComponentProps } from 'react'
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ComponentProps,
+  type DragEvent,
+} from 'react'
 
 import { GenericNode } from './GenericNode'
+import { NODE_DEFINITION_MIME } from './nodeLibraryModel'
 import type { StudioEdge, StudioNode } from './types'
 
 const nodeTypes = { studio: GenericNode }
@@ -32,6 +42,7 @@ interface WorkflowCanvasProps {
   currentNodeID?: string
   onViewportChange?: (viewport: Viewport) => void
   onInvalidConnection?: (attempt: InvalidConnectionAttempt) => void
+  onNodeDefinitionDrop?: (nodeKey: string, position: XYPosition) => void
 }
 
 export interface InvalidConnectionAttempt {
@@ -42,6 +53,7 @@ export interface InvalidConnectionAttempt {
 
 export interface WorkflowCanvasHandle {
   getViewportCenter: () => XYPosition
+  screenToFlowPosition: (point: XYPosition) => XYPosition | undefined
   fitView: () => Promise<boolean>
 }
 
@@ -49,6 +61,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
 	const containerRef = useRef<HTMLDivElement>(null)
 	const fitted = useRef(false)
 	const instanceRef = useRef<ReactFlowInstance<StudioNode, StudioEdge> | undefined>(undefined)
+	const [nodeDropActive, setNodeDropActive] = useState(false)
 	const lastFitRequest = useRef(props.fitRequest)
 	const handleInit = useCallback((instance: ReactFlowInstance<StudioNode, StudioEdge>) => {
 		instanceRef.current = instance
@@ -68,8 +81,31 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
 			if (!instance || !rect) return { x: 320, y: 260 }
 			return instance.screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
 		},
+		screenToFlowPosition: (point) => instanceRef.current?.screenToFlowPosition(point),
 		fitView: () => instanceRef.current?.fitView({ padding: 0.2, maxZoom: 1.2 }) ?? Promise.resolve(false),
 	}), [])
+	const acceptsNodeDefinition = (event: DragEvent<HTMLDivElement>) =>
+		!props.readOnly &&
+		Boolean(props.onNodeDefinitionDrop) &&
+		event.dataTransfer.types.includes(NODE_DEFINITION_MIME)
+	const handleNodeDragOver = (event: DragEvent<HTMLDivElement>) => {
+		if (!acceptsNodeDefinition(event)) return
+		event.preventDefault()
+		event.dataTransfer.dropEffect = 'copy'
+		setNodeDropActive(true)
+	}
+	const handleNodeDrop = (event: DragEvent<HTMLDivElement>) => {
+		setNodeDropActive(false)
+		if (!acceptsNodeDefinition(event)) return
+		const nodeKey = event.dataTransfer.getData(NODE_DEFINITION_MIME)
+		const position = instanceRef.current?.screenToFlowPosition({
+			x: event.clientX,
+			y: event.clientY,
+		})
+		if (!nodeKey || !position) return
+		event.preventDefault()
+		props.onNodeDefinitionDrop?.(nodeKey, position)
+	}
 	const canvasNodes = props.currentNodeID === undefined
 		? props.nodes
 		: props.nodes.map((node) => ({ ...node, selected: props.currentNodeID === node.id }))
@@ -85,7 +121,19 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
     })
   }
   return (
-    <div ref={containerRef} className="workflow-canvas" aria-label="工作流画布">
+    <div
+      ref={containerRef}
+      className="workflow-canvas"
+      aria-label="工作流画布"
+      data-node-drop-active={nodeDropActive}
+      onDragOver={handleNodeDragOver}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setNodeDropActive(false)
+        }
+      }}
+      onDrop={handleNodeDrop}
+    >
       <ReactFlowProvider>
         <ReactFlow
 		  nodes={canvasNodes}
