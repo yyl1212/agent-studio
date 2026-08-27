@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
 )
 
 const (
@@ -143,11 +145,15 @@ func (coordinator *RunCoordinator) Run(ctx context.Context) error {
 			return nil
 		case <-heartbeats.C():
 			if err := coordinator.heartbeat(ctx); err != nil {
-				coordinator.logger.Error("run heartbeat failed", "error", err)
+				observability.Log(ctx, coordinator.logger, slog.LevelError, "run heartbeat failed", observability.IDs{},
+					slog.String("error_category", string(observability.ErrorCategoryPersistence)),
+				)
 			}
 		case <-sweeps.C():
 			if _, err := coordinator.store.FinalizeInterruptedRuns(ctx, int(coordinatorStaleAfter/time.Second), coordinatorBatchSize); err != nil {
-				coordinator.logger.Error("interrupted run sweep failed", "error", err)
+				observability.Log(ctx, coordinator.logger, slog.LevelError, "interrupted run sweep failed", observability.IDs{},
+					slog.String("error_category", string(observability.ErrorCategoryPersistence)),
+				)
 			}
 		}
 	}
