@@ -1,4 +1,4 @@
-.PHONY: db-up db-down observability-up observability-down observability-check dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e release-tools release-check release-snapshot release-preflight verify-workflows verify-release
+.PHONY: db-up db-down observability-up observability-down observability-check observability-verify dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e release-tools release-check release-snapshot release-preflight verify-workflows verify-release
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
 RELEASE_TOOLS_DIR ?= $(CURDIR)/.release-tools/bin
@@ -21,6 +21,9 @@ observability-down:
 
 observability-check:
 	sh scripts/check-observability-compose.sh
+
+observability-verify:
+	sh scripts/verify-observability.sh
 
 dev-api:
 	set -a; [ ! -f .env ] || . ./.env; set +a; CGO_ENABLED=0 go run ./apps/api/cmd/server
