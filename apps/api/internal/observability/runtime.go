@@ -309,7 +309,10 @@ type safeOTelLogSink struct {
 
 func (*safeOTelLogSink) Init(logr.RuntimeInfo) {}
 
-func (*safeOTelLogSink) Enabled(int) bool { return true }
+// OTel uses logr.Info for verbose lifecycle diagnostics. Suppress those so a
+// normal startup neither emits a warning nor consumes the error rate limit;
+// logr.Error is delivered independently of Enabled.
+func (*safeOTelLogSink) Enabled(int) bool { return false }
 
 func (sink *safeOTelLogSink) Info(int, string, ...any) {
 	sink.handler.Handle(nil)

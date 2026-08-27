@@ -294,8 +294,10 @@ func TestNewDoesNotLeakStandardExporterEnvironmentToProcessOutput(t *testing.T) 
 	clearExporterEnv(t)
 
 	tests := []struct {
-		key   string
-		value string
+		key            string
+		value          string
+		companionKey   string
+		companionValue string
 	}{
 		{key: "OTEL_EXPORTER_OTLP_HEADERS", value: "sentinel-common-header"},
 		{key: "OTEL_EXPORTER_OTLP_TRACES_HEADERS", value: "sentinel-trace-header"},
@@ -303,12 +305,9 @@ func TestNewDoesNotLeakStandardExporterEnvironmentToProcessOutput(t *testing.T) 
 		{key: "OTEL_EXPORTER_OTLP_CERTIFICATE", value: "/sentinel-common-certificate"},
 		{key: "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE", value: "/sentinel-trace-certificate"},
 		{key: "OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE", value: "/sentinel-metric-certificate"},
-		{key: "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", value: "/sentinel-client-certificate"},
-		{key: "OTEL_EXPORTER_OTLP_CLIENT_KEY", value: "/sentinel-client-key"},
-		{key: "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE", value: "/sentinel-trace-client-certificate"},
-		{key: "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY", value: "/sentinel-trace-client-key"},
-		{key: "OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE", value: "/sentinel-metric-client-certificate"},
-		{key: "OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY", value: "/sentinel-metric-client-key"},
+		{key: "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", value: "/sentinel-client-certificate", companionKey: "OTEL_EXPORTER_OTLP_CLIENT_KEY", companionValue: "/sentinel-client-key"},
+		{key: "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE", value: "/sentinel-trace-client-certificate", companionKey: "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY", companionValue: "/sentinel-trace-client-key"},
+		{key: "OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE", value: "/sentinel-metric-client-certificate", companionKey: "OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY", companionValue: "/sentinel-metric-client-key"},
 	}
 	for _, test := range tests {
 		t.Run(test.key, func(t *testing.T) {
@@ -317,12 +316,18 @@ func TestNewDoesNotLeakStandardExporterEnvironmentToProcessOutput(t *testing.T) 
 				"AGENT_STUDIO_OTEL_LOG_HELPER=1",
 				test.key+"="+test.value,
 			)
+			if test.companionKey != "" {
+				command.Env = append(command.Env, test.companionKey+"="+test.companionValue)
+			}
 			output, err := command.CombinedOutput()
 			if err != nil {
 				t.Fatalf("helper failed: %v\n%s", err, output)
 			}
 			if bytes.Contains(output, []byte(test.value)) {
 				t.Fatalf("process output leaked %s: %s", test.key, output)
+			}
+			if test.companionValue != "" && bytes.Contains(output, []byte(test.companionValue)) {
+				t.Fatalf("process output leaked %s: %s", test.companionKey, output)
 			}
 		})
 	}
@@ -395,6 +400,10 @@ func TestRuntimeRateLimitsSDKErrorsAndRestoresPreviousHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	if logOutput.Len() != 0 {
+		t.Fatalf("normal initialization emitted an SDK warning: %s", logOutput.String())
+	}
+	logOutput.Reset()
 	otel.Handle(errors.New("secret-sdk-error-one"))
 	otel.Handle(errors.New("secret-sdk-error-two"))
 	if strings.Count(logOutput.String(), "OpenTelemetry SDK event") != 1 {
