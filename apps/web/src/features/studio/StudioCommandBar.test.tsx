@@ -25,9 +25,12 @@ it('突出试运行和发布，并把低频动作放入更多操作', async () =
   expect(screen.getByRole('button', { name: '发布' })).toBeVisible()
   expect(screen.getByText('已保存')).toBeVisible()
   await userEvent.click(screen.getByText('更多操作'))
+  const moreActions = screen.getByText('更多操作').closest('details')
+  expect(moreActions).toHaveAttribute('open')
   expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs?workflowId=w1')
   await userEvent.click(screen.getByRole('button', { name: '版本历史' }))
   expect(onVersionHistory).toHaveBeenCalledOnce()
+  expect(moreActions).not.toHaveAttribute('open')
 })
 
 it('归档时禁用写操作但保留版本历史和运行记录', async () => {

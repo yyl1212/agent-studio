@@ -1,4 +1,4 @@
-import type { Ref } from 'react'
+import { useRef, type Ref } from 'react'
 import { Link } from 'react-router-dom'
 
 import { Button } from '../../components/ui/Button'
@@ -21,11 +21,16 @@ export interface StudioCommandBarProps {
   onRetrySave?: () => void
   onRefreshConflict?: () => void
   testButtonRef?: Ref<HTMLButtonElement>
-  versionButtonRef?: Ref<HTMLButtonElement>
+  moreActionsTriggerRef?: Ref<HTMLElement>
 }
 
 export function StudioCommandBar(props: StudioCommandBarProps) {
   const saveBlocked = props.saveState === 'error' || props.saveState === 'conflict'
+  const moreActionsRef = useRef<HTMLDetailsElement>(null)
+  const runMenuAction = (action: () => void) => {
+    if (moreActionsRef.current) moreActionsRef.current.open = false
+    action()
+  }
   return <header className="studio-command-bar">
     <div className="studio-title">
       <Link to="/workflows" aria-label="返回工作流列表">←</Link>
@@ -39,13 +44,13 @@ export function StudioCommandBar(props: StudioCommandBarProps) {
     <div className="studio-primary-actions">
       <Button ref={props.testButtonRef} onClick={props.onTest} disabled={props.testDisabled || saveBlocked}>{props.testLabel}</Button>
       <Button variant="primary" onClick={props.onPublish} disabled={props.archived || props.testDisabled || saveBlocked}>发布</Button>
-      <details className="studio-more-actions">
-        <summary>更多操作</summary>
+      <details ref={moreActionsRef} className="studio-more-actions">
+        <summary ref={props.moreActionsTriggerRef}>更多操作</summary>
         <div className="studio-more-menu">
-          <Link to={props.runsHref}>运行记录</Link>
-          <Button variant="ghost" onClick={props.onAgentPresentation} disabled={props.archived}>Agent 页面设置</Button>
-          <Button ref={props.versionButtonRef} variant="ghost" onClick={props.onVersionHistory}>版本历史</Button>
-          <Button variant="ghost" onClick={props.onExport} disabled={props.exporting}>{props.exporting ? '导出中…' : '导出模板'}</Button>
+          <Link to={props.runsHref} onClick={() => { if (moreActionsRef.current) moreActionsRef.current.open = false }}>运行记录</Link>
+          <Button variant="ghost" onClick={() => runMenuAction(props.onAgentPresentation)} disabled={props.archived}>Agent 页面设置</Button>
+          <Button variant="ghost" onClick={() => runMenuAction(props.onVersionHistory)}>版本历史</Button>
+          <Button variant="ghost" onClick={() => runMenuAction(props.onExport)} disabled={props.exporting}>{props.exporting ? '导出中…' : '导出模板'}</Button>
         </div>
       </details>
     </div>

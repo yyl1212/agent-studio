@@ -5,6 +5,7 @@ import {
   type Connection,
   type EdgeChange,
   type NodeChange,
+  type XYPosition,
 } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
@@ -65,7 +66,7 @@ export function StudioPage() {
   const runController = useRef<AbortController | undefined>(undefined)
   const exportController = useRef<AbortController | undefined>(undefined)
 	const hydrateController = useRef<AbortController | undefined>(undefined)
-	const versionButtonRef = useRef<HTMLButtonElement>(null)
+  const moreActionsTriggerRef = useRef<HTMLElement>(null)
   const canvasRef = useRef<WorkflowCanvasHandle>(null)
   const addButtonRef = useRef<HTMLButtonElement>(null)
   const testButtonRef = useRef<HTMLButtonElement>(null)
@@ -146,7 +147,7 @@ export function StudioPage() {
 
   const addNode = (definition: NodeDefinition) => {
     if (archived) return
-    const position = canvasRef.current?.getViewportCenter() ?? { x: 320, y: 260 }
+    const position = availableNodePosition(canvasRef.current?.getViewportCenter() ?? { x: 320, y: 260 }, nodes)
     const node: StudioNode = {
       id: createID(definition.type), type: 'studio',
       position,
@@ -361,7 +362,7 @@ export function StudioPage() {
     }
 		if (intent.kind === 'close' && workbench.mode.kind === 'versions') {
 			workbench.request(intent, false)
-			window.requestAnimationFrame(() => versionButtonRef.current?.focus())
+			window.requestAnimationFrame(() => moreActionsTriggerRef.current?.focus())
 			return
 		}
     setLibraryOpen(false)
@@ -433,11 +434,11 @@ export function StudioPage() {
           testLabel="测试运行"
           testDisabled={archived || versionLocked || saveBlocked}
           testButtonRef={testButtonRef}
-          versionButtonRef={versionButtonRef}
+          moreActionsTriggerRef={moreActionsTriggerRef}
           onTest={() => { rememberTrigger(testButtonRef.current); requestIntent({ kind: 'test' }) }}
           onPublish={() => requestIntent({ kind: 'publish' })}
           onAgentPresentation={() => requestIntent({ kind: 'agent-presentation' })}
-          onVersionHistory={() => { rememberTrigger(versionButtonRef.current); requestIntent({ kind: 'version-history' }) }}
+          onVersionHistory={() => { rememberTrigger(moreActionsTriggerRef.current); requestIntent({ kind: 'version-history' }) }}
           onExport={() => requestIntent({ kind: 'export' })}
           onRetrySave={retrySave}
           onRefreshConflict={() => window.location.reload()}
@@ -510,6 +511,15 @@ export function StudioPage() {
 
 function createID(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
+}
+
+export function availableNodePosition(center: XYPosition, nodes: StudioNode[]): XYPosition {
+  for (let step = 0; step <= nodes.length; step += 1) {
+    const candidate = { x: center.x, y: center.y + step * 190 }
+    const overlaps = nodes.some((node) => Math.abs(node.position.x - candidate.x) < 280 && Math.abs(node.position.y - candidate.y) < 170)
+    if (!overlaps) return candidate
+  }
+  return { x: center.x, y: center.y + (nodes.length + 1) * 190 }
 }
 
 export function isPersistentNodeChange(change: NodeChange<StudioNode>) {

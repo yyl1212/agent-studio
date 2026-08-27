@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition } from '../../lib/api/client'
 import type { RunEvent } from '../../lib/api/ndjson'
-import { activeRunNodeID, connectionIssue, decorateRunNodes, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
+import { activeRunNodeID, availableNodePosition, connectionIssue, decorateRunNodes, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
 import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -189,6 +189,11 @@ describe('StudioPage', () => {
     }, { timeout: 2000 })
   })
 
+  it('视口中心被占用时向下寻找不会遮挡端口的位置', () => {
+    const occupied = { ...studioNode('occupied', 'end', { inputs: [], outputs: [] }), position: { x: 320, y: 260 } }
+    expect(availableNodePosition({ x: 320, y: 260 }, [occupied])).toEqual({ x: 320, y: 450 })
+  })
+
   it('归档工作流以只读模式查看且导出不触发保存', async () => {
     vi.mocked(api.getWorkflow).mockResolvedValue({ ...workflow, archivedAt: '2026-08-25T04:00:00Z' })
 	vi.spyOn(api, 'listWorkflowVersions').mockResolvedValue({ items: [], nextCursor: null, rollbackCheckpoint: null })
@@ -334,7 +339,7 @@ describe('StudioPage', () => {
     expect(await screen.findByText('已回滚到版本 1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '关闭工作台' })).toBeEnabled()
     await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
-	await vi.waitFor(() => expect(screen.getByRole('button', { name: '版本历史' })).toHaveFocus())
+	await vi.waitFor(() => expect(screen.getByText('更多操作')).toHaveFocus())
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledWith('w1', expect.objectContaining({ draftRevision: 2 })), { timeout: 2000 })
