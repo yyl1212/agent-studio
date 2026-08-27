@@ -381,6 +381,7 @@ export function StudioPage() {
 
   const requestIntent = (intent: WorkbenchIntent) => {
     if (archived && intent.kind !== 'export' && intent.kind !== 'close' && intent.kind !== 'version-history') return
+    if (activeDisclosure) setActiveDisclosure(undefined)
     if (intent.kind === 'config' && workbench.mode.kind === 'config' && intent.nodeId === workbench.mode.nodeId) return
     if (configDraft.dirty && workbench.mode.kind === 'config') workbench.request(intent, true)
     else executeIntent(intent)
@@ -390,9 +391,15 @@ export function StudioPage() {
     lastTriggerRef.current = trigger
   }
 
+  const disclosureTrigger = (disclosure = activeDisclosure) => disclosure === 'commands'
+    ? moreActionsTriggerRef.current
+    : disclosure === 'shortcuts' ? shortcutHelpTriggerRef.current : null
+
   const closeTopLayer = () => {
     if (activeDisclosure) {
+      const trigger = disclosureTrigger()
       setActiveDisclosure(undefined)
+      window.requestAnimationFrame(() => trigger?.focus())
       return
     }
     if (libraryOpen) {
@@ -435,7 +442,7 @@ export function StudioPage() {
         returnFocusRef={lastTriggerRef}
         onOpenNodeLibrary={() => {
           if (archived || versionLocked) return
-          rememberTrigger(document.activeElement instanceof HTMLElement ? document.activeElement : addButtonRef.current)
+          rememberTrigger(disclosureTrigger() ?? (document.activeElement instanceof HTMLElement ? document.activeElement : addButtonRef.current))
           setActiveDisclosure(undefined)
           requestIntent({ kind: 'open-library' })
         }}

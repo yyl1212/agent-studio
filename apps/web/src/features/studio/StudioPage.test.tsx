@@ -152,6 +152,45 @@ describe('StudioPage', () => {
     expect(helpSummary).toHaveFocus()
   })
 
+  it('工作台上方的菜单由 Escape 关闭并把焦点恢复到可见摘要', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    expect(screen.getByRole('dialog', { name: '测试运行' })).toBeInTheDocument()
+
+    const moreSummary = screen.getByText('更多操作')
+    await userEvent.click(moreSummary)
+    screen.getByRole('button', { name: 'Agent 页面设置' }).focus()
+    await userEvent.keyboard('{Escape}')
+
+    expect(moreSummary.closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByRole('dialog', { name: '测试运行' })).toBeInTheDocument()
+    await vi.waitFor(() => expect(moreSummary).toHaveFocus())
+  })
+
+  it('主操作和节点操作会关闭 disclosure，快捷键节点库恢复到稳定摘要', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    const moreSummary = screen.getByText('更多操作')
+
+    await userEvent.click(moreSummary)
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    expect(moreSummary.closest('details')).not.toHaveAttribute('open')
+
+    await userEvent.click(moreSummary)
+    screen.getByRole('button', { name: 'Agent 页面设置' }).focus()
+    await userEvent.keyboard('{Control>}k{/Control}')
+    expect(await screen.findByRole('dialog', { name: '节点库' })).toBeInTheDocument()
+    await userEvent.keyboard('{Escape}')
+    expect(moreSummary).toHaveFocus()
+
+    const helpSummary = screen.getByText('快捷键帮助')
+    await userEvent.click(helpSummary)
+    fireEvent.click(screen.getByTestId('node-start'))
+    expect(helpSummary.closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByRole('dialog', { name: '开始' })).toBeInTheDocument()
+  })
+
   it('只把图结构变化写入草稿，不持久化 React Flow 尺寸和选中态', () => {
 	 expect(isPersistentNodeChange({ type: 'dimensions', id: 'a', dimensions: { width: 100, height: 60 } })).toBe(false)
 	 expect(isPersistentNodeChange({ type: 'select', id: 'a', selected: true })).toBe(false)
@@ -178,6 +217,29 @@ describe('StudioPage', () => {
     const edge: StudioEdge = { id: 'edge-1', source: 'source', sourceHandle: 'text', target: 'target', targetHandle: 'result' }
 
     expect(graphAfterDelete([source, target], [edge], [source], [])).toEqual({ nodes: [target], edges: [] })
+  })
+
+  it('从页面删除已连线节点时只保存一次完整图快照', async () => {
+    vi.mocked(api.getWorkflow).mockResolvedValue({
+      ...workflow,
+      draftGraph: {
+        ...workflow.draftGraph,
+        edges: [{ id: 'start-end', source: 'start', sourcePort: 'value', target: 'end', targetPort: 'result' }],
+      },
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    const flowNode = screen.getByTestId('node-start').closest<HTMLElement>('.react-flow__node')
+    if (!flowNode) throw new Error('找不到开始节点容器')
+
+    fireEvent.click(flowNode)
+    fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' })
+
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
+    expect(vi.mocked(api.saveWorkflow).mock.calls[0][1].graph).toEqual(expect.objectContaining({
+      nodes: [expect.objectContaining({ id: 'end' })],
+      edges: [],
+    }))
   })
 
   it('只高亮尚未结束的最新运行节点并保留中文状态所需数据', () => {
