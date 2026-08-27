@@ -18,6 +18,7 @@ export interface UseNodeConfigDraftResult {
   error: string
   setDraft: (config: Record<string, unknown>) => void
   reset: () => void
+  retry: () => void
   markApplied: (config: Record<string, unknown>, ports: ResolvedPorts) => void
 }
 
@@ -27,6 +28,7 @@ export function useNodeConfigDraft({ node, edges, resolve, debounceMs = 300 }: U
   const initial = () => valueForNode(node)
   const [value, setValue] = useState<DraftValue>(initial)
   const [resolution, setResolution] = useState<{ status: 'idle'|'resolving'|'ready'|'error'; preview?: PortPreview; error: string }>({ status: 'idle', error: '' })
+  const [retrySerial, setRetrySerial] = useState(0)
   const generation = useRef(0)
   useEffect(() => { generation.current += 1; setValue(valueForNode(node)); setResolution({ status: 'idle', error: '' }) }, [node?.id])
   const schema = node?.data.definition?.configSchema as JSONSchema | undefined
@@ -51,9 +53,10 @@ export function useNodeConfigDraft({ node, edges, resolve, debounceMs = 300 }: U
       })
     }, debounceMs)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [debounceMs, dirty, edgeKey, node?.id, node?.data.nodeType, node?.data.typeVersion, portKey, resolve, validation, value.nodeId])
+  }, [debounceMs, dirty, edgeKey, node?.id, node?.data.nodeType, node?.data.typeVersion, portKey, resolve, retrySerial, validation, value.nodeId])
 
   const reset = useCallback(() => { generation.current += 1; setValue(valueForNode(node)); setResolution({ status: 'idle', error: '' }) }, [node])
+  const retry = useCallback(() => setRetrySerial((value) => value + 1), [])
   const markApplied = useCallback((config: Record<string, unknown>, ports: ResolvedPorts) => {
     generation.current += 1
     const copy = structuredClone(config)
@@ -61,7 +64,7 @@ export function useNodeConfigDraft({ node, edges, resolve, debounceMs = 300 }: U
     if (node) setResolution({ status: 'ready', preview: previewPorts(node, edges, ports), error: '' })
   }, [edges, node])
   const status = !validation?.valid ? 'invalid' : resolution.status
-  return { nodeId: value.nodeId, draft: value.draft, normalized: validation?.valid ? validation.normalized : undefined, dirty, status, preview: resolution.preview, error: resolution.error, setDraft: (draft) => setValue((current) => ({ ...current, draft: structuredClone(draft) })), reset, markApplied }
+  return { nodeId: value.nodeId, draft: value.draft, normalized: validation?.valid ? validation.normalized : undefined, dirty, status, preview: resolution.preview, error: resolution.error, setDraft: (draft) => setValue((current) => ({ ...current, draft: structuredClone(draft) })), reset, retry, markApplied }
 }
 
 function valueForNode(node?: StudioNode): DraftValue {

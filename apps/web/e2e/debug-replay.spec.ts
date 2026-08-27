@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { applyNodeConfig, configureStartTextField, connectIndexedPorts, createWorkflow, moveIndexedNode } from './helpers'
+import { applyNodeConfig, configureStartTextField, connectIndexedPorts, createWorkflow, moveIndexedNode, openMoreActions } from './helpers'
 
 test('fork/join 完整运行、回放与冻结外部分支局部重跑', async ({ page }) => {
 	const suffix = Date.now().toString(36)
@@ -39,6 +39,7 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	await page.getByRole('button', { name: '运行', exact: true }).click()
 	await expect(page.locator('.run-output')).toContainText('L-A+R-A')
 	await page.getByRole('button', { name: '关闭工作台' }).click()
+	await openMoreActions(page)
 	await page.getByRole('link', { name: '运行记录' }).click()
 	await page.getByRole('button', { name: /查看运行/ }).first().click()
 	await page.getByRole('link', { name: '调试回放' }).click()

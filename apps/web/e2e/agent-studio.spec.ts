@@ -1,6 +1,101 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, saveDraftGraph, type AgentPresentationSettings } from './helpers'
+import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, openMoreActions, saveDraftGraph, type AgentPresentationSettings } from './helpers'
+
+test('全画布内应用配置并试运行最新草稿', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const workflowURL = await createWorkflow(page, `studio-ux-${suffix}`, `全画布助手 ${suffix}`)
+  await configureStartTextField(page, 'topic', '主题')
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: '提示词模板' }).click()
+  await page.getByLabel('模板', { exact: true }).fill('初稿：{{topic}}')
+  await applyNodeConfig(page)
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await connectPorts(page, [['start', 'topic', 'template', 'topic'], ['template', 'text', 'end', 'result']])
+
+  await page.getByTestId('node-template').click()
+  await page.getByLabel('模板', { exact: true }).fill('最新：{{topic}}')
+  await page.getByRole('button', { name: '应用并试运行' }).click()
+  await expect(page).toHaveURL(workflowURL)
+  await expect(page.getByRole('dialog', { name: '测试运行' })).toBeVisible()
+  await page.getByLabel('主题', { exact: true }).fill('Agent Studio')
+  await page.getByRole('button', { name: '运行', exact: true }).click()
+  await expect(page.locator('.run-output')).toContainText('最新：Agent Studio')
+
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1024, height: 768 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  }
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await expect(page.getByRole('button', { name: '添加节点' })).toBeEnabled()
+  await page.getByRole('button', { name: '添加节点' }).click()
+  const nodeSearch = page.getByLabel('搜索节点')
+  await expect(nodeSearch).toBeVisible()
+  await nodeSearch.click()
+  await nodeSearch.fill('提示词')
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+})
+
+test('无效配置聚焦首错且输入时快捷键不打断编辑', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  await createWorkflow(page, `shortcut-guard-${suffix}`, `快捷键守卫 ${suffix}`)
+  await page.getByTestId('node-start').click()
+  await page.getByRole('button', { name: '添加一项' }).first().click()
+  await page.getByRole('button', { name: '应用并试运行' }).click()
+  await expect(page.getByLabel('字段标识')).toBeFocused()
+  await page.keyboard.press('Control+K')
+  await expect(page.getByRole('dialog', { name: '节点库' })).toHaveCount(0)
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await page.getByRole('button', { name: '放弃更改' }).click()
+  await page.keyboard.press('Control+K')
+  await expect(page.getByRole('dialog', { name: '节点库' })).toBeVisible()
+})
+
+test('端口解析失败后保留配置并可重试', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  await createWorkflow(page, `resolve-retry-${suffix}`, `解析恢复 ${suffix}`)
+  let failResolve = true
+  await page.route('**/api/node-types/template/1/resolve', async (route) => {
+    if (failResolve) {
+      failResolve = false
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{"code":"TEMPORARY_UNAVAILABLE","message":"解析服务暂不可用"}' })
+      return
+    }
+    await route.continue()
+  })
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: '提示词模板' }).click()
+  await page.getByLabel('模板', { exact: true }).fill('回答：{{topic}}')
+  await expect(page.getByRole('button', { name: '重试解析端口' })).toBeVisible()
+  await page.getByRole('button', { name: '重试解析端口' }).click()
+  await expect(page.getByRole('button', { name: '应用并试运行' })).toBeEnabled()
+  await expect(page.getByLabel('模板', { exact: true })).toHaveValue('回答：{{topic}}')
+})
+
+test('保存失败后保留草稿并可重试', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const workflowURL = await createWorkflow(page, `save-retry-${suffix}`, `保存恢复 ${suffix}`)
+  const workflowID = new URL(workflowURL).pathname.split('/').at(-1)
+  if (!workflowID) throw new Error('创建后未获得工作流 ID')
+  let failSave = true
+  await page.route(`**/api/workflows/${workflowID}`, async (route) => {
+    if (route.request().method() === 'PUT' && failSave) {
+      failSave = false
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{"code":"TEMPORARY_UNAVAILABLE","message":"保存服务暂不可用"}' })
+      return
+    }
+    await route.continue()
+  })
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: '提示词模板' }).click()
+  await expect(page.getByRole('button', { name: '重试保存' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '测试运行' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '发布' })).toBeDisabled()
+  await page.getByRole('button', { name: '重试保存' }).click()
+  await expect(page.getByText('已保存')).toBeVisible()
+  await expect(page.getByTestId('node-template')).toBeVisible()
+})
 
 test('创建、测试、发布并运行 Agent', async ({ page }) => {
   const suffix = Date.now().toString(36)
@@ -142,6 +237,7 @@ test('LLM v2 结构化输出完成草稿、发布、Agent 与运行记录闭环'
   await expect(result).toContainText('"score": 0')
 
   await page.goto(workflowURL)
+  await openMoreActions(page)
   await page.getByRole('link', { name: '运行记录' }).click()
   const publishedRun = page.getByRole('row').filter({ hasText: '已发布' }).getByRole('button', { name: /查看运行/ }).first()
   await expect(publishedRun).toBeVisible()
@@ -206,6 +302,7 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
   const draft = await saveDraftGraph(page, workflowID, versionGraph('研究主题', 'Draft：{{topic}}'))
   await page.goto(workflowURL)
   await expect(page.getByText('已保存')).toBeVisible()
+  await openMoreActions(page)
   await page.getByRole('button', { name: '版本历史' }).click()
   await expect(page.getByRole('heading', { name: '版本历史' })).toBeFocused()
   await page.getByLabel('比较起点').selectOption('version:1')
@@ -234,11 +331,12 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
   const historicalRun = await (await page.request.get(`http://127.0.0.1:8080/api/runs/${runID}`)).json() as { run: { workflowVersionId: string } }
   expect(historicalRun.run.workflowVersionId).toBe(v2.id)
 
-  const versionHistoryButton = page.getByRole('button', { name: '版本历史' })
+  const moreActionsTrigger = page.getByText('更多操作', { exact: true })
   await page.getByRole('button', { name: '关闭工作台' }).click()
-  await expect(versionHistoryButton).toBeFocused()
+  await expect(moreActionsTrigger).toBeFocused()
   await page.getByTestId('node-template').click()
   await expect(page.getByLabel('模板', { exact: true })).toHaveValue('V1：{{topic}}')
+  await openMoreActions(page)
   await page.getByRole('button', { name: '版本历史' }).click()
   await page.getByRole('button', { name: '撤销回滚' }).click()
   await expect(page.getByText('已撤销回滚')).toBeVisible()
@@ -246,6 +344,7 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
   await page.getByTestId('node-template').click()
   await expect(page.getByLabel('模板', { exact: true })).toHaveValue('Draft：{{topic}}')
 
+  await openMoreActions(page)
   await page.getByRole('button', { name: '版本历史' }).click()
   await page.getByLabel('比较起点').selectOption('version:1')
   await page.getByRole('button', { name: '恢复 v1 为草稿' }).click()
@@ -255,6 +354,7 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
   await page.getByTestId('node-template').click()
   await page.getByLabel('模板', { exact: true }).fill('已编辑：{{topic}}')
   await applyNodeConfig(page)
+  await openMoreActions(page)
   await page.getByRole('button', { name: '版本历史' }).click()
   await expect(page.getByRole('button', { name: '撤销回滚' })).toHaveCount(0)
 

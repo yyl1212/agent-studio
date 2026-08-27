@@ -1,6 +1,6 @@
 import type { ErrorObject, ValidateFunction } from 'ajv'
 import Ajv2020 from 'ajv/dist/2020.js'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
 import { Field } from './Field'
 import { pointerChild, type FormValue, type JSONSchema } from './types'
@@ -14,12 +14,19 @@ export interface FormValidation {
   valid: boolean
 }
 
+export interface SchemaFormSecondarySubmit {
+  label: string
+  onSubmit: (value: FormValue) => void | Promise<void>
+  disabled?: boolean
+}
+
 interface SchemaFormProps {
   schema: JSONSchema
   value: FormValue
   onChange: (value: FormValue) => void
   onSubmit: (value: FormValue) => void | Promise<void>
   submitLabel: string
+  secondarySubmit?: SchemaFormSecondarySubmit
   disabled?: boolean
   groupOptional?: boolean
   onValidationChange?: (validation: FormValidation) => void
@@ -27,10 +34,14 @@ interface SchemaFormProps {
   requiredPaths?: ReadonlySet<string>
 }
 
-export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, disabled, groupOptional, onValidationChange, editablePaths, requiredPaths }: SchemaFormProps) {
+export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, secondarySubmit, disabled, groupOptional, onValidationChange, editablePaths, requiredPaths }: SchemaFormProps) {
   const [draft, setDraft] = useState<FormValue>(value)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const focusFrame = useRef<number | undefined>(undefined)
   useEffect(() => setDraft(value), [value])
+  useEffect(() => () => {
+    if (focusFrame.current !== undefined) window.cancelAnimationFrame(focusFrame.current)
+  }, [])
   const properties = schema.properties ?? {}
   const order = [...(schema['x-ui-order'] ?? []), ...Object.keys(properties).filter((key) => !schema['x-ui-order']?.includes(key))]
   const validation = useMemo(() => validateFormValue(schema, draft, requiredPaths), [draft, schema, requiredPaths])
@@ -47,16 +58,24 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
     onChange(next)
   }
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!validation.valid) {
       setErrors(validation.errors)
+      const first = Object.keys(validation.errors)[0]
+      if (focusFrame.current !== undefined) window.cancelAnimationFrame(focusFrame.current)
+      focusFrame.current = window.requestAnimationFrame(() => {
+        focusFrame.current = undefined
+        document.getElementById(fieldID(first))?.focus()
+      })
       return
     }
+    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null
+    const handler = submitter?.dataset.intent === 'secondary' ? secondarySubmit?.onSubmit : onSubmit
     setDraft(validation.normalized)
     setErrors({})
     onChange(validation.normalized)
-    await onSubmit(validation.normalized)
+    await handler?.(validation.normalized)
   }
 
   const renderField = (name: string) => {
@@ -74,7 +93,7 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
   const required = order.filter((name) => schema.required?.includes(name))
   const optional = order.filter((name) => !schema.required?.includes(name))
   const firstError = Object.keys(errors)[0]
-  const focusFirstError = () => document.getElementById(`field-${firstError.slice(1).replace(/[^a-zA-Z0-9_-]/g, '-')}`)?.focus()
+  const focusFirstError = () => document.getElementById(fieldID(firstError))?.focus()
 
   return (
     <form className="schema-form" noValidate onSubmit={submit}>
@@ -83,9 +102,16 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, dis
         {required.length > 0 && <section className="schema-section"><h3>必要配置</h3>{required.map(renderField)}</section>}
         {optional.length > 0 && <details className="schema-optional"><summary>可选配置</summary>{optional.map(renderField)}</details>}
       </> : order.map(renderField)}
-      <button className="primary-button" type="submit" disabled={disabled}>{submitLabel}</button>
+      <div className="schema-form-actions">
+        <button className="primary-button" type="submit" disabled={disabled}>{submitLabel}</button>
+        {secondarySubmit && <button type="submit" data-intent="secondary" disabled={disabled || secondarySubmit.disabled}>{secondarySubmit.label}</button>}
+      </div>
     </form>
   )
+}
+
+function fieldID(path: string) {
+  return `field-${path.slice(1).replace(/[^a-zA-Z0-9_-]/g, '-')}`
 }
 
 export function validateFormValue(schema: JSONSchema, value: FormValue, requiredPaths?: ReadonlySet<string>): FormValidation {

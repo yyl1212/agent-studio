@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -19,6 +19,16 @@ describe('WorkbenchPanel', () => {
     expect(window.localStorage.getItem('agent-studio.workbench-width')).toBe('464')
   })
 
+  it('保持非模态语义并从 400 像素按步长调整', async () => {
+    window.localStorage.setItem('agent-studio.workbench-width', '400')
+    render(<WorkbenchPanel titleId="panel-title" onRequestClose={vi.fn()}><h2 id="panel-title">节点配置</h2></WorkbenchPanel>)
+    expect(screen.getByRole('dialog', { name: '节点配置' })).not.toHaveAttribute('aria-modal', 'true')
+    const separator = screen.getByRole('separator', { name: '调整工作台宽度' })
+    separator.focus()
+    await userEvent.keyboard('{ArrowLeft}')
+    expect(separator).toHaveAttribute('aria-valuenow', '384')
+  })
+
   it('关闭按钮使用调用方行为', async () => {
     const onClose = vi.fn()
     render(<WorkbenchPanel titleId="panel-title" onRequestClose={onClose}><h2 id="panel-title">测试运行</h2></WorkbenchPanel>)
@@ -26,11 +36,26 @@ describe('WorkbenchPanel', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
-  it('Escape 请求关闭工作台', async () => {
+  it('直接使用时 Escape 请求关闭工作台', async () => {
     const onClose = vi.fn()
     render(<WorkbenchPanel titleId="panel-title" onRequestClose={onClose}><h2 id="panel-title">节点配置</h2></WorkbenchPanel>)
     await userEvent.keyboard('{Escape}')
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('编辑控件、组合输入和已处理事件中的 Escape 不关闭工作台', () => {
+    const onClose = vi.fn()
+    render(<WorkbenchPanel titleId="panel-title" onRequestClose={onClose}><h2 id="panel-title">节点配置</h2><input aria-label="配置值" /></WorkbenchPanel>)
+    const input = screen.getByLabelText('配置值')
+
+    input.focus()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true })
+    const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    handled.preventDefault()
+    window.dispatchEvent(handled)
+
+    expect(onClose).not.toHaveBeenCalled()
   })
 
 	 it('关闭被锁定时禁用按钮并拦截 Escape，解锁后恢复', async () => {

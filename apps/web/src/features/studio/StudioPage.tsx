@@ -5,13 +5,14 @@ import {
   type Connection,
   type EdgeChange,
   type NodeChange,
+  type XYPosition,
 } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 
 import type { JSONSchema } from '../../components/schema-form/types'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
-import { APIError, api, type AgentPresentation, type NodeDefinition, type Workflow } from '../../lib/api/client'
+import { APIError, api, type AgentPresentation, type NodeDefinition, type ResolvedPorts, type Workflow } from '../../lib/api/client'
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { applyNodeConfig } from './configDraft'
 import { AgentPageSettingsDialog } from './AgentPageSettingsDialog'
@@ -21,12 +22,15 @@ import { NodeConfigPanel } from './NodeConfigPanel'
 import { NodeLibraryDrawer } from './NodeLibraryDrawer'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
+import { StudioCommandBar } from './StudioCommandBar'
+import { StudioQuickTools } from './StudioQuickTools'
+import { StudioShell } from './StudioShell'
 import { TestRunPanel } from './TestRunPanel'
 import type { StudioEdge, StudioNode } from './types'
 import { useNodeConfigDraft } from './useNodeConfigDraft'
 import { useStudioWorkbench, type WorkbenchIntent } from './useStudioWorkbench'
 import { WorkbenchPanel } from './WorkbenchPanel'
-import { WorkflowCanvas } from './WorkflowCanvas'
+import { WorkflowCanvas, type WorkflowCanvasHandle } from './WorkflowCanvas'
 import { VersionGovernancePanel } from './VersionGovernancePanel'
 import '@xyflow/react/dist/style.css'
 import './studio.css'
@@ -38,6 +42,7 @@ export function StudioPage() {
   const [nodes, setNodes] = useState<StudioNode[]>([])
   const [edges, setEdges] = useState<StudioEdge[]>([])
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [activeDisclosure, setActiveDisclosure] = useState<'commands' | 'shortcuts'>()
   const [publishOpen, setPublishOpen] = useState(false)
   const [publishedVersion, setPublishedVersion] = useState<number>()
   const [publishError, setPublishError] = useState('')
@@ -52,6 +57,8 @@ export function StudioPage() {
   const [events, setEvents] = useState<RunEvent[]>([])
   const [runError, setRunError] = useState('')
   const [running, setRunning] = useState(false)
+	const [runCancelled, setRunCancelled] = useState(false)
+	const [connectionStatus, setConnectionStatus] = useState<{ message: string; clientX: number; clientY: number }>()
 	const [draftEditSerial, setDraftEditSerial] = useState(0)
 	const [versionLocked, setVersionLocked] = useState(false)
 	const [versionError, setVersionError] = useState('')
@@ -60,7 +67,12 @@ export function StudioPage() {
   const runController = useRef<AbortController | undefined>(undefined)
   const exportController = useRef<AbortController | undefined>(undefined)
 	const hydrateController = useRef<AbortController | undefined>(undefined)
-	const versionButtonRef = useRef<HTMLButtonElement>(null)
+  const moreActionsTriggerRef = useRef<HTMLElement>(null)
+  const shortcutHelpTriggerRef = useRef<HTMLElement>(null)
+  const canvasRef = useRef<WorkflowCanvasHandle>(null)
+  const addButtonRef = useRef<HTMLButtonElement>(null)
+  const testButtonRef = useRef<HTMLButtonElement>(null)
+  const lastTriggerRef = useRef<HTMLElement | null>(null)
   const workbench = useStudioWorkbench()
 
   useEffect(() => () => {
@@ -98,6 +110,7 @@ export function StudioPage() {
   const selectedID = workbench.mode.kind === 'config' ? workbench.mode.nodeId : undefined
   const selectedNode = nodes.find((node) => node.id === selectedID)
   const archived = Boolean(workflow?.archivedAt)
+  const saveBlocked = saveState === 'error' || saveState === 'conflict'
   const resolveNodePorts = useCallback((type: string, version: string, config: Record<string, unknown>, signal: AbortSignal) => api.resolveNodeType(type, version, config, signal), [])
   const configDraft = useNodeConfigDraft({ node: selectedNode, edges, resolve: resolveNodePorts })
 
@@ -111,7 +124,7 @@ export function StudioPage() {
     if (archived) return
     setNodes((current) => {
       const next = applyNodeChanges(changes, current)
-		  if (changes.some(isPersistentNodeChange)) commit(next, edges)
+		  if (changes.some((change) => change.type !== 'remove' && isPersistentNodeChange(change))) commit(next, edges)
       return next
     })
   }
@@ -119,26 +132,34 @@ export function StudioPage() {
     if (archived) return
     setEdges((current) => {
       const next = applyEdgeChanges(changes, current)
-		  if (changes.some(isPersistentEdgeChange)) commit(nodes, next)
+		  if (changes.some((change) => change.type !== 'remove' && isPersistentEdgeChange(change))) commit(nodes, next)
       return next
     })
   }
   const isValidConnection = (connection: Connection | StudioEdge) => validateConnection(connection, nodes, edges)
   const handleConnect = (connection: Connection) => {
     if (archived || !isValidConnection(connection)) return
+    setConnectionStatus(undefined)
     setEdges((current) => {
       const next = addEdge({ ...connection, id: createID('edge'), data: {} }, current)
       commit(nodes, next)
       return next
     })
   }
+  const handleDelete = (deleted: { nodes: StudioNode[]; edges: StudioEdge[] }) => {
+    if (archived) return
+    const next = graphAfterDelete(nodes, edges, deleted.nodes, deleted.edges)
+    setNodes(next.nodes)
+    setEdges(next.edges)
+    commit(next.nodes, next.edges)
+  }
 
   const addNode = (definition: NodeDefinition) => {
     if (archived) return
-    const addedCount = nodes.filter((existing) => existing.data.nodeType !== 'start' && existing.data.nodeType !== 'end').length
+    const position = availableNodePosition(canvasRef.current?.getViewportCenter() ?? { x: 320, y: 260 }, nodes)
     const node: StudioNode = {
       id: createID(definition.type), type: 'studio',
-      position: { x: 320, y: 260 + addedCount * 220 },
+      position,
       data: {
         nodeType: definition.type,
         typeVersion: definition.version,
@@ -155,13 +176,24 @@ export function StudioPage() {
     commit(next, edges)
   }
 
-  const applySelectedConfig = (config: Record<string, unknown>, ports: Parameters<typeof applyNodeConfig>[4]) => {
-    if (archived || !selectedID) return
+  const applySelectedConfig = (config: Record<string, unknown>, ports: ResolvedPorts) => {
+    if (archived || !selectedID) return false
     const applied = applyNodeConfig(nodes, edges, selectedID, config, ports)
     setNodes(applied.nodes)
     setEdges(applied.edges)
     commit(applied.nodes, applied.edges)
     configDraft.markApplied(config, ports)
+    return true
+  }
+
+  const applyAndOpenTest = async (config: Record<string, unknown>, ports: ResolvedPorts) => {
+    if (!applySelectedConfig(config, ports)) return
+    try {
+      await saveQueue.current?.flush()
+      executeIntent({ kind: 'test' })
+    } catch {
+      // SaveQueue exposes the failure through saveState; keep the configuration context open.
+    }
   }
 
   const startSchema = useMemo(() => deriveStartSchema(nodes), [nodes])
@@ -172,11 +204,15 @@ export function StudioPage() {
     runController.current = controller
     setEvents([])
     setRunError('')
+    setRunCancelled(false)
     setRunning(true)
     try {
       await saveQueue.current?.flush()
       const response = await api.runDraft(workflow.id, { draftRevision: saveQueue.current?.getRevision() ?? workflow.draftRevision, input }, controller.signal)
-      await readNDJSON(response, (event) => setEvents((current) => [...current, event]), controller.signal)
+      await readNDJSON(response, (event) => {
+        setEvents((current) => [...current, event])
+        if (event.type === 'run.cancelled') setRunCancelled(true)
+      }, controller.signal)
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) setRunError(publicMessage(error))
     } finally {
@@ -185,6 +221,11 @@ export function StudioPage() {
         setRunning(false)
       }
     }
+  }
+
+  const cancelRun = () => {
+    setRunCancelled(true)
+    runController.current?.abort()
   }
 
   const publish = async () => {
@@ -294,11 +335,13 @@ export function StudioPage() {
 		setEdges(flow.edges)
 		setEvents([])
 		setRunError('')
+		setRunCancelled(false)
 		setRunning(false)
 		setFitRequest((value) => value + 1)
 	}
 
   const executeIntent = (intent: WorkbenchIntent) => {
+    setActiveDisclosure(undefined)
     if (workbench.mode.kind === 'test' && intent.kind !== 'test') runController.current?.abort()
 		if (intent.kind === 'version-history') {
 			setVersionError('')
@@ -310,6 +353,7 @@ export function StudioPage() {
 		}
     if (intent.kind === 'open-library') {
       workbench.request({ kind: 'close' }, false)
+      setActiveDisclosure(undefined)
       setLibraryOpen(true)
       return
     }
@@ -329,7 +373,7 @@ export function StudioPage() {
     }
 		if (intent.kind === 'close' && workbench.mode.kind === 'versions') {
 			workbench.request(intent, false)
-			window.requestAnimationFrame(() => versionButtonRef.current?.focus())
+			window.requestAnimationFrame(() => moreActionsTriggerRef.current?.focus())
 			return
 		}
     setLibraryOpen(false)
@@ -338,9 +382,44 @@ export function StudioPage() {
 
   const requestIntent = (intent: WorkbenchIntent) => {
     if (archived && intent.kind !== 'export' && intent.kind !== 'close' && intent.kind !== 'version-history') return
+    if (activeDisclosure) setActiveDisclosure(undefined)
     if (intent.kind === 'config' && workbench.mode.kind === 'config' && intent.nodeId === workbench.mode.nodeId) return
     if (configDraft.dirty && workbench.mode.kind === 'config') workbench.request(intent, true)
     else executeIntent(intent)
+  }
+
+  const rememberTrigger = (trigger: HTMLElement | null) => {
+    lastTriggerRef.current = trigger
+  }
+
+  const disclosureTrigger = (disclosure = activeDisclosure) => disclosure === 'commands'
+    ? moreActionsTriggerRef.current
+    : disclosure === 'shortcuts' ? shortcutHelpTriggerRef.current : null
+
+  const closeTopLayer = () => {
+    if (activeDisclosure) {
+      const trigger = disclosureTrigger()
+      setActiveDisclosure(undefined)
+      window.requestAnimationFrame(() => trigger?.focus())
+      return
+    }
+    if (libraryOpen) {
+      setLibraryOpen(false)
+      return
+    }
+    if (workbench.mode.kind !== 'closed' && !(workbench.mode.kind === 'versions' && versionLocked)) {
+      requestIntent({ kind: 'close' })
+    }
+  }
+
+  const openLibraryFromQuickTools = () => {
+    rememberTrigger(addButtonRef.current)
+    setActiveDisclosure(undefined)
+    requestIntent({ kind: 'open-library' })
+  }
+
+  const retrySave = () => {
+    if (saveState === 'error') commit(nodes, edges)
   }
 
   const continuePendingIntent = (choice: 'apply' | 'discard') => {
@@ -359,27 +438,96 @@ export function StudioPage() {
 
   return (
     <main className="studio-page">
-      <header className="studio-toolbar">
-        <div className="studio-title"><Link to="/workflows" aria-label="返回工作流列表">←</Link><div><strong>{workflow.name}</strong><small>{saveLabel(saveState)}</small></div></div>
-        <div className="studio-actions">
-          <Link to={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}>运行记录</Link>
-          <button type="button" onClick={() => requestIntent({ kind: 'open-library' })} disabled={archived}>添加节点</button>
-          <button type="button" onClick={() => requestIntent({ kind: 'test' })} disabled={archived}>测试运行</button>
-          <button type="button" onClick={() => requestIntent({ kind: 'agent-presentation' })} disabled={archived}>Agent 页面设置</button>
-		  <button ref={versionButtonRef} type="button" onClick={() => requestIntent({ kind: 'version-history' })}>版本历史</button>
-          <button type="button" onClick={() => requestIntent({ kind: 'export' })} disabled={exporting}>{exporting ? '导出中…' : '导出模板'}</button>
-          <button className="primary-button" type="button" onClick={() => requestIntent({ kind: 'publish' })} disabled={archived}>发布</button>
-		  {(exportError || versionError || (!agentSettingsOpen && agentSettingsError)) && <span className="studio-toolbar-error" role="alert">{exportError || versionError || agentSettingsError}</span>}
-        </div>
-      </header>
+      <StudioShell
+        layer={activeDisclosure ?? (libraryOpen ? 'library' : workbench.mode.kind !== 'closed' ? 'workbench' : 'none')}
+        returnFocusRef={lastTriggerRef}
+        onOpenNodeLibrary={() => {
+          if (archived || versionLocked) return
+          rememberTrigger(disclosureTrigger() ?? (document.activeElement instanceof HTMLElement ? document.activeElement : addButtonRef.current))
+          setActiveDisclosure(undefined)
+          requestIntent({ kind: 'open-library' })
+        }}
+        onRequestCloseTopLayer={closeTopLayer}
+        commandBar={<StudioCommandBar
+          workflowName={workflow.name}
+          saveState={saveState}
+          archived={archived}
+          exporting={exporting}
+          runsHref={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}
+          actionError={exportError || versionError || (!agentSettingsOpen && agentSettingsError) || ''}
+          testLabel="测试运行"
+          testDisabled={archived || versionLocked || saveBlocked}
+          testButtonRef={testButtonRef}
+          moreActionsTriggerRef={moreActionsTriggerRef}
+          moreActionsOpen={activeDisclosure === 'commands'}
+          onMoreActionsOpenChange={(open) => {
+            if (open) {
+              rememberTrigger(moreActionsTriggerRef.current)
+              setLibraryOpen(false)
+              setActiveDisclosure('commands')
+            } else {
+              setActiveDisclosure((current) => current === 'commands' ? undefined : current)
+            }
+          }}
+          onTest={() => { rememberTrigger(testButtonRef.current); requestIntent({ kind: 'test' }) }}
+          onPublish={() => requestIntent({ kind: 'publish' })}
+          onAgentPresentation={() => requestIntent({ kind: 'agent-presentation' })}
+          onVersionHistory={() => { rememberTrigger(moreActionsTriggerRef.current); requestIntent({ kind: 'version-history' }) }}
+          onExport={() => requestIntent({ kind: 'export' })}
+          onRetrySave={retrySave}
+          onRefreshConflict={() => window.location.reload()}
+        />}
+        quickTools={<StudioQuickTools
+          disabled={archived || versionLocked}
+          addButtonRef={addButtonRef}
+          shortcutHelpTriggerRef={shortcutHelpTriggerRef}
+          shortcutHelpOpen={activeDisclosure === 'shortcuts'}
+          onShortcutHelpOpenChange={(open) => {
+            if (open) {
+              rememberTrigger(shortcutHelpTriggerRef.current)
+              setLibraryOpen(false)
+              setActiveDisclosure('shortcuts')
+            } else {
+              setActiveDisclosure((current) => current === 'shortcuts' ? undefined : current)
+            }
+          }}
+          onAdd={openLibraryFromQuickTools}
+          onFitView={() => { void canvasRef.current?.fitView() }}
+        />}
+        canvas={<WorkflowCanvas
+          ref={canvasRef}
+          readOnly={archived || versionLocked}
+          fitRequest={fitRequest}
+          nodes={decorateRunNodes(nodes, events)}
+          edges={edges}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={handleEdgesChange}
+          onConnect={handleConnect}
+          onDelete={handleDelete}
+          isValidConnection={isValidConnection}
+          currentNodeID={activeRunNodeID(events)}
+          onInvalidConnection={({ connection, clientX, clientY }) => {
+            const message = connectionIssue(connection, nodes, edges)
+            if (message) setConnectionStatus({
+              message,
+              clientX: Math.max(8, Math.min(clientX, window.innerWidth - 300)),
+              clientY: Math.max(8, Math.min(clientY, window.innerHeight - 100)),
+            })
+          }}
+          onNodeClick={(node, trigger) => {
+            rememberTrigger(trigger)
+            if (!archived && !versionLocked) requestIntent({ kind: 'config', nodeId: node.id })
+          }}
+        />}
+        nodeLibrary={libraryOpen ? <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} /> : undefined}
+        workbench={workbench.mode.kind !== 'closed' ? <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={closeTopLayer}>
+          {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={(config, ports) => { applySelectedConfig(config, ports) }} onApplyAndTest={applyAndOpenTest} />}
+          {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} cancelled={runCancelled} error={runError} onRun={runDraft} onCancel={cancelRun} /></>}
+          {workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
+        </WorkbenchPanel> : undefined}
+      />
+      {connectionStatus && <output className="studio-canvas-status" aria-live="polite" style={{ left: connectionStatus.clientX, top: connectionStatus.clientY }}>{connectionStatus.message}</output>}
       {archived && <div className="studio-archive-banner" role="status">已归档，只读模式。恢复后才能保存、测试或发布。</div>}
-	  <WorkflowCanvas readOnly={archived || versionLocked} fitRequest={fitRequest} nodes={nodes} edges={edges} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(node) => { if (!archived && !versionLocked) requestIntent({ kind: 'config', nodeId: node.id }) }} />
-      {libraryOpen && <NodeLibraryDrawer definitions={definitions} onAdd={addNode} onClose={() => setLibraryOpen(false)} />}
-	  {workbench.mode.kind !== 'closed' && <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={() => requestIntent({ kind: 'close' })}>
-        {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={applySelectedConfig} />}
-        {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} error={runError} onRun={runDraft} onCancel={() => runController.current?.abort()} /></>}
-		{workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
-      </WorkbenchPanel>}
       <ConfirmDialog
         open={Boolean(workbench.pendingIntent)}
         title="保存节点配置更改？"
@@ -411,8 +559,27 @@ function createID(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
 }
 
+export function availableNodePosition(center: XYPosition, nodes: StudioNode[]): XYPosition {
+  for (let step = 0; step <= nodes.length; step += 1) {
+    const candidate = { x: center.x, y: center.y + step * 190 }
+    const overlaps = nodes.some((node) => Math.abs(node.position.x - candidate.x) < 280 && Math.abs(node.position.y - candidate.y) < 170)
+    if (!overlaps) return candidate
+  }
+  return { x: center.x, y: center.y + (nodes.length + 1) * 190 }
+}
+
+export function graphAfterDelete(nodes: StudioNode[], edges: StudioEdge[], deletedNodes: StudioNode[], deletedEdges: StudioEdge[]) {
+  const nodeIDs = new Set(deletedNodes.map((node) => node.id))
+  const edgeIDs = new Set(deletedEdges.map((edge) => edge.id))
+  return {
+    nodes: nodes.filter((node) => !nodeIDs.has(node.id)),
+    edges: edges.filter((edge) => !edgeIDs.has(edge.id) && !nodeIDs.has(edge.source) && !nodeIDs.has(edge.target)),
+  }
+}
+
 export function isPersistentNodeChange(change: NodeChange<StudioNode>) {
-	return change.type === 'position' || change.type === 'add' || change.type === 'remove' || change.type === 'replace'
+	if (change.type === 'position') return change.dragging === false
+	return change.type === 'add' || change.type === 'remove' || change.type === 'replace'
 }
 
 export function isPersistentEdgeChange(change: EdgeChange<StudioEdge>) {
@@ -430,14 +597,20 @@ function defaultValue(schema: JSONSchema): unknown {
 }
 
 export function validateConnection(connection: Connection | StudioEdge, nodes: StudioNode[], edges: StudioEdge[]) {
-  if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle || connection.source === connection.target) return false
+  return connectionIssue(connection, nodes, edges) === undefined
+}
+
+export function connectionIssue(connection: Connection | StudioEdge, nodes: StudioNode[], edges: StudioEdge[]) {
+  if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle) return '请连接有效的输入和输出端口'
+  if (connection.source === connection.target) return '节点不能连接到自身'
   const source = nodes.find((node) => node.id === connection.source)
   const target = nodes.find((node) => node.id === connection.target)
   const output = source?.data.ports.outputs.find((port) => port.key === connection.sourceHandle)
   const input = target?.data.ports.inputs.find((port) => port.key === connection.targetHandle)
-  if (!output || !input || (output.type !== 'any' && input.type !== 'any' && output.type !== input.type)) return false
-  if (input.cardinality === 'one' && edges.some((edge) => edge.id !== ('id' in connection ? connection.id : undefined) && edge.target === connection.target && edge.targetHandle === connection.targetHandle)) return false
-  return true
+  if (!output || !input) return '端口不存在或已变化'
+  if (output.type !== 'any' && input.type !== 'any' && output.type !== input.type) return `端口类型不兼容：${output.type} 不能连接到 ${input.type}`
+  if (input.cardinality === 'one' && edges.some((edge) => edge.id !== ('id' in connection ? connection.id : undefined) && edge.target === connection.target && edge.targetHandle === connection.targetHandle)) return '目标端口只允许一条输入连线'
+  return undefined
 }
 
 export function markInvalidEdges(nodes: StudioNode[], edges: StudioEdge[]) {
@@ -445,6 +618,31 @@ export function markInvalidEdges(nodes: StudioNode[], edges: StudioEdge[]) {
     const invalid = !validateConnection(edge, nodes, edges)
     return { ...edge, data: { ...edge.data, invalid }, style: invalid ? { stroke: '#d92d20', strokeDasharray: '5 4' } : undefined }
   })
+}
+
+export function activeRunNodeID(events: RunEvent[]) {
+  const settled = new Set<string>()
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled') return undefined
+    if (!event.nodeId) continue
+    if (event.type === 'node.completed' || event.type === 'node.failed' || event.type === 'node.skipped' || event.type === 'node.cancelled') settled.add(event.nodeId)
+    else if (event.type === 'node.started' && !settled.has(event.nodeId)) return event.nodeId
+  }
+  return undefined
+}
+
+export function decorateRunNodes(nodes: StudioNode[], events: RunEvent[]) {
+  const statuses = new Map<string, string>()
+  for (const event of events) {
+    if (!event.nodeId || !event.type.startsWith('node.')) continue
+    statuses.set(event.nodeId, event.type === 'node.started' ? 'running' : event.type.slice('node.'.length))
+  }
+  const currentNodeID = activeRunNodeID(events)
+  return nodes.map((node) => ({
+    ...node,
+    data: { ...node.data, debugStatus: statuses.get(node.id), debugCurrent: node.id === currentNodeID },
+  }))
 }
 
 function deriveStartSchema(nodes: StudioNode[]): JSONSchema {
@@ -471,10 +669,6 @@ function deriveStartSchema(nodes: StudioNode[]): JSONSchema {
     if (field.required) required.push(key)
   }
   return { type: 'object', properties, required, 'x-ui-order': order, additionalProperties: false }
-}
-
-function saveLabel(state: SaveState) {
-  return { saved: '已保存', pending: '等待保存', saving: '保存中…', conflict: '保存冲突，请刷新', error: '保存失败' }[state]
 }
 
 function publicMessage(error: unknown) {

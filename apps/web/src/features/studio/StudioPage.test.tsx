@@ -4,7 +4,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition } from '../../lib/api/client'
-import { isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
+import type { RunEvent } from '../../lib/api/ndjson'
+import { activeRunNodeID, availableNodePosition, connectionIssue, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
 import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -120,12 +121,151 @@ describe('StudioPage', () => {
     vi.spyOn(api, 'saveWorkflow').mockResolvedValue({ ...workflow, draftRevision: 2 })
   })
 
+  it('使用全画布外壳突出试运行和发布，并收纳低频操作', async () => {
+    const { container } = render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    expect(await screen.findByText('演示助手')).toBeInTheDocument()
+    expect(container.querySelector('.studio-shell')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '测试运行' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '发布' })).toBeVisible()
+    await userEvent.click(screen.getByText('更多操作'))
+    expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs?workflowId=w1')
+  })
+
+  it('节点库与两个 disclosure 互斥，并由 Escape 关闭视觉最上层', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    const moreSummary = screen.getByText('更多操作')
+    await userEvent.click(moreSummary)
+    expect(moreSummary.closest('details')).toHaveAttribute('open')
+
+    await userEvent.keyboard('{Control>}k{/Control}')
+    expect(await screen.findByRole('dialog', { name: '节点库' })).toBeInTheDocument()
+    expect(moreSummary.closest('details')).not.toHaveAttribute('open')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: '节点库' })).not.toBeInTheDocument()
+
+    const helpSummary = screen.getByText('快捷键帮助')
+    await userEvent.click(helpSummary)
+    expect(helpSummary.closest('details')).toHaveAttribute('open')
+    await userEvent.keyboard('{Escape}')
+    expect(helpSummary.closest('details')).not.toHaveAttribute('open')
+    expect(helpSummary).toHaveFocus()
+  })
+
+  it('工作台上方的菜单由 Escape 关闭并把焦点恢复到可见摘要', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    expect(screen.getByRole('dialog', { name: '测试运行' })).toBeInTheDocument()
+
+    const moreSummary = screen.getByText('更多操作')
+    await userEvent.click(moreSummary)
+    screen.getByRole('button', { name: 'Agent 页面设置' }).focus()
+    await userEvent.keyboard('{Escape}')
+
+    expect(moreSummary.closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByRole('dialog', { name: '测试运行' })).toBeInTheDocument()
+    await vi.waitFor(() => expect(moreSummary).toHaveFocus())
+  })
+
+  it('主操作和节点操作会关闭 disclosure，快捷键节点库恢复到稳定摘要', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    const moreSummary = screen.getByText('更多操作')
+
+    await userEvent.click(moreSummary)
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    expect(moreSummary.closest('details')).not.toHaveAttribute('open')
+
+    await userEvent.click(moreSummary)
+    screen.getByRole('button', { name: 'Agent 页面设置' }).focus()
+    await userEvent.keyboard('{Control>}k{/Control}')
+    expect(await screen.findByRole('dialog', { name: '节点库' })).toBeInTheDocument()
+    await userEvent.keyboard('{Escape}')
+    expect(moreSummary).toHaveFocus()
+
+    const helpSummary = screen.getByText('快捷键帮助')
+    await userEvent.click(helpSummary)
+    fireEvent.click(screen.getByTestId('node-start'))
+    expect(helpSummary.closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByRole('dialog', { name: '开始' })).toBeInTheDocument()
+  })
+
+  it('应用并试运行的直接切换路径也会关闭 disclosure', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用并试运行' })).toBeEnabled())
+
+    const moreSummary = screen.getByText('更多操作')
+    await userEvent.click(moreSummary)
+    await userEvent.click(screen.getByRole('button', { name: '应用并试运行' }))
+
+    await vi.waitFor(() => expect(screen.getByRole('dialog', { name: '测试运行' })).toBeInTheDocument())
+    expect(moreSummary.closest('details')).not.toHaveAttribute('open')
+  })
+
   it('只把图结构变化写入草稿，不持久化 React Flow 尺寸和选中态', () => {
 	 expect(isPersistentNodeChange({ type: 'dimensions', id: 'a', dimensions: { width: 100, height: 60 } })).toBe(false)
 	 expect(isPersistentNodeChange({ type: 'select', id: 'a', selected: true })).toBe(false)
+	 expect(isPersistentNodeChange({ type: 'position', id: 'a', position: { x: 8, y: 9 }, dragging: true })).toBe(false)
 	 expect(isPersistentNodeChange({ type: 'position', id: 'a', position: { x: 10, y: 20 }, dragging: false })).toBe(true)
 	 expect(isPersistentEdgeChange({ type: 'select', id: 'edge', selected: true })).toBe(false)
 	 expect(isPersistentEdgeChange({ type: 'remove', id: 'edge' })).toBe(true)
+  })
+
+  it('说明无效连线的具体原因', () => {
+    const source = studioNode('source', 'template', { inputs: [], outputs: [{ key: 'text', title: '文本', type: 'string', required: false, cardinality: 'one' }] })
+    const target = studioNode('target', 'end', { inputs: [{ key: 'value', title: '数值', type: 'number', required: false, cardinality: 'one' }], outputs: [] })
+    const mismatch = { source: 'source', sourceHandle: 'text', target: 'target', targetHandle: 'value' }
+    expect(connectionIssue(mismatch, [source, target], [])).toBe('端口类型不兼容：string 不能连接到 number')
+    const anyTarget = { ...target, data: { ...target.data, ports: { inputs: [{ ...target.data.ports.inputs[0], type: 'any' as const }], outputs: [] } } }
+    const occupied: StudioEdge = { id: 'edge-1', ...mismatch, targetHandle: 'value' }
+    expect(connectionIssue(mismatch, [source, anyTarget], [occupied])).toBe('目标端口只允许一条输入连线')
+    expect(connectionIssue(mismatch, [source, anyTarget], [])).toBeUndefined()
+  })
+
+  it('删除已连线节点时生成不含悬空边的原子保存快照', () => {
+    const source = studioNode('source', 'template', { inputs: [], outputs: [{ key: 'text', title: '文本', type: 'string', required: false, cardinality: 'one' }] })
+    const target = studioNode('target', 'end', { inputs: [{ key: 'result', title: '结果', type: 'any', required: false, cardinality: 'one' }], outputs: [] })
+    const edge: StudioEdge = { id: 'edge-1', source: 'source', sourceHandle: 'text', target: 'target', targetHandle: 'result' }
+
+    expect(graphAfterDelete([source, target], [edge], [source], [])).toEqual({ nodes: [target], edges: [] })
+  })
+
+  it('从页面删除已连线节点时只保存一次完整图快照', async () => {
+    vi.mocked(api.getWorkflow).mockResolvedValue({
+      ...workflow,
+      draftGraph: {
+        ...workflow.draftGraph,
+        edges: [{ id: 'start-end', source: 'start', sourcePort: 'value', target: 'end', targetPort: 'result' }],
+      },
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    const flowNode = screen.getByTestId('node-start').closest<HTMLElement>('.react-flow__node')
+    if (!flowNode) throw new Error('找不到开始节点容器')
+
+    fireEvent.click(flowNode)
+    fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' })
+
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
+    expect(vi.mocked(api.saveWorkflow).mock.calls[0][1].graph).toEqual(expect.objectContaining({
+      nodes: [expect.objectContaining({ id: 'end' })],
+      edges: [],
+    }))
+  })
+
+  it('只高亮尚未结束的最新运行节点并保留中文状态所需数据', () => {
+    expect(activeRunNodeID([runEvent(1, 'node.started', 'a')])).toBe('a')
+    expect(activeRunNodeID([runEvent(1, 'node.started', 'a'), runEvent(2, 'node.completed', 'a')])).toBeUndefined()
+    expect(activeRunNodeID([runEvent(1, 'node.started', 'a'), runEvent(2, 'run.failed')])).toBeUndefined()
+    const nodes = [studioNode('a', 'template', { inputs: [], outputs: [] }), studioNode('b', 'end', { inputs: [], outputs: [] })]
+    const decorated = decorateRunNodes(nodes, [runEvent(1, 'node.completed', 'a'), runEvent(2, 'node.started', 'b')])
+    expect(decorated[0].data.debugStatus).toBe('completed')
+    expect(decorated[1].data).toEqual(expect.objectContaining({ debugStatus: 'running', debugCurrent: true }))
   })
 
   it('打开节点库、添加节点并在右侧配置', async () => {
@@ -136,6 +276,29 @@ describe('StudioPage', () => {
     expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
     await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
+  })
+
+  it('把新节点放到当前画布视口中心', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('workflow-canvas')) {
+        return { x: 0, y: 0, width: 1280, height: 720, top: 0, right: 1280, bottom: 720, left: 0, toJSON: () => ({}) }
+      }
+      return { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0, toJSON: () => ({}) }
+    })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+
+    await vi.waitFor(() => {
+      const saved = vi.mocked(api.saveWorkflow).mock.calls.at(-1)?.[1]
+      expect(saved?.graph.nodes.find((node) => node.type === 'template')?.position).toEqual({ x: 640, y: 360 })
+    }, { timeout: 2000 })
+  })
+
+  it('视口中心被占用时向下寻找不会遮挡端口的位置', () => {
+    const occupied = { ...studioNode('occupied', 'end', { inputs: [], outputs: [] }), position: { x: 320, y: 260 } }
+    expect(availableNodePosition({ x: 320, y: 260 }, [occupied])).toEqual({ x: 320, y: 450 })
   })
 
   it('归档工作流以只读模式查看且导出不触发保存', async () => {
@@ -161,6 +324,24 @@ describe('StudioPage', () => {
 	await userEvent.click(screen.getByRole('button', { name: '版本历史' }))
 	expect(await screen.findByRole('heading', { name: '版本历史' })).toBeInTheDocument()
 	expect(screen.queryByRole('button', { name: /恢复 v/ })).not.toBeInTheDocument()
+  })
+
+  it('保存失败后保留草稿、阻断提交动作并允许原位重试', async () => {
+    vi.mocked(api.saveWorkflow)
+      .mockRejectedValueOnce(new TypeError('network failed'))
+      .mockResolvedValueOnce({ ...workflow, draftRevision: 2 })
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    const retry = await screen.findByRole('button', { name: '重试保存' }, { timeout: 2500 })
+    expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+    expect(screen.getByTestId('node-template')).toBeInTheDocument()
+    await userEvent.click(retry)
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(2), { timeout: 2500 })
+    expect(await screen.findByText('已保存', {}, { timeout: 2500 })).toBeInTheDocument()
+    expect(screen.getByTestId('node-template')).toBeInTheDocument()
   })
 
   it('配置输入只更新草稿，端口就绪并显式应用后才保存一次', async () => {
@@ -265,7 +446,7 @@ describe('StudioPage', () => {
     expect(await screen.findByText('已回滚到版本 1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '关闭工作台' })).toBeEnabled()
     await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
-	await vi.waitFor(() => expect(screen.getByRole('button', { name: '版本历史' })).toHaveFocus())
+	await vi.waitFor(() => expect(screen.getByText('更多操作')).toHaveFocus())
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledWith('w1', expect.objectContaining({ draftRevision: 2 })), { timeout: 2000 })
@@ -284,7 +465,7 @@ describe('StudioPage', () => {
     expect(screen.getByRole('dialog', { name: '页面设置' })).toBeInTheDocument()
   })
 
-  it('脏配置进入测试前要求确认并在应用后运行最新草稿', async () => {
+  it('应用配置后直接打开测试工作台并运行最新草稿', async () => {
     vi.spyOn(api, 'runDraft').mockResolvedValue(new Response('{"type":"run.completed","sequence":1,"output":{}}\n', { headers: { 'content-type': 'application/x-ndjson' } }))
     render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
     await screen.findByText('演示助手')
@@ -293,10 +474,8 @@ describe('StudioPage', () => {
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
     await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
 
-    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
-    expect(screen.getByRole('dialog', { name: '保存节点配置更改？' })).toBeInTheDocument()
-    expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: '应用并继续' }))
+    await userEvent.click(screen.getByRole('button', { name: '应用并试运行' }))
+    expect(screen.queryByRole('dialog', { name: '保存节点配置更改？' })).not.toBeInTheDocument()
     expect(await screen.findByRole('dialog', { name: '测试运行' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '运行' }))
     await vi.waitFor(() => expect(api.runDraft).toHaveBeenCalledWith('w1', { draftRevision: 2, input: {} }, expect.any(AbortSignal)), { timeout: 2500 })
@@ -539,4 +718,8 @@ function studioNode(id: string, nodeType: string, ports: StudioNode['data']['por
     id, type: 'studio', position: { x: 0, y: 0 },
     data: { nodeType, typeVersion: '2', config: {}, ports, issues: [] },
   }
+}
+
+function runEvent(sequence: number, type: RunEvent['type'], nodeId?: string): RunEvent {
+  return { sequence, type, runId: 'r1', ...(nodeId ? { nodeId } : {}), activePorts: [], inputRedactedPaths: [], outputRedactedPaths: [], timestamp: '2026-08-27T00:00:00Z' }
 }
