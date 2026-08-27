@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   availableNodePosition,
+  boundaryMidpoint,
   dropNodePosition,
+  safeBoundaryPosition,
   snapNodePosition,
 } from './nodePlacement'
 import type { StudioNode } from './types'
@@ -43,5 +45,31 @@ describe('nodePlacement', () => {
         [nodeAt(120, 240), nodeAt(120, 420)],
       ),
     ).toEqual({ x: 120, y: 60 })
+  })
+
+  it('边界安全位置位于图包围盒外并避开现有节点', () => {
+    const nodes = [nodeAt(120, 180), nodeAt(520, 180)]
+    const start = safeBoundaryPosition('start', nodes)
+    const end = safeBoundaryPosition('end', nodes)
+    expect(start.x).toBeLessThan(120)
+    expect(end.x).toBeGreaterThan(520)
+    expect(start).not.toEqual(nodes[0].position)
+    expect(end).not.toEqual(nodes[1].position)
+  })
+
+  it('只有唯一开始和结束节点时返回空图引导中点', () => {
+    const start = {
+      ...nodeAt(100, 100),
+      id: 'start',
+      data: { ...nodeAt(100, 100).data, nodeType: 'start' },
+    }
+    const end = {
+      ...nodeAt(500, 100),
+      id: 'end',
+      data: { ...nodeAt(500, 100).data, nodeType: 'end' },
+    }
+    expect(boundaryMidpoint([start, end])).toEqual({ x: 300, y: 100 })
+    expect(boundaryMidpoint([start, nodeAt(300, 100), end])).toBeUndefined()
+    expect(boundaryMidpoint([start])).toBeUndefined()
   })
 })
