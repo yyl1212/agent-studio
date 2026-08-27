@@ -9,6 +9,7 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
 type compilerFixtureNode struct {
@@ -165,7 +166,7 @@ func newFixtureCompiler(t *testing.T) *Compiler {
 	registry := nodes.NewRegistry()
 	definitions := []domain.NodeDefinition{
 		{Type: "start", Version: "1", Title: "Start", ConfigSchema: objectSchema(), Outputs: []domain.PortDefinition{port("out", domain.TypeString, false, domain.CardinalityOne)}},
-		{Type: "pass", Version: "1", Title: "Pass", ConfigSchema: objectSchema(), Inputs: []domain.PortDefinition{port("in", domain.TypeString, true, domain.CardinalityOne)}, Outputs: []domain.PortDefinition{port("out", domain.TypeString, false, domain.CardinalityOne)}},
+		{Type: "pass", Version: "1", Title: "Pass", ConfigSchema: objectSchema(), Inputs: []domain.PortDefinition{port("in", domain.TypeString, true, domain.CardinalityOne)}, Outputs: []domain.PortDefinition{port("out", domain.TypeString, false, domain.CardinalityOne)}, ExecutionSafety: agentnode.ExecutionSafetyReadOnly},
 		{Type: "number-pass", Version: "1", Title: "Number", ConfigSchema: objectSchema(), Inputs: []domain.PortDefinition{port("in", domain.TypeNumber, true, domain.CardinalityOne)}, Outputs: []domain.PortDefinition{port("out", domain.TypeNumber, false, domain.CardinalityOne)}},
 		{Type: "two-input", Version: "1", Title: "Join", ConfigSchema: objectSchema(), Inputs: []domain.PortDefinition{port("left", domain.TypeString, true, domain.CardinalityOne), port("right", domain.TypeString, true, domain.CardinalityOne)}, Outputs: []domain.PortDefinition{port("out", domain.TypeString, false, domain.CardinalityOne)}},
 		{Type: "condition", Version: "1", Title: "Condition", ConfigSchema: objectSchema(), Inputs: []domain.PortDefinition{port("value", domain.TypeString, true, domain.CardinalityOne)}, Outputs: []domain.PortDefinition{port("true", domain.TypeString, false, domain.CardinalityOne), port("false", domain.TypeString, false, domain.CardinalityOne)}},
@@ -233,5 +234,18 @@ func TestCompilerProducesStableTopologicalOrder(t *testing.T) {
 	}
 	if want := []string{"start", "a", "z", "end"}; !reflect.DeepEqual(plan.TopologicalOrder, want) {
 		t.Fatalf("order=%v, want %v", plan.TopologicalOrder, want)
+	}
+}
+
+func TestCompilerCachesNormalizedExecutionSafety(t *testing.T) {
+	plan, issues := newFixtureCompiler(t).Compile(graphFixture(
+		[]domain.Node{nodeFixture("start", "start"), nodeFixture("pass", "pass"), nodeFixture("end", "end")},
+		[]domain.Edge{edgeFixture("e1", "start", "out", "pass", "in"), edgeFixture("e2", "pass", "out", "end", "result")},
+	))
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	if plan.Nodes["pass"].ExecutionSafety != agentnode.ExecutionSafetyReadOnly {
+		t.Fatalf("execution safety=%q", plan.Nodes["pass"].ExecutionSafety)
 	}
 }

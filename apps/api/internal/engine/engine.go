@@ -6,16 +6,19 @@ import (
 	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
 )
 
 type Options struct {
 	MaxParallel int
 	Timeout     time.Duration
+	Telemetry   observability.Providers
 }
 
 type Engine struct {
 	maxParallel int
 	timeout     time.Duration
+	telemetry   *nodeTelemetry
 }
 
 const cancelledEventTimeout = time.Second
@@ -27,7 +30,7 @@ func New(options Options) *Engine {
 	if options.Timeout <= 0 {
 		options.Timeout = 120 * time.Second
 	}
-	return &Engine{maxParallel: options.MaxParallel, timeout: options.Timeout}
+	return &Engine{maxParallel: options.MaxParallel, timeout: options.Timeout, telemetry: newNodeTelemetry(options.Telemetry)}
 }
 
 func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer) (RunResult, error) {
@@ -139,7 +142,7 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 					cancel()
 					return finishResult(result), err
 				}
-				go executeNode(runContext, plan, nodeID, effectiveRunInput, inputs, eventInput, workerResults)
+				go executeNode(runContext, plan, nodeID, effectiveRunInput, inputs, eventInput, engine.telemetry, workerResults)
 			}
 		}
 

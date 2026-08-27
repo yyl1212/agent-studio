@@ -8,6 +8,7 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
 )
 
 type schedulerFixtureNode struct {
@@ -38,7 +39,7 @@ func TestExecuteNodeValidatesAgainstCompiledPortsWithoutResolvingAgain(t *testin
 		},
 	}}
 	results := make(chan workerResult, 1)
-	executeNode(context.Background(), plan, "node", nil, nil, nil, results)
+	executeNode(context.Background(), plan, "node", nil, nil, nil, newNodeTelemetry(observability.Providers{}), results)
 	worker := <-results
 	if worker.err != nil {
 		t.Fatal(worker.err)
@@ -58,7 +59,7 @@ func TestExecuteNodeRejectsOutputsOutsideCompiledPorts(t *testing.T) {
 		},
 	}}
 	results := make(chan workerResult, 1)
-	executeNode(context.Background(), plan, "node", nil, nil, nil, results)
+	executeNode(context.Background(), plan, "node", nil, nil, nil, newNodeTelemetry(observability.Providers{}), results)
 	worker := <-results
 	if !errors.Is(worker.err, nodes.ErrInvalidResult) {
 		t.Fatalf("error = %v, want ErrInvalidResult", worker.err)
