@@ -115,6 +115,7 @@ describe('StudioPage', () => {
   afterEach(() => vi.restoreAllMocks())
 
   beforeEach(() => {
+    window.localStorage.clear()
     vi.spyOn(api, 'getWorkflow').mockResolvedValue(workflow)
     vi.spyOn(api, 'listNodeTypes').mockResolvedValue(definitions)
     vi.spyOn(api, 'resolveNodeType').mockResolvedValue({ inputs: [], outputs: [] })
@@ -294,6 +295,73 @@ describe('StudioPage', () => {
       const saved = vi.mocked(api.saveWorkflow).mock.calls.at(-1)?.[1]
       expect(saved?.graph.nodes.find((node) => node.type === 'template')?.position).toEqual({ x: 640, y: 360 })
     }, { timeout: 2000 })
+  })
+
+  it('点击添加只保存一次、立即配置并记录最近使用', async () => {
+    window.localStorage.setItem('agent-studio.node-library.recent.v1', JSON.stringify(['removed@1']))
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+
+    expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
+    expect(JSON.parse(window.localStorage.getItem('agent-studio.node-library.recent.v1') ?? '[]')).toEqual(['template@1'])
+
+    await userEvent.click(screen.getByRole('button', { name: '关闭工作台' }))
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    expect(screen.getByRole('heading', { name: '最近使用' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^提示词模板/ })).toHaveLength(1)
+  })
+
+  it('关闭节点库后把焦点恢复到添加节点按钮', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    const add = screen.getByRole('button', { name: '添加节点' })
+    await userEvent.click(add)
+    await userEvent.keyboard('{Escape}')
+    await vi.waitFor(() => expect(add).toHaveFocus())
+  })
+
+  it('拖放通过统一入口创建一次并立即打开配置', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    const transfer = nodeTransfer('template@1')
+    const canvas = screen.getByLabelText('工作流画布')
+    fireEvent.dragOver(canvas, { dataTransfer: transfer })
+    fireEvent.drop(canvas, { dataTransfer: transfer, clientX: 640, clientY: 360 })
+
+    expect(await screen.findByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
+    expect(JSON.parse(window.localStorage.getItem('agent-studio.node-library.recent.v1') ?? '[]')).toEqual(['template@1'])
+  })
+
+  it('拖放失效定义时保持节点库并提示，不创建也不保存', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    const transfer = nodeTransfer('removed@1')
+    const canvas = screen.getByLabelText('工作流画布')
+    fireEvent.dragOver(canvas, { dataTransfer: transfer })
+    fireEvent.drop(canvas, { dataTransfer: transfer, clientX: 640, clientY: 360 })
+
+    expect(screen.getByRole('dialog', { name: '节点库' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('节点定义已更新，请重新选择')
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('只开始拖拽但未释放时不创建、不保存也不记录最近使用', async () => {
+    render(<MemoryRouter initialEntries={['/workflows/w1']}><Routes><Route path="/workflows/:id" element={<StudioPage />} /></Routes></MemoryRouter>)
+    await screen.findByText('演示助手')
+    await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
+    const transfer = nodeTransfer('template@1')
+    const card = screen.getByRole('button', { name: /^提示词模板/ })
+    fireEvent.dragStart(card, { dataTransfer: transfer })
+    fireEvent.dragEnd(card, { dataTransfer: transfer })
+    expect(screen.getByRole('dialog', { name: '节点库' })).toBeInTheDocument()
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem('agent-studio.node-library.recent.v1')).toBeNull()
   })
 
   it('归档工作流以只读模式查看且导出不触发保存', async () => {
@@ -702,6 +770,16 @@ describe('StudioPage', () => {
     expect(createObjectURL).not.toHaveBeenCalled()
   })
 })
+
+function nodeTransfer(nodeKey: string) {
+  return {
+    types: ['application/x-agent-studio-node'],
+    getData: (type: string) => type === 'application/x-agent-studio-node' ? nodeKey : '',
+    setData: vi.fn(),
+    dropEffect: 'none',
+    effectAllowed: 'copy',
+  } as unknown as DataTransfer
+}
 
 function installURLMethod(name: 'createObjectURL' | 'revokeObjectURL', implementation: ReturnType<typeof vi.fn>) {
   Object.defineProperty(URL, name, { configurable: true, writable: true, value: implementation })
