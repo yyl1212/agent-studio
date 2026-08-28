@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -74,19 +75,9 @@ func createWithHooks(ctx context.Context, pool *pgxpool.Pool, options CreateOpti
 	if err != nil {
 		return Summary{}, err
 	}
-	archiveContext, cancelArchive := context.WithCancelCause(ctx)
-	monitorStop := make(chan struct{})
-	go func() {
-		select {
-		case cause := <-lease.MonitorConnectionLoss():
-			cancelArchive(cause)
-		case <-monitorStop:
-		}
-	}()
-	defer func() {
-		close(monitorStop)
-		cancelArchive(nil)
-	}()
+	lost := lease.MonitorConnectionLoss()
+	archiveContext, stopMonitoring := monitorLeaseLoss(ctx, lost)
+	defer stopMonitoring()
 
 	summary, err := writeArchive(archiveContext, options.Output, Manifest{
 		APIVersion: APIVersion, CreatedAt: createdAt.UTC(), RuntimeVersion: options.RuntimeVersion,
@@ -107,6 +98,28 @@ func createWithHooks(ctx context.Context, pool *pgxpool.Pool, options CreateOpti
 		}
 	}
 	return summary, err
+}
+
+func monitorLeaseLoss(ctx context.Context, lost <-chan error) (context.Context, func()) {
+	archiveContext, cancelArchive := context.WithCancelCause(ctx)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case cause := <-lost:
+			cancelArchive(cause)
+		case <-stop:
+		}
+	}()
+	var stopOnce sync.Once
+	return archiveContext, func() {
+		stopOnce.Do(func() {
+			close(stop)
+			<-done
+			cancelArchive(nil)
+		})
+	}
 }
 
 func wrapSchemaValidationError(err error) error {

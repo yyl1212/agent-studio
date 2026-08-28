@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,16 @@ func TestWrapSchemaValidationErrorPreservesFailureClass(t *testing.T) {
 	}
 	if got := CodeOf(wrapSchemaValidationError(context.Canceled)); got != CodeCreateFailed {
 		t.Fatalf("database failure code=%q", got)
+	}
+}
+
+func TestMonitorLeaseLossStopsForwarderIdempotently(t *testing.T) {
+	lost := make(chan error)
+	archiveContext, stop := monitorLeaseLoss(context.Background(), lost)
+	stop()
+	stop()
+	if !errors.Is(archiveContext.Err(), context.Canceled) {
+		t.Fatalf("archive context error=%v", archiveContext.Err())
 	}
 }
 
