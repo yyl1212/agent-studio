@@ -29,7 +29,7 @@ vi.mock('@xyflow/react', async () => {
     }) => {
       useEffect(() => { props.onInit?.({ fitView, screenToFlowPosition }) }, [props.onInit])
       return <div>
-        {props.nodes.map((flowNode) => <div className="react-flow__node" data-selected={String(Boolean(flowNode.selected))} data-testid={`flow-node-${flowNode.id}`} key={flowNode.id} onClick={(event) => props.onNodeClick?.(event, flowNode)}>{flowNode.id}</div>)}
+        {props.nodes.map((flowNode) => <div className="react-flow__node" data-selected={String(Boolean(flowNode.selected))} data-read-only={String(Boolean(flowNode.data.readOnly))} data-boundary={String(Boolean(flowNode.data.boundary))} data-testid={`flow-node-${flowNode.id}`} key={flowNode.id} onClick={(event) => props.onNodeClick?.(event, flowNode)}>{flowNode.id}</div>)}
         <button type="button" onClick={(event) => props.onConnectEnd?.(event.nativeEvent, {
           isValid: false,
           fromHandle: { type: 'source', nodeId: 'source', id: 'text' },
@@ -103,6 +103,18 @@ it('只把当前运行节点标记为选中', () => {
   render(<WorkflowCanvas {...baseProps} nodes={[node('a'), node('b')]} currentNodeID="b" />)
   expect(screen.getByTestId('flow-node-a')).toHaveAttribute('data-selected', 'false')
   expect(screen.getByTestId('flow-node-b')).toHaveAttribute('data-selected', 'true')
+})
+
+it('为画布节点注入只读和边界展示状态且不修改原节点', () => {
+  const start = node('start')
+  start.data.nodeType = 'start'
+  render(<WorkflowCanvas {...baseProps} nodes={[start, node('task')]} readOnly />)
+
+  expect(screen.getByTestId('flow-node-start')).toHaveAttribute('data-read-only', 'true')
+  expect(screen.getByTestId('flow-node-start')).toHaveAttribute('data-boundary', 'true')
+  expect(screen.getByTestId('flow-node-task')).toHaveAttribute('data-boundary', 'false')
+  expect(start.data.readOnly).toBeUndefined()
+  expect(start.data.boundary).toBeUndefined()
 })
 
 it('在连线结束时上报无效候选和指针位置', () => {

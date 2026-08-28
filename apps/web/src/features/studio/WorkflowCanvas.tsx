@@ -122,9 +122,15 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
 		event.preventDefault()
 		props.onNodeDefinitionDrop?.(nodeKey, position)
 	}
-	const canvasNodes = props.currentNodeID === undefined
-		? props.nodes
-		: props.nodes.map((node) => ({ ...node, selected: props.currentNodeID === node.id }))
+	const canvasNodes: StudioNode[] = props.nodes.map((node) => ({
+    ...node,
+    ...(props.currentNodeID === undefined ? {} : { selected: props.currentNodeID === node.id }),
+    data: {
+      ...node.data,
+      readOnly: Boolean(props.readOnly),
+      boundary: node.data.nodeType === 'start' || node.data.nodeType === 'end',
+    },
+  }))
   const onConnectEnd: NonNullable<ComponentProps<typeof ReactFlow>['onConnectEnd']> = (event, state) => {
     if (props.readOnly || state.isValid || !state.fromHandle) return
     const point = 'changedTouches' in event ? event.changedTouches[0] : event
