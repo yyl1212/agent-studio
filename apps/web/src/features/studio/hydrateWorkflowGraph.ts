@@ -1,6 +1,6 @@
 import type { NodeDefinition, ResolvedPorts, Workflow } from '../../lib/api/client'
 import { portsFromDefinition, toFlowGraph } from './graphAdapter'
-import { markInvalidEdges } from './connections'
+import { attachInvalidPortAnchors, markInvalidEdges } from './connections'
 import type { FlowGraph } from './types'
 
 export type ResolveNodePorts = (
@@ -26,5 +26,6 @@ export async function hydrateWorkflowGraph(
 		}
 	}))
 	const flow = toFlowGraph(workflow.draftGraph, definitions, Object.fromEntries(resolvedEntries))
-	return { ...flow, edges: markInvalidEdges(flow.nodes, flow.edges) }
+	const edges = markInvalidEdges(flow.nodes, flow.edges)
+	return { nodes: attachInvalidPortAnchors(flow.nodes, edges), edges }
 }

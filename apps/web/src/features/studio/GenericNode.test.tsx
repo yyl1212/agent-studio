@@ -8,7 +8,7 @@ import type { StudioNode, StudioNodeData } from './types'
 
 vi.mock('@xyflow/react', () => ({
   Handle: ({ 'aria-label': ariaLabel }: { 'aria-label': string }) => (
-    <span role="img" aria-label={ariaLabel} />
+    <span className="react-flow__handle" role="img" aria-label={ariaLabel} />
   ),
   Position: { Left: 'left', Right: 'right' },
   useUpdateNodeInternals: () => vi.fn(),
@@ -53,6 +53,12 @@ it('端口提供名称、类型和 44px 交互包装', () => {
   expect(screen.getByText('提示词 · string')).toBeInTheDocument()
   expect(screen.getByLabelText('输入端口 提示词，类型 string')).toBeInTheDocument()
   expect(container.querySelector('.node-port-hit-area')).toBeInTheDocument()
+})
+
+it('为失效边渲染不可交互的幽灵端口锚点', () => {
+  const { container } = render(<GenericNode {...nodeProps({ invalidPortAnchors: [{ direction: 'input', key: 'removed' }] })} />)
+  expect(container.querySelector('.node-invalid-port-input .react-flow__handle')).toBeInTheDocument()
+  expect(container.querySelector('.node-invalid-port-anchor')).toHaveAttribute('aria-hidden', 'true')
 })
 
 it.each([

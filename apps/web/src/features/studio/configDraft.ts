@@ -1,5 +1,5 @@
 import type { ResolvedPorts } from '../../lib/api/client'
-import { markInvalidEdges } from './connections'
+import { attachInvalidPortAnchors, markInvalidEdges } from './connections'
 import type { StudioEdge, StudioNode } from './types'
 
 export interface InvalidEdgeImpact {
@@ -38,7 +38,7 @@ export function previewPorts(node: StudioNode, edges: StudioEdge[], ports: Resol
 export function applyNodeConfig(nodes: StudioNode[], edges: StudioEdge[], nodeId: string, config: Record<string, unknown>, ports: ResolvedPorts) {
   const nextNodes = nodes.map((item) => item.id === nodeId ? { ...item, data: { ...item.data, config: structuredClone(config), ports: clonePorts(ports) } } : item)
   const nextEdges = markInvalidEdges(nextNodes, edges)
-  return { nodes: nextNodes, edges: nextEdges }
+  return { nodes: attachInvalidPortAnchors(nextNodes, nextEdges), edges: nextEdges }
 }
 
 function portKeys(ports: ResolvedPorts) {

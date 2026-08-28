@@ -13,6 +13,7 @@ export interface StudioNodeData extends Record<string, unknown> {
   debugCurrent?: boolean
   readOnly?: boolean
   boundary?: boolean
+  invalidPortAnchors?: Array<{ direction: 'input' | 'output'; key: string }>
 }
 
 export type StudioNode = Node<StudioNodeData, 'studio'>

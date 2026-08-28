@@ -55,6 +55,7 @@ export function NodeConfigPanel({ titleId, node, draft, onApply, onApplyAndTest 
       <span className={`node-config-status ${draft.status}`} role="status" aria-live="polite"><span aria-hidden="true">{statusIcon}</span>{statusLabel}</span>
       {boundary && <span className="node-boundary-note">工作流唯一节点，不可删除</span>}
     </header>
+    <div className="node-config-body">
     {node.data.issues.map((issue) => <p className="form-error" key={`${issue.code}-${issue.path}`}>{issue.message}</p>)}
     {draft.errorKind === 'validation' && firstValidationError && <button className="form-error-summary" type="button" onClick={focusValidationError}>{Object.keys(draft.validation.errors).length} 项配置需要处理</button>}
     {draft.errorKind === 'resolve' && draft.error && <div className="form-error" role="alert"><p>{draft.error}</p><button type="button" onClick={draft.retry}>重试端口解析</button></div>}
@@ -76,5 +77,6 @@ export function NodeConfigPanel({ titleId, node, draft, onApply, onApplyAndTest 
       {draft.preview.invalidEdges.length > 0 && <><p className="form-error">{draft.preview.invalidEdges.length} 条连线将失效</p>{draft.preview.invalidEdges.map((edge) => <p key={edge.edgeId}>{edge.sourceNodeId}.{edge.sourcePort} → {edge.targetNodeId}.{edge.targetPort}</p>)}</>}
       {draft.preview.added.length === 0 && draft.preview.removed.length === 0 && <p>端口保持不变</p>}
     </section>}
+    </div>
   </div>
 }

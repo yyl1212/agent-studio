@@ -58,7 +58,7 @@ test('新建工作流保护唯一边界并显示首节点引导', async ({ page 
   await page.getByTestId('node-start').click()
   await page.keyboard.press('Delete')
   await expect(page.getByTestId('node-start')).toHaveCount(1)
-  await expect(page.getByText(/不可删除/)).toBeVisible()
+  await expect(page.getByText(/开始和结束节点不可删除/)).toBeVisible()
 
   for (const viewport of [
     { width: 1440, height: 900 },
@@ -214,6 +214,62 @@ test('全画布内应用配置并试运行最新草稿', async ({ page }) => {
   await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
 })
 
+test('配置渐进披露、端口确认与失效连线恢复形成闭环', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  await createWorkflow(page, `config-closeout-${suffix}`, `配置体验 ${suffix}`)
+  await configureStartTextField(page, 'topic', '主题')
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await placeNodePreview(page)
+  await page.getByLabel('模板', { exact: true }).fill('回答：{{topic}}')
+  await applyNodeConfig(page)
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await connectPorts(page, [['start', 'topic', 'template', 'topic']])
+
+  await page.getByTestId('node-template').click()
+  await expect(page.getByText('必要配置')).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: '已应用' })).toBeVisible()
+  await page.getByLabel('模板', { exact: true }).fill('固定回答')
+  await page.getByRole('button', { name: '应用配置' }).click()
+  const confirmation = page.getByRole('dialog', { name: '确认端口变化' })
+  await expect(confirmation).toContainText('不会自动重连')
+  await confirmation.getByRole('button', { name: '确认应用' }).click()
+  await expect(page.getByText(/存在 1 条失效连线/)).toBeVisible()
+  await expect(page.getByRole('button', { name: '测试运行' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '发布' })).toBeDisabled()
+
+  const invalidEdge = page.locator('.react-flow__edge.invalid')
+  await expect(invalidEdge).toHaveCount(1)
+  await invalidEdge.click({ force: true })
+  await page.keyboard.press('Delete')
+  await expect(page.getByRole('button', { name: '测试运行' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '发布' })).toBeEnabled()
+})
+
+test('配置工作台在三档视口保持粘滞操作与可访问触控尺寸', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  await createWorkflow(page, `config-responsive-${suffix}`, `配置响应式 ${suffix}`)
+  await page.getByTestId('node-start').click()
+  await expect(page.locator('.node-config-header')).toHaveCSS('position', 'sticky')
+  await expect(page.locator('.schema-form-actions')).toHaveCSS('position', 'sticky')
+  const closeBox = await page.getByRole('button', { name: '关闭工作台' }).boundingBox()
+  if (!closeBox) throw new Error('无法读取关闭工作台按钮尺寸')
+  expect(closeBox.width).toBeGreaterThanOrEqual(44)
+  expect(closeBox.height).toBeGreaterThanOrEqual(44)
+
+  for (const viewport of [{ width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  }
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await expect(page.locator('.workbench-panel')).toHaveCSS('transition-duration', '0s')
+  await page.getByRole('button', { name: '关闭工作台' }).click()
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await expect(page.locator('.node-placement-preview')).toHaveCSS('animation-duration', '0s')
+})
+
 test('分层节点库支持分类、最近、拖放和移动端降级', async ({ page }) => {
   const suffix = Date.now().toString(36)
   await createWorkflow(page, `node-library-${suffix}`, `节点库体验 ${suffix}`)
@@ -274,7 +330,7 @@ test('无效配置聚焦首错且输入时快捷键不打断编辑', async ({ pa
   await createWorkflow(page, `shortcut-guard-${suffix}`, `快捷键守卫 ${suffix}`)
   await page.getByTestId('node-start').click()
   await page.getByRole('button', { name: '添加一项' }).first().click()
-  await page.getByRole('button', { name: '应用并试运行' }).click()
+  await page.getByRole('button', { name: /项配置需要处理/ }).click()
   await expect(page.getByLabel('字段标识')).toBeFocused()
   await page.keyboard.press('Control+K')
   await expect(page.getByRole('dialog', { name: '节点库' })).toHaveCount(0)
@@ -290,7 +346,6 @@ test('端口解析失败后保留配置并可重试', async ({ page }) => {
   let failResolve = true
   await page.route('**/api/node-types/template/1/resolve', async (route) => {
     if (failResolve) {
-      failResolve = false
       await route.fulfill({ status: 503, contentType: 'application/json', body: '{"code":"TEMPORARY_UNAVAILABLE","message":"解析服务暂不可用"}' })
       return
     }
@@ -300,8 +355,9 @@ test('端口解析失败后保留配置并可重试', async ({ page }) => {
   await page.getByRole('button', { name: '提示词模板' }).click()
   await placeNodePreview(page)
   await page.getByLabel('模板', { exact: true }).fill('回答：{{topic}}')
-  await expect(page.getByRole('button', { name: '重试解析端口' })).toBeVisible()
-  await page.getByRole('button', { name: '重试解析端口' }).click()
+  await expect(page.getByRole('button', { name: '重试端口解析' })).toBeVisible()
+  failResolve = false
+  await page.getByRole('button', { name: '重试端口解析' }).click()
   await expect(page.getByRole('button', { name: '应用并试运行' })).toBeEnabled()
   await expect(page.getByLabel('模板', { exact: true })).toHaveValue('回答：{{topic}}')
 })

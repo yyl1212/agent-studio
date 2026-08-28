@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { connectionIssue, hasInvalidEdges, markInvalidEdges, validateConnection } from './connections'
+import { attachInvalidPortAnchors, connectionIssue, hasInvalidEdges, markInvalidEdges, validateConnection } from './connections'
 import type { StudioEdge, StudioNode } from './types'
 
 function node(id: string, outputType: 'string' | 'number' | 'any', inputType: 'string' | 'number' | 'any'): StudioNode {
@@ -33,6 +33,9 @@ describe('画布连线校验', () => {
     expect(marked.className).toBe('invalid')
     expect(marked.style).toMatchObject({ stroke: '#d92d20' })
     expect(hasInvalidEdges([marked])).toBe(true)
+    const anchored = attachInvalidPortAnchors(nodes, [marked])
+    expect(anchored.find((item) => item.id === 'source')?.data.invalidPortAnchors).toEqual([{ direction: 'output', key: 'missing' }])
+    expect(anchored.find((item) => item.id === 'target')?.data.invalidPortAnchors).toEqual([])
   })
 
   it('恢复有效端口时清除失效标记、类名和样式', () => {
