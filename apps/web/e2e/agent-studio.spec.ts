@@ -1,6 +1,46 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, openMoreActions, saveDraftGraph, type AgentPresentationSettings } from './helpers'
+import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, openMoreActions, placeNodePreview, saveDraftGraph, type AgentPresentationSettings } from './helpers'
+
+test('点击预览可取消并在确认后只创建一次', async ({ page }) => {
+  await createWorkflow(page, `placement-${Date.now()}`, '放置预览')
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await expect(page.getByText('点击画布放置，Esc 取消')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('node-template')).toHaveCount(0)
+
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await placeNodePreview(page)
+  await expect(page.getByTestId('node-template')).toHaveCount(1)
+})
+
+test('节点目录和结构化卡片在三档视口无溢出', async ({ page }) => {
+  await createWorkflow(page, `visual-${Date.now()}`, '节点视觉')
+  await expect(page.getByTestId('node-start')).toContainText('工作流唯一')
+  const portBox = await page.getByTestId('node-end').locator('.react-flow__handle').first().boundingBox()
+  if (!portBox) throw new Error('无法读取端口热区尺寸')
+  expect(portBox.width).toBeGreaterThanOrEqual(44)
+  expect(portBox.height).toBeGreaterThanOrEqual(44)
+  for (const viewport of [{ width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport)
+    await page.getByRole('button', { name: '添加节点' }).click()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.keyboard.press('Escape')
+  }
+})
+
+test('节点库键盘路径可浏览并取消预览', async ({ page }) => {
+  await createWorkflow(page, `keyboard-${Date.now()}`, '键盘添加')
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K')
+  await page.getByLabel('搜索节点').fill('提示词')
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Enter')
+  await expect(page.getByText('点击画布放置，Esc 取消')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('node-template')).toHaveCount(0)
+})
 
 test('新建工作流保护唯一边界并显示首节点引导', async ({ page }) => {
   const suffix = Date.now().toString(36)
@@ -143,6 +183,7 @@ test('全画布内应用配置并试运行最新草稿', async ({ page }) => {
   await configureStartTextField(page, 'topic', '主题')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: '提示词模板' }).click()
+  await placeNodePreview(page)
   await page.getByLabel('模板', { exact: true }).fill('初稿：{{topic}}')
   await applyNodeConfig(page)
   await page.getByRole('button', { name: '关闭工作台' }).click()
@@ -169,6 +210,7 @@ test('全画布内应用配置并试运行最新草稿', async ({ page }) => {
   await nodeSearch.click()
   await nodeSearch.fill('提示词')
   await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await placeNodePreview(page)
   await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
 })
 
@@ -188,6 +230,7 @@ test('分层节点库支持分类、最近、拖放和移动端降级', async ({
   expect(desktopColumns).toBe(2)
 
   await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await placeNodePreview(page)
   await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
   await page.getByRole('button', { name: '关闭工作台' }).click()
   await page.getByRole('button', { name: '添加节点' }).click()
@@ -222,6 +265,7 @@ test('分层节点库支持分类、最近、拖放和移动端降级', async ({
     ),
   ).toBe(true)
   await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await placeNodePreview(page)
   await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
 })
 
@@ -254,6 +298,7 @@ test('端口解析失败后保留配置并可重试', async ({ page }) => {
   })
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: '提示词模板' }).click()
+  await placeNodePreview(page)
   await page.getByLabel('模板', { exact: true }).fill('回答：{{topic}}')
   await expect(page.getByRole('button', { name: '重试解析端口' })).toBeVisible()
   await page.getByRole('button', { name: '重试解析端口' }).click()
@@ -277,6 +322,7 @@ test('保存失败后保留草稿并可重试', async ({ page }) => {
   })
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: '提示词模板' }).click()
+  await placeNodePreview(page)
   await expect(page.getByRole('button', { name: '重试保存' })).toBeVisible()
   await expect(page.getByRole('button', { name: '测试运行' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '发布' })).toBeDisabled()
@@ -381,10 +427,12 @@ test('LLM v2 结构化输出完成草稿、发布、Agent 与运行记录闭环'
 
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: '提示词模板' }).click()
+  await placeNodePreview(page)
   await page.getByLabel('模板', { exact: true }).fill('回答：{{topic}}')
   await applyNodeConfig(page)
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^LLM · 结构化输出/ }).click()
+  await placeNodePreview(page)
   await page.getByText('可选配置').click()
   await page.getByLabel('输出模式').selectOption('structured')
   await page.getByRole('button', { name: '添加一项' }).click()
@@ -439,6 +487,7 @@ test('脏节点配置在切换工作台前支持继续编辑和放弃', async ({
   await createWorkflow(page, `dirty-config-${suffix}`, `草稿保护 ${suffix}`)
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: '提示词模板' }).click()
+  await placeNodePreview(page)
   await page.getByLabel('模板', { exact: true }).fill('未应用：{{topic}}')
 
   await page.getByRole('button', { name: '测试运行' }).click()
@@ -580,10 +629,12 @@ async function buildAndPublish(page: Page, name: string, slug: string, template:
 
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: '提示词模板' }).click()
+  await placeNodePreview(page)
   await page.getByLabel('模板', { exact: true }).fill(template)
   await applyNodeConfig(page)
   await page.getByRole('button', { name: '添加节点' }).click()
-  await page.getByRole('button', { name: /^LLM 调用已配置的模型服务生成文本/ }).click()
+  await page.getByRole('button', { name: /^LLM llm@1 / }).click()
+  await placeNodePreview(page)
   await page.getByRole('button', { name: '关闭工作台' }).click()
 
   await connectPorts(page, [

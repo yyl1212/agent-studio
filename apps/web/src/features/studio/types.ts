@@ -11,6 +11,8 @@ export interface StudioNodeData extends Record<string, unknown> {
   issues: ValidationIssue[]
   debugStatus?: string
   debugCurrent?: boolean
+  readOnly?: boolean
+  boundary?: boolean
 }
 
 export type StudioNode = Node<StudioNodeData, 'studio'>

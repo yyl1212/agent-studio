@@ -2,7 +2,7 @@ import fs from 'node:fs'
 
 import { expect, test } from '@playwright/test'
 
-import { applyNodeConfig, configureStartTextField, connectPorts, createWorkflow, openMoreActions, openOptionalConfig } from './helpers'
+import { applyNodeConfig, configureStartTextField, connectPorts, createWorkflow, openMoreActions, openOptionalConfig, placeNodePreview } from './helpers'
 
 test('导出草稿模板并导入为未发布新工作流', async ({ page }) => {
   const suffix = Date.now().toString(36)
@@ -10,6 +10,7 @@ test('导出草稿模板并导入为未发布新工作流', async ({ page }) => 
   await configureStartTextField(page, 'topic', '主题')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^Echo/ }).click()
+  await placeNodePreview(page)
   await openOptionalConfig(page)
   await page.getByLabel('前缀').fill('回答：')
   await applyNodeConfig(page)
@@ -116,6 +117,7 @@ test('LLM v2 结构化配置导出并按精确版本导入', async ({ page }) =>
   await configureStartTextField(page, 'topic', '主题')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^LLM · 结构化输出/ }).click()
+  await placeNodePreview(page)
   await openOptionalConfig(page)
   await page.getByLabel('输出模式').selectOption('structured')
   await page.getByRole('button', { name: '添加一项' }).click()

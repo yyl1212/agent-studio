@@ -15,6 +15,17 @@ const definition = (packageVersion?: string, overrides: Partial<NodeDefinition> 
   ...overrides,
 })
 
+const port = (
+  key: string,
+  type: NodeDefinition['inputs'][number]['type'],
+): NodeDefinition['inputs'][number] => ({
+  key,
+  title: key,
+  type,
+  required: false,
+  cardinality: 'one',
+})
+
 describe('NodeLibraryDrawer', () => {
   it('打开后聚焦搜索，并支持上下键、回车和 Escape', async () => {
     const onAdd = vi.fn()
@@ -27,7 +38,9 @@ describe('NodeLibraryDrawer', () => {
     const search = screen.getByLabelText('搜索节点')
     expect(search).toHaveFocus()
     await userEvent.keyboard('{ArrowDown}{ArrowDown}{Enter}')
-    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ type: 'example.http' }))
+    expect(onAdd).toHaveBeenCalledWith({
+      definition: expect.objectContaining({ type: 'example.http' }),
+    })
     search.focus()
     await userEvent.keyboard('{Escape}')
     expect(onClose).toHaveBeenCalledOnce()
@@ -42,7 +55,9 @@ describe('NodeLibraryDrawer', () => {
     ]} recentNodeKeys={[]} onAdd={onAdd} onClose={vi.fn()} />)
 
     await userEvent.keyboard('{ArrowDown}{ArrowDown}{Enter}')
-    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ type: 'a.two' }))
+    expect(onAdd).toHaveBeenCalledWith({
+      definition: expect.objectContaining({ type: 'a.two' }),
+    })
   })
 
   it('展示包摘要并按包名搜索', async () => {
@@ -69,14 +84,16 @@ describe('NodeLibraryDrawer', () => {
     ]
     render(<NodeLibraryDrawer definitions={definitions} recentNodeKeys={[]} onAdd={onAdd} onClose={vi.fn()} />)
 
-    expect(screen.getByRole('button', { name: /^LLM生成文本/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^LLM.*生成文本/ })).toBeInTheDocument()
     const structured = screen.getByRole('button', { name: /^LLM · 结构化输出/ })
     expect(structured).toBeInTheDocument()
     await userEvent.click(structured)
-    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ type: 'llm', version: '2' }))
+    expect(onAdd).toHaveBeenCalledWith({
+      definition: expect.objectContaining({ type: 'llm', version: '2' }),
+    })
 
     await userEvent.type(screen.getByLabelText('搜索节点'), '结构化')
-    expect(screen.queryByRole('button', { name: /^LLM生成文本/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^LLM.*生成文本/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^LLM · 结构化输出/ })).toBeInTheDocument()
   })
 
@@ -125,5 +142,105 @@ describe('NodeLibraryDrawer', () => {
     await userEvent.type(screen.getByLabelText('搜索节点'), 'missing')
     expect(screen.getByRole('status')).toHaveTextContent('当前显示 0 个节点')
     expect(screen.getByRole('button', { name: '清除搜索' })).toBeInTheDocument()
+  })
+
+  it('多个兼容输入端口要求明确选择后再添加', async () => {
+    const onAdd = vi.fn()
+    const dynamic = definition(undefined, {
+      inputs: [port('prompt', 'string'), port('context', 'any')],
+    })
+    render(
+      <NodeLibraryDrawer
+        definitions={[dynamic]}
+        recentNodeKeys={[]}
+        compatibility={{ sourceType: 'string' }}
+        onAdd={onAdd}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /Search/ }))
+    expect(onAdd).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('radio', { name: /context/ }))
+    await userEvent.click(screen.getByRole('button', { name: '添加并连接' }))
+
+    expect(onAdd).toHaveBeenCalledWith({
+      definition: dynamic,
+      targetPortKey: 'context',
+    })
+  })
+
+  it('单一兼容端口直接随选择返回', async () => {
+    const onAdd = vi.fn()
+    const dynamic = definition(undefined, { inputs: [port('prompt', 'string')] })
+    render(
+      <NodeLibraryDrawer
+        definitions={[dynamic]}
+        recentNodeKeys={[]}
+        compatibility={{ sourceType: 'string' }}
+        onAdd={onAdd}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /Search/ }))
+
+    expect(onAdd).toHaveBeenCalledWith({
+      definition: dynamic,
+      targetPortKey: 'prompt',
+    })
+  })
+
+  it('多端口选择时 Escape 先返回目录，再次 Escape 关闭节点库', async () => {
+    const onClose = vi.fn()
+    const dynamic = definition(undefined, {
+      inputs: [port('prompt', 'string'), port('context', 'any')],
+    })
+    render(
+      <NodeLibraryDrawer
+        definitions={[dynamic]}
+        recentNodeKeys={[]}
+        compatibility={{ sourceType: 'string' }}
+        onAdd={vi.fn()}
+        onClose={onClose}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /Search/ }))
+    expect(screen.getByRole('heading', { name: '选择输入端口' })).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.getByLabelText('搜索节点')).toHaveFocus()
+    expect(onClose).not.toHaveBeenCalled()
+    await userEvent.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('丰富卡片保留键盘与触摸退路', async () => {
+    const onAdd = vi.fn()
+    const item = definition('v1.2.3', {
+      type: 'template',
+      version: '2',
+      title: '提示词模板',
+      description: '将变量注入提示词',
+      inputs: [port('topic', 'string')],
+      outputs: [port('text', 'string')],
+    })
+    render(
+      <NodeLibraryDrawer
+        definitions={[item]}
+        recentNodeKeys={[]}
+        onAdd={onAdd}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByRole('button', { name: /提示词模板/ })
+    expect(card).toHaveTextContent('template@2')
+    expect(card).toHaveTextContent('1 输入 · 1 输出')
+    expect(card).toHaveTextContent('Example Nodes · v1.2.3')
+    card.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onAdd).toHaveBeenCalledWith({ definition: item })
+    expect(card).toHaveAttribute('draggable', 'true')
   })
 })

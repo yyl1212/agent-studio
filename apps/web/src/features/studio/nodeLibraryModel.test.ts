@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest'
 import type { NodeDefinition } from '../../lib/api/client'
 import {
   buildNodeLibraryView,
+  compatibleInputPorts,
   nodeDefinitionKey,
   readRecentNodeKeys,
   RECENT_NODE_STORAGE_KEY,
   rememberRecentNodeKey,
+  type PortDataType,
   type NodeLibraryScope,
 } from './nodeLibraryModel'
 
@@ -33,6 +35,13 @@ const definition = (type: string, category: string, overrides: Partial<NodeDefin
 })
 
 const all: NodeLibraryScope = { kind: 'all' }
+const port = (key: string, type: PortDataType): NodeDefinition['inputs'][number] => ({
+  key,
+  title: key,
+  type,
+  required: false,
+  cardinality: 'one',
+})
 
 describe('buildNodeLibraryView', () => {
   it('排除开始和结束节点，并按首次出现顺序派生分类', () => {
@@ -91,6 +100,59 @@ describe('buildNodeLibraryView', () => {
 
     expect(view.sections).toHaveLength(1)
     expect(view.sections[0].definitions.map((item) => item.type)).toEqual(['node-49'])
+  })
+
+  it('连接上下文只保留具有兼容输入的普通节点', () => {
+    const view = buildNodeLibraryView([
+      definition('start', '流程', { inputs: [] }),
+      definition('text', '文本', { inputs: [port('prompt', 'string')] }),
+      definition('number', '数据', { inputs: [port('value', 'number')] }),
+      definition('any', '数据', { inputs: [port('value', 'any')] }),
+      definition('end', '流程', { inputs: [port('result', 'any')] }),
+    ], {
+      query: '',
+      scope: all,
+      recentNodeKeys: [],
+      compatibility: { sourceType: 'string' },
+    })
+
+    expect(view.sections.flatMap((section) => section.definitions).map((item) => item.type)).toEqual(['text', 'any'])
+  })
+
+  it('搜索字段包含分类且永不返回开始结束节点', () => {
+    const candidates = [
+      definition('start', '流程'),
+      definition('template', '文本处理', { title: '提示词模板' }),
+      definition('end', '流程'),
+    ]
+
+    const view = buildNodeLibraryView(candidates, {
+      query: '文本处理',
+      scope: all,
+      recentNodeKeys: [],
+    })
+
+    expect(view.sections.flatMap((section) => section.definitions).map((item) => item.type)).toEqual(['template'])
+  })
+
+  it.each([
+    ['string', ['string', 'any']],
+    ['number', ['number', 'any']],
+    ['any', ['string', 'number', 'any']],
+  ] as const)('%s 输出匹配确定的输入集合', (sourceType, expected) => {
+    const candidate = definition('candidate', '测试', {
+      inputs: [port('s', 'string'), port('n', 'number'), port('a', 'any')],
+    })
+
+    expect(compatibleInputPorts(candidate, sourceType).map((input) => input.type)).toEqual(expected)
+  })
+
+  it('无输入节点不兼容且函数不修改输入数组', () => {
+    const candidate = definition('candidate', '测试', { inputs: [] })
+    const before = structuredClone(candidate.inputs)
+
+    expect(compatibleInputPorts(candidate, 'string')).toEqual([])
+    expect(candidate.inputs).toEqual(before)
   })
 })
 

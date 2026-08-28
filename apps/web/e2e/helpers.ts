@@ -69,6 +69,17 @@ export async function applyNodeConfig(page: Page) {
   await apply.click()
 }
 
+export async function placeNodePreview(page: Page) {
+  await expect(page.getByText('点击画布放置，Esc 取消')).toBeVisible()
+  const pane = page.locator('.react-flow__pane')
+  const box = await pane.boundingBox()
+  if (!box) throw new Error('无法读取画布放置区域')
+  await pane.click({
+    position: { x: box.width / 2, y: box.height * 0.72 },
+    force: true,
+  })
+}
+
 export async function openOptionalConfig(page: Page) {
   const summary = page.getByText('可选配置')
   if (await summary.count()) await summary.click()

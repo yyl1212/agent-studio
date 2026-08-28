@@ -55,3 +55,22 @@ it('工作台已处理 Escape 时不会重复关闭', () => {
 
   expect(onClose).toHaveBeenCalledOnce()
 })
+
+it('placement 是顶层 Escape 目标且输入框不会误触发取消', () => {
+  const onClose = vi.fn()
+  render(
+    <StudioShell
+      layer="placement"
+      commandBar={<input aria-label="节点名称" />}
+      quickTools={<span>工具</span>}
+      canvas={<span>放置预览</span>}
+      onOpenNodeLibrary={vi.fn()}
+      onRequestCloseTopLayer={onClose}
+    />,
+  )
+
+  fireEvent.keyDown(screen.getByLabelText('节点名称'), { key: 'Escape' })
+  expect(onClose).not.toHaveBeenCalled()
+  fireEvent.keyDown(window, { key: 'Escape' })
+  expect(onClose).toHaveBeenCalledOnce()
+})

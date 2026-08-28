@@ -20,17 +20,20 @@ import { BoundaryRepairBanner } from './BoundaryRepairBanner'
 import { fromFlowGraph, portsFromDefinition } from './graphAdapter'
 import { hydrateWorkflowGraph } from './hydrateWorkflowGraph'
 import { NodeConfigPanel } from './NodeConfigPanel'
-import { NodeLibraryDrawer } from './NodeLibraryDrawer'
+import { NodeLibraryDrawer, type NodeLibrarySelection } from './NodeLibraryDrawer'
 import {
   nodeDefinitionKey,
   readRecentNodeKeys,
   rememberRecentNodeKey,
+  type NodeLibraryCompatibility,
 } from './nodeLibraryModel'
 import {
   availableNodePosition,
   boundaryMidpoint,
   dropNodePosition,
+  previewNodePosition,
 } from './nodePlacement'
+import type { NodePlacementState } from './NodePlacementPreview'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
 import { StudioCommandBar } from './StudioCommandBar'
@@ -41,7 +44,7 @@ import type { StudioEdge, StudioNode } from './types'
 import { useNodeConfigDraft } from './useNodeConfigDraft'
 import { useStudioWorkbench, type WorkbenchIntent } from './useStudioWorkbench'
 import { WorkbenchPanel } from './WorkbenchPanel'
-import { WorkflowCanvas, type WorkflowCanvasHandle } from './WorkflowCanvas'
+import { WorkflowCanvas, type ConnectionEndIntent, type WorkflowCanvasHandle } from './WorkflowCanvas'
 import { VersionGovernancePanel } from './VersionGovernancePanel'
 import '@xyflow/react/dist/style.css'
 import './studio.css'
@@ -55,6 +58,19 @@ import {
   type BoundaryRepairSelection,
 } from './workflowBoundaries'
 
+interface PendingConnection {
+  sourceNodeId: string
+  sourceHandleId: string
+  sourceType: NodeLibraryCompatibility['sourceType']
+  position: XYPosition
+}
+
+interface NodeCreationOptions {
+  requestedPosition: XYPosition
+  targetPortKey?: string
+  connection?: PendingConnection
+}
+
 export function StudioPage() {
   const { id = '' } = useParams()
   const [workflow, setWorkflow] = useState<Workflow>()
@@ -62,6 +78,8 @@ export function StudioPage() {
   const [nodes, setNodes] = useState<StudioNode[]>([])
   const [edges, setEdges] = useState<StudioEdge[]>([])
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [placement, setPlacement] = useState<NodePlacementState>()
+  const [pendingConnection, setPendingConnection] = useState<PendingConnection>()
   const [recentNodeKeys, setRecentNodeKeys] = useState<string[]>(() =>
     readRecentNodeKeys(),
   )
@@ -205,42 +223,119 @@ export function StudioPage() {
     commit(next.nodes, next.edges)
   }
 
-  const addNode = (
+  const createAndCommitNode = (
     definition: NodeDefinition,
-    requestedPosition?: XYPosition,
-  ) => {
-    if (archived || versionLocked || boundaryBlocked) return
-    const position = requestedPosition
-      ? dropNodePosition(requestedPosition, nodes)
-      : availableNodePosition(
-          canvasRef.current?.getViewportCenter() ?? { x: 320, y: 260 },
-          nodes,
-        )
+    options: NodeCreationOptions,
+  ): StudioNode | undefined => {
+    if (archived || versionLocked || boundaryBlocked) return undefined
+    const currentDefinition = definitions.find(
+      (candidate) => nodeDefinitionKey(candidate) === nodeDefinitionKey(definition),
+    )
+    if (!currentDefinition) {
+      setNodeLibraryError('节点定义已更新，请重新选择')
+      return undefined
+    }
+    const position = dropNodePosition(options.requestedPosition, nodes)
     const node: StudioNode = {
-      id: createID(definition.type), type: 'studio',
+      id: createID(currentDefinition.type), type: 'studio',
       position,
       data: {
-        nodeType: definition.type,
-        typeVersion: definition.version,
-        config: defaultValue(definition.configSchema as JSONSchema) as Record<string, unknown>,
-        definition,
-        ports: portsFromDefinition(definition),
+        nodeType: currentDefinition.type,
+        typeVersion: currentDefinition.version,
+        config: defaultValue(currentDefinition.configSchema as JSONSchema) as Record<string, unknown>,
+        definition: currentDefinition,
+        ports: portsFromDefinition(currentDefinition),
         issues: [],
       },
     }
-    const next = [...nodes, node]
-    setNodes(next)
+    const nextNodes = [...nodes, node]
+    let nextEdges = edges
+    if (options.connection) {
+      const sourceNode = nodes.find(
+        (candidate) => candidate.id === options.connection?.sourceNodeId,
+      )
+      const sourcePort = sourceNode?.data.ports.outputs.find(
+        (port) => port.key === options.connection?.sourceHandleId,
+      )
+      const targetPort = node.data.ports.inputs.find(
+        (port) => port.key === options.targetPortKey,
+      )
+      if (!sourceNode || !sourcePort || !targetPort) {
+        setNodeLibraryError('连接上下文已变化，请重新连接')
+        return undefined
+      }
+      const connection: Connection = {
+        source: sourceNode.id,
+        sourceHandle: sourcePort.key,
+        target: node.id,
+        targetHandle: targetPort.key,
+      }
+      const issue = connectionIssue(connection, nextNodes, edges)
+      if (issue) {
+        setNodeLibraryError(issue)
+        return undefined
+      }
+      nextEdges = addEdge(
+        { ...connection, id: createID('edge'), data: {} },
+        edges,
+      )
+    }
+
+    setNodes(nextNodes)
+    setEdges(nextEdges)
     const validDefinitionKeys = new Set(definitions.map(nodeDefinitionKey))
     const nextRecentNodeKeys = rememberRecentNodeKey(
       recentNodeKeysRef.current.filter((key) => validDefinitionKeys.has(key)),
-      nodeDefinitionKey(definition),
+      nodeDefinitionKey(currentDefinition),
     )
     recentNodeKeysRef.current = nextRecentNodeKeys
     setRecentNodeKeys(nextRecentNodeKeys)
     setNodeLibraryError('')
+    setPendingConnection(undefined)
+    setPlacement(undefined)
     setLibraryOpen(false)
     workbench.request({ kind: 'config', nodeId: node.id }, false)
-    commit(next, edges)
+    commit(nextNodes, nextEdges)
+    return node
+  }
+
+  const beginPlacement = (definition: NodeDefinition) => {
+    if (archived || versionLocked || boundaryBlocked) return
+    const currentDefinition = definitions.find(
+      (candidate) => nodeDefinitionKey(candidate) === nodeDefinitionKey(definition),
+    )
+    if (!currentDefinition) {
+      setNodeLibraryError('节点定义已更新，请重新选择')
+      return
+    }
+    setPlacement({
+      definition: currentDefinition,
+      position: availableNodePosition(
+        canvasRef.current?.getViewportCenter() ?? { x: 320, y: 260 },
+        nodes,
+      ),
+    })
+    setNodeLibraryError('')
+    setLibraryOpen(false)
+  }
+
+  const chooseNodeDefinition = (selection: NodeLibrarySelection) => {
+    if (pendingConnection) {
+      createAndCommitNode(selection.definition, {
+        requestedPosition: pendingConnection.position,
+        targetPortKey: selection.targetPortKey,
+        connection: pendingConnection,
+      })
+      return
+    }
+    beginPlacement(selection.definition)
+  }
+
+  const confirmPlacement = () => {
+    if (!placement) return
+    createAndCommitNode(placement.definition, {
+      requestedPosition: placement.position,
+    })
   }
 
   const dropNodeDefinition = (nodeKey: string, position: XYPosition) => {
@@ -251,7 +346,29 @@ export function StudioPage() {
       setNodeLibraryError('节点定义已更新，请重新选择')
       return
     }
-    addNode(definition, position)
+    createAndCommitNode(definition, { requestedPosition: position })
+  }
+
+  const handleConnectionEnd = (intent: ConnectionEndIntent) => {
+    if (archived || versionLocked || boundaryBlocked) return
+    const sourceNode = nodes.find((node) => node.id === intent.sourceNodeId)
+    const sourcePort = sourceNode?.data.ports.outputs.find(
+      (port) => port.key === intent.sourceHandleId,
+    )
+    const position = canvasRef.current?.screenToFlowPosition({
+      x: intent.clientX,
+      y: intent.clientY,
+    })
+    if (!sourceNode || !sourcePort || !position) return
+    setPendingConnection({
+      sourceNodeId: sourceNode.id,
+      sourceHandleId: sourcePort.key,
+      sourceType: sourcePort.type,
+      position: dropNodePosition(position, nodes),
+    })
+    setPlacement(undefined)
+    setNodeLibraryError('')
+    requestIntent({ kind: 'open-library' })
   }
 
   const applySelectedConfig = (config: Record<string, unknown>, ports: ResolvedPorts) => {
@@ -483,6 +600,10 @@ export function StudioPage() {
     : disclosure === 'shortcuts' ? shortcutHelpTriggerRef.current : null
 
   const closeTopLayer = () => {
+    if (placement) {
+      setPlacement(undefined)
+      return
+    }
     if (activeDisclosure) {
       const trigger = disclosureTrigger()
       setActiveDisclosure(undefined)
@@ -491,6 +612,7 @@ export function StudioPage() {
     }
     if (libraryOpen) {
       setNodeLibraryError('')
+      setPendingConnection(undefined)
       setLibraryOpen(false)
       return
     }
@@ -501,6 +623,8 @@ export function StudioPage() {
 
   const openLibraryFromQuickTools = () => {
     rememberTrigger(addButtonRef.current)
+    setPendingConnection(undefined)
+    setPlacement(undefined)
     setActiveDisclosure(undefined)
     requestIntent({ kind: 'open-library' })
   }
@@ -558,11 +682,13 @@ export function StudioPage() {
   return (
     <main className="studio-page">
       <StudioShell
-        layer={activeDisclosure ?? (libraryOpen ? 'library' : workbench.mode.kind !== 'closed' ? 'workbench' : 'none')}
+        layer={placement ? 'placement' : activeDisclosure ?? (libraryOpen ? 'library' : workbench.mode.kind !== 'closed' ? 'workbench' : 'none')}
         returnFocusRef={lastTriggerRef}
         onOpenNodeLibrary={() => {
           if (archived || versionLocked || boundaryBlocked) return
           rememberTrigger(disclosureTrigger() ?? (document.activeElement instanceof HTMLElement ? document.activeElement : addButtonRef.current))
+          setPendingConnection(undefined)
+          setPlacement(undefined)
           setActiveDisclosure(undefined)
           requestIntent({ kind: 'open-library' })
         }}
@@ -634,6 +760,17 @@ export function StudioPage() {
             })
           }}
           onNodeDefinitionDrop={libraryOpen ? dropNodeDefinition : undefined}
+          placement={placement}
+          onPlacementMove={(position) => {
+            if (!placement) return
+            setPlacement({
+              ...placement,
+              position: previewNodePosition(position, nodes),
+            })
+          }}
+          onPlacementConfirm={confirmPlacement}
+          onPlacementCancel={() => setPlacement(undefined)}
+          onConnectionEnd={handleConnectionEnd}
           emptyGuide={emptyGuidePosition ? {
             position: emptyGuidePosition,
             onAdd: openLibraryFromQuickTools,
@@ -646,10 +783,12 @@ export function StudioPage() {
         nodeLibrary={libraryOpen ? <NodeLibraryDrawer
           definitions={definitions}
           recentNodeKeys={recentNodeKeys}
+          compatibility={pendingConnection ? { sourceType: pendingConnection.sourceType } : undefined}
           error={nodeLibraryError}
-          onAdd={(definition) => addNode(definition)}
+          onAdd={chooseNodeDefinition}
           onClose={() => {
             setNodeLibraryError('')
+            setPendingConnection(undefined)
             setLibraryOpen(false)
           }}
         /> : undefined}

@@ -54,6 +54,13 @@ export function dropNodePosition(
   return origin
 }
 
+export function previewNodePosition(
+  position: XYPosition,
+  nodes: StudioNode[],
+): XYPosition {
+  return dropNodePosition(position, nodes)
+}
+
 export function safeBoundaryPosition(
   kind: 'start' | 'end',
   nodes: StudioNode[],
