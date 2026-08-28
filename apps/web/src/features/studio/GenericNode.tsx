@@ -83,7 +83,7 @@ function PortList({ id, direction, ports }: { id: string; direction: 'input' | '
         type={input ? 'target' : 'source'}
         position={input ? Position.Left : Position.Right}
         data-port={`${id}:${port.key}`}
-        title={`${port.title} · ${port.type}`}
+        title={port.title}
         aria-label={`${input ? '输入' : '输出'}端口 ${port.title}，类型 ${port.type}`}
       />
     </span>
