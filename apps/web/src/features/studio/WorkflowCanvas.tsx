@@ -26,11 +26,12 @@ import {
 import { GenericNode } from './GenericNode'
 import { CanvasEmptyGuide } from './CanvasEmptyGuide'
 import { NODE_DEFINITION_MIME } from './nodeLibraryModel'
+import { NodePlacementPreview, type NodePlacementState } from './NodePlacementPreview'
 import type { StudioEdge, StudioNode } from './types'
 
 const nodeTypes = { studio: GenericNode }
 
-interface WorkflowCanvasProps {
+export interface WorkflowCanvasProps {
   nodes: StudioNode[]
   edges: StudioEdge[]
   onNodesChange: (changes: NodeChange<StudioNode>[]) => void
@@ -44,12 +45,24 @@ interface WorkflowCanvasProps {
   currentNodeID?: string
   onViewportChange?: (viewport: Viewport) => void
   onInvalidConnection?: (attempt: InvalidConnectionAttempt) => void
+  onConnectionEnd?: (intent: ConnectionEndIntent) => void
   onNodeDefinitionDrop?: (nodeKey: string, position: XYPosition) => void
+  placement?: NodePlacementState
+  onPlacementMove?: (position: XYPosition) => void
+  onPlacementConfirm?: () => void
+  onPlacementCancel?: () => void
   emptyGuide?: { position: XYPosition; onAdd: () => void }
 }
 
 export interface InvalidConnectionAttempt {
   connection: Connection
+  clientX: number
+  clientY: number
+}
+
+export interface ConnectionEndIntent {
+  sourceNodeId: string
+  sourceHandleId: string
   clientX: number
   clientY: number
 }
@@ -113,10 +126,21 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
 		? props.nodes
 		: props.nodes.map((node) => ({ ...node, selected: props.currentNodeID === node.id }))
   const onConnectEnd: NonNullable<ComponentProps<typeof ReactFlow>['onConnectEnd']> = (event, state) => {
-    if (state.isValid || !state.fromHandle || !state.toHandle) return
+    if (props.readOnly || state.isValid || !state.fromHandle) return
+    const point = 'changedTouches' in event ? event.changedTouches[0] : event
+    if (state.fromHandle.type === 'source' && !state.toHandle) {
+      if (!state.fromHandle.id) return
+      props.onConnectionEnd?.({
+        sourceNodeId: state.fromHandle.nodeId,
+        sourceHandleId: state.fromHandle.id,
+        clientX: point?.clientX ?? 0,
+        clientY: point?.clientY ?? 0,
+      })
+      return
+    }
+    if (!state.toHandle) return
     const source = state.fromHandle.type === 'source' ? state.fromHandle : state.toHandle
     const target = state.fromHandle.type === 'target' ? state.fromHandle : state.toHandle
-    const point = 'changedTouches' in event ? event.changedTouches[0] : event
     props.onInvalidConnection?.({
       connection: { source: source.nodeId, sourceHandle: source.id ?? null, target: target.nodeId, targetHandle: target.id ?? null },
       clientX: point?.clientX ?? 0,
@@ -136,6 +160,14 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
         }
       }}
       onDrop={handleNodeDrop}
+      onPointerMove={(event) => {
+        if (!props.placement || props.readOnly) return
+        const position = instanceRef.current?.screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        })
+        if (position) props.onPlacementMove?.(position)
+      }}
     >
       <ReactFlowProvider>
         <ReactFlow
@@ -147,6 +179,9 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
           onConnect={(connection) => { if (!props.readOnly) props.onConnect(connection) }}
           onDelete={(elements) => { if (!props.readOnly) props.onDelete?.(elements) }}
           onConnectEnd={onConnectEnd}
+          onPaneClick={() => {
+            if (props.placement && !props.readOnly) props.onPlacementConfirm?.()
+          }}
           isValidConnection={props.isValidConnection}
           onNodeClick={(event, node) => {
             if ((event.target as HTMLElement).closest('.react-flow__handle')) return
@@ -168,6 +203,11 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
                 position={props.emptyGuide.position}
                 onAdd={props.emptyGuide.onAdd}
               />
+            </ViewportPortal>
+          )}
+          {props.placement && (
+            <ViewportPortal>
+              <NodePlacementPreview state={props.placement} />
             </ViewportPortal>
           )}
         </ReactFlow>

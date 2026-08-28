@@ -4,6 +4,7 @@ import {
   availableNodePosition,
   boundaryMidpoint,
   dropNodePosition,
+  previewNodePosition,
   safeBoundaryPosition,
   snapNodePosition,
 } from './nodePlacement'
@@ -45,6 +46,14 @@ describe('nodePlacement', () => {
         [nodeAt(120, 240), nodeAt(120, 420)],
       ),
     ).toEqual({ x: 120, y: 60 })
+  })
+
+  it('预览移动吸附网格且避开完全覆盖', () => {
+    const occupied = nodeAt(100, 100)
+
+    expect(previewNodePosition({ x: 109, y: 94 }, [occupied])).toEqual(
+      dropNodePosition({ x: 109, y: 94 }, [occupied]),
+    )
   })
 
   it('边界安全位置位于图包围盒外并避开现有节点', () => {
