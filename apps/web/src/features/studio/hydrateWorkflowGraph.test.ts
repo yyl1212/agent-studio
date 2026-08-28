@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { APIError, type NodeDefinition, type Workflow } from '../../lib/api/client'
 import { portsFromDefinition } from './graphAdapter'
 import { hydrateWorkflowGraph } from './hydrateWorkflowGraph'
+import { hasInvalidEdges } from './connections'
 
 const definition = (type: string): NodeDefinition => ({
 	type, version: '1', title: type, description: '', category: '测试', configSchema: { type: 'object' },
@@ -32,6 +33,20 @@ describe('hydrateWorkflowGraph', () => {
 		const flow = await promise
 		expect(flow.nodes[0].data.ports.inputs[0].key).toBe('in')
 		expect(flow.nodes[1].data.ports).toEqual(portsFromDefinition(flow.nodes[1].data.definition))
+	})
+
+	it('加载持久化草稿后重新标记缺失端口的边', async () => {
+		const workflowWithMissingPortEdge: Workflow = {
+			...workflow,
+			draftGraph: {
+				...workflow.draftGraph,
+				edges: [{ id: 'missing-port', source: 'one', sourcePort: 'removed', target: 'two', targetPort: 'fallback' }],
+			},
+		}
+		const resolve = vi.fn().mockResolvedValue({ inputs: [], outputs: [] })
+		const graph = await hydrateWorkflowGraph(workflowWithMissingPortEdge, definitions, resolve, new AbortController().signal)
+		expect(graph.edges[0].data?.invalid).toBe(true)
+		expect(hasInvalidEdges(graph.edges)).toBe(true)
 	})
 })
 

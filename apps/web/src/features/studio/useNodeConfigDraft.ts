@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { validateFormValue } from '../../components/schema-form/SchemaForm'
+import { validateFormValue, type FormValidation } from '../../components/schema-form/SchemaForm'
 import type { JSONSchema } from '../../components/schema-form/types'
 import type { ResolvedPorts } from '../../lib/api/client'
 import { previewPorts, type PortPreview } from './configDraft'
 import type { StudioEdge, StudioNode } from './types'
 
 export type ResolveNodePorts = (type: string, version: string, config: Record<string, unknown>, signal: AbortSignal) => Promise<ResolvedPorts>
+export type NodeConfigStatus = 'idle' | 'dirty' | 'resolving' | 'ready' | 'error'
 export interface UseNodeConfigDraftOptions { node?: StudioNode; edges: StudioEdge[]; resolve: ResolveNodePorts; debounceMs?: number }
 export interface UseNodeConfigDraftResult {
   nodeId?: string
   draft: Record<string, unknown>
   normalized?: Record<string, unknown>
+  validation: FormValidation
   dirty: boolean
-  status: 'idle' | 'invalid' | 'resolving' | 'ready' | 'error'
+  status: NodeConfigStatus
+  errorKind?: 'validation' | 'resolve'
   preview?: PortPreview
   error: string
   setDraft: (config: Record<string, unknown>) => void
@@ -32,13 +35,15 @@ export function useNodeConfigDraft({ node, edges, resolve, debounceMs = 300 }: U
   const generation = useRef(0)
   useEffect(() => { generation.current += 1; setValue(valueForNode(node)); setResolution({ status: 'idle', error: '' }) }, [node?.id])
   const schema = node?.data.definition?.configSchema as JSONSchema | undefined
-  const validation = useMemo(() => schema && value.nodeId === node?.id ? validateFormValue(schema, value.draft) : undefined, [node?.id, schema, value])
+  const validation = useMemo<FormValidation>(() => schema && value.nodeId === node?.id
+    ? validateFormValue(schema, value.draft)
+    : { normalized: {}, errors: {}, valid: true }, [node?.id, schema, value])
   const dirty = JSON.stringify(value.draft) !== JSON.stringify(value.base)
   const edgeKey = JSON.stringify(edges.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle]))
   const portKey = JSON.stringify(node ? [node.id, node.data.ports] : null)
 
   useEffect(() => {
-    if (!node || value.nodeId !== node.id || !dirty || !validation?.valid) {
+    if (!node || value.nodeId !== node.id || !dirty || !validation.valid) {
       setResolution((current) => current.status === 'idle' && !current.preview && current.error === '' ? current : { status: 'idle', error: '' })
       return
     }
@@ -63,8 +68,31 @@ export function useNodeConfigDraft({ node, edges, resolve, debounceMs = 300 }: U
     setValue({ nodeId: node?.id, draft: copy, base: structuredClone(copy) })
     if (node) setResolution({ status: 'ready', preview: previewPorts(node, edges, ports), error: '' })
   }, [edges, node])
-  const status = !validation?.valid ? 'invalid' : resolution.status
-  return { nodeId: value.nodeId, draft: value.draft, normalized: validation?.valid ? validation.normalized : undefined, dirty, status, preview: resolution.preview, error: resolution.error, setDraft: (draft) => setValue((current) => ({ ...current, draft: structuredClone(draft) })), reset, retry, markApplied }
+  const status: NodeConfigStatus = !dirty
+    ? 'idle'
+    : !validation.valid
+      ? 'error'
+      : resolution.status === 'idle'
+        ? 'dirty'
+        : resolution.status
+  const errorKind = dirty && !validation.valid
+    ? 'validation' as const
+    : resolution.status === 'error' ? 'resolve' as const : undefined
+  return {
+    nodeId: value.nodeId,
+    draft: value.draft,
+    normalized: validation.valid ? validation.normalized : undefined,
+    validation,
+    dirty,
+    status,
+    errorKind,
+    preview: resolution.preview,
+    error: resolution.error,
+    setDraft: (draft) => setValue((current) => ({ ...current, draft: structuredClone(draft) })),
+    reset,
+    retry,
+    markApplied,
+  }
 }
 
 function valueForNode(node?: StudioNode): DraftValue {

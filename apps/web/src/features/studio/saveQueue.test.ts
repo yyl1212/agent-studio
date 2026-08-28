@@ -70,4 +70,16 @@ describe('SaveQueue', () => {
     expect(save).toHaveBeenCalledTimes(1)
     expect(states.at(-1)).toBe('conflict')
   })
+
+  it('停止时取消尚未开始的保存并忽略后续入队', async () => {
+    vi.useFakeTimers()
+    const save = vi.fn()
+    const queue = new SaveQueue(1, save, 800)
+    queue.enqueue(graph('pending'))
+    queue.stop()
+    queue.enqueue(graph('ignored'))
+    await vi.advanceTimersByTimeAsync(800)
+    expect(save).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
 })

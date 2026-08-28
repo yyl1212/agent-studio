@@ -9,12 +9,29 @@
 .studio-shell-workbench .workbench-panel { position: relative; inset: auto; width: var(--as-workbench-width); height: 100%; }
 .workbench-panel { position: absolute; z-index: 12; top: 90px; right: 16px; bottom: 16px; width: var(--as-workbench-width); padding: 22px; overflow: auto; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-surface); box-shadow: var(--as-shadow-panel); transition: width var(--as-motion-fast) ease; }
 .workbench-resizer { position: absolute; top: 0; bottom: 0; left: -6px; width: 12px; cursor: ew-resize; touch-action: none; }
-.workbench-close { position: absolute; top: 12px; right: 12px; width: 34px; padding: 5px; font-size: 20px; }
-.node-config-panel > header { display: grid; gap: 3px; padding-right: 42px; }
-.node-config-panel > header h2 { margin: 0; }
-.node-config-panel > header small { color: var(--as-text-muted); }
+.workbench-close { position: absolute; z-index: 6; top: 10px; right: 10px; width: 44px; min-height: 44px; padding: 5px; font-size: 20px; }
+.workbench-panel:has(.node-config-panel) { overflow: hidden; }
+.node-config-panel { display: grid; height: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+.node-config-header { position: sticky; z-index: 5; top: -22px; display: grid; min-width: 0; grid-template: "icon category status" auto "icon title status" auto "meta meta meta" auto "boundary boundary boundary" auto / 40px minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; margin: -22px -22px 0; padding: 18px 58px 16px 22px; border-bottom: 1px solid var(--as-border); background: color-mix(in srgb, var(--as-surface) 97%, transparent); backdrop-filter: blur(12px); }
+.node-config-icon { grid-area: icon; display: grid; width: 40px; height: 40px; place-items: center; border-radius: 11px; color: var(--as-primary); background: color-mix(in srgb, var(--as-primary) 9%, var(--as-surface)); }
+.node-config-icon .node-icon { width: 22px; height: 22px; }
+.node-config-header .node-category { grid-area: category; }
+.node-config-header h2 { grid-area: title; min-width: 0; margin: 0; overflow: hidden; font-size: 20px; text-overflow: ellipsis; white-space: nowrap; }
+.node-config-header > small { grid-area: meta; overflow: hidden; color: var(--as-text-muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.node-config-status { grid-area: status; display: inline-flex; min-height: 30px; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--as-border); border-radius: 999px; color: var(--as-text-muted); background: var(--as-surface-muted); font-size: 11px; font-weight: 750; white-space: nowrap; }
+.node-config-status.ready, .node-config-status.idle { color: #067647; background: #ecfdf3; }
+.node-config-status.dirty, .node-config-status.resolving { color: #9c2a10; background: #fff7ed; }
+.node-config-status.error { color: var(--as-danger); background: #fef3f2; }
+.node-boundary-note { grid-area: boundary; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); color: var(--as-text-muted); background: var(--as-surface-muted); font-size: 12px; }
+.node-config-body { min-width: 0; min-height: 0; margin: 0 -22px -22px; padding: 18px 22px 22px; overflow: auto; overscroll-behavior: contain; }
+.node-config-body > *:first-child { margin-top: 0; }
+.node-config-panel .schema-form { display: grid; gap: 14px; }
+.node-config-panel .schema-form > h3 { margin: 0; font-size: 13px; }
+.node-config-panel button, .node-config-panel summary { min-height: 44px; }
 .node-config-panel .schema-form-actions { position: sticky; z-index: 2; bottom: -22px; display: flex; flex-wrap: wrap; gap: 8px; margin: 0 -22px -22px; padding: 14px 22px; border-top: 1px solid var(--as-border); background: color-mix(in srgb, var(--as-surface) 96%, transparent); }
 .node-config-panel .form-error > p { margin: 0 0 8px; }
+.node-config-empty { display: grid; min-height: 180px; place-content: center; gap: 6px; padding: 28px; border: 1px dashed var(--as-border); border-radius: var(--as-radius-md); color: var(--as-text-muted); text-align: center; background: var(--as-surface-muted); }
+.node-config-empty p { margin: 0; color: var(--as-text); font-weight: 750; }
 .port-preview { margin-top: 18px; padding: 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface-muted); }
 .port-preview h3 { margin: 0 0 8px; font-size: 13px; }
 .port-preview p { margin: 4px 0; font-size: 13px; }
@@ -26,10 +43,20 @@
 .studio-save-recovery { padding: 0; border: 0; color: var(--as-primary); background: transparent; text-align: left; font-size: 12px; font-weight: 750; }
 .studio-more-actions, .studio-shortcut-help { position: relative; }
 .studio-more-actions summary, .studio-shortcut-help summary { padding: 8px 12px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface); cursor: pointer; font-size: 13px; font-weight: 700; list-style: none; }
+.studio-command-bar .ui-button, .studio-more-actions summary, .studio-shortcut-help summary, .studio-quick-tools > button { min-height: 44px; }
 .studio-more-actions summary::-webkit-details-marker, .studio-shortcut-help summary::-webkit-details-marker { display: none; }
 .studio-more-menu, .studio-shortcut-help > div { position: absolute; z-index: 20; top: calc(100% + 8px); right: 0; display: grid; min-width: 190px; gap: 4px; padding: 8px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface); box-shadow: var(--as-shadow-panel); }
 .studio-more-menu a, .studio-more-menu button { width: 100%; justify-content: flex-start; padding: 8px 10px; border: 0; color: var(--as-text); text-align: left; background: transparent; }
 .studio-command-error { position: absolute; top: calc(100% + 8px); right: 0; max-width: min(420px, 100%); margin: 0; padding: 8px 11px; border: 1px solid color-mix(in srgb, #b42318 30%, var(--as-border)); border-radius: var(--as-radius-sm); color: #b42318; background: var(--as-surface); font-size: 13px; font-weight: 650; }
+.studio-command-bar:has(.studio-invalid-edges) .studio-command-error:not(.studio-invalid-edges) { top: calc(100% + 54px); }
+.port-change-dialog { width: min(540px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 24px; overflow: auto; color: var(--as-text); background: var(--as-surface); }
+.port-change-dialog h3 { margin: 0 0 8px; font-size: 21px; }
+.port-change-dialog > p { margin: 0 0 18px; color: var(--as-text-muted); line-height: 1.55; }
+.port-change-dialog section { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); background: var(--as-surface-muted); }
+.port-change-dialog h4 { margin: 0 0 8px; font-size: 13px; }
+.port-change-dialog ul { margin: 0; padding-left: 20px; }
+.port-change-dialog code { overflow-wrap: anywhere; }
+.port-change-dialog .ui-button { min-height: 44px; }
 .studio-quick-tools { display: grid; gap: 8px; }
 .studio-quick-tools > button { justify-content: flex-start; box-shadow: 0 8px 24px rgb(73 52 32 / 8%); }
 .studio-shortcut-help > div { right: auto; left: 0; }
@@ -106,6 +133,10 @@
 .node-port-hit-area .react-flow__handle { position: absolute; inset: 0; width: 44px; height: 44px; border: 0; border-radius: 0; background: transparent; pointer-events: auto; transform: none; translate: 0; }
 .node-port-hit-area .react-flow__handle::after { position: absolute; top: 17px; left: 17px; width: 10px; height: 10px; border: 2px solid var(--as-surface); border-radius: 50%; background: var(--as-primary); box-sizing: border-box; content: ''; }
 .node-port-hit-area .react-flow__handle.connecting::after { box-shadow: 0 0 0 5px color-mix(in srgb, var(--as-primary) 18%, transparent); }
+.node-invalid-port-anchor { position: absolute; z-index: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.node-invalid-port-input { left: 0; }
+.node-invalid-port-output { right: 0; }
+.node-invalid-port-anchor .react-flow__handle { width: 1px; height: 1px; border: 0; opacity: 0; pointer-events: none; }
 .node-port-label { position: absolute; z-index: 4; width: max-content; max-width: 170px; padding: 4px 7px; overflow: hidden; border: 1px solid var(--as-border); border-radius: 6px; color: var(--as-text); background: var(--as-surface); box-shadow: 0 5px 14px rgb(73 52 32 / 11%); font-size: 10px; opacity: 0; text-overflow: ellipsis; white-space: nowrap; transition: opacity var(--as-motion-fast) ease; }
 .node-port-input .node-port-label { right: 38px; }
 .node-port-output .node-port-label { left: 38px; }
@@ -284,6 +315,13 @@
   .boundary-repair-dialog { width: calc(100% - 16px); max-height: calc(100vh - 16px); padding: 20px; }
   .boundary-repair-dialog .dialog-actions { align-items: stretch; flex-direction: column; }
   .boundary-repair-dialog .dialog-actions .ui-button { width: 100%; }
+  .node-config-header { grid-template: "icon category" auto "icon title" auto "meta meta" auto "status status" auto "boundary boundary" auto / 40px minmax(0, 1fr); padding-right: 58px; }
+  .node-config-status { justify-self: start; margin-top: 7px; }
+  .node-config-panel .schema-form-actions { align-items: stretch; flex-direction: column; }
+  .node-config-panel .schema-form-actions button { width: 100%; }
+  .port-change-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 20px; }
+  .port-change-dialog .dialog-actions { align-items: stretch; flex-direction: column; }
+  .port-change-dialog .dialog-actions .ui-button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -22,9 +22,10 @@ export function Field({ path, name, schema, value, required, errors, onChange, o
   const error = errors[path]
   const errorID = error ? `${id}-error` : undefined
   const descriptionID = schema.description ? `${id}-description` : undefined
+  const isRequired = required || requiredPaths?.has(path) || false
   const common = {
     id,
-    required: required || requiredPaths?.has(path),
+    required: isRequired,
     autoFocus: path === autoFocusPath,
     'aria-invalid': Boolean(error),
     'aria-describedby': [descriptionID, errorID].filter(Boolean).join(' ') || undefined,
@@ -112,7 +113,7 @@ export function Field({ path, name, schema, value, required, errors, onChange, o
 
   return (
     <div className="schema-field">
-      <label htmlFor={id}>{label}</label>
+      <div className="field-label"><label htmlFor={id}>{label}</label>{isRequired && <span className="field-required" aria-hidden="true">必填</span>}</div>
       {schema.description && <small id={descriptionID}>{schema.description}</small>}
       {control}
       {error && <span className="field-error" id={errorID}>{error}</span>}

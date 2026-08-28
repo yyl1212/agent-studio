@@ -20,6 +20,12 @@ export interface SchemaFormSecondarySubmit {
   disabled?: boolean
 }
 
+export interface SchemaFormResetAction {
+  label: string
+  onReset: () => void
+  disabled?: boolean
+}
+
 interface SchemaFormProps {
   schema: JSONSchema
   value: FormValue
@@ -27,6 +33,7 @@ interface SchemaFormProps {
   onSubmit: (value: FormValue) => void | Promise<void>
   submitLabel: string
   secondarySubmit?: SchemaFormSecondarySubmit
+  resetAction?: SchemaFormResetAction
   disabled?: boolean
   groupOptional?: boolean
   onValidationChange?: (validation: FormValidation) => void
@@ -34,7 +41,7 @@ interface SchemaFormProps {
   requiredPaths?: ReadonlySet<string>
 }
 
-export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, secondarySubmit, disabled, groupOptional, onValidationChange, editablePaths, requiredPaths }: SchemaFormProps) {
+export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, secondarySubmit, resetAction, disabled, groupOptional, onValidationChange, editablePaths, requiredPaths }: SchemaFormProps) {
   const [draft, setDraft] = useState<FormValue>(value)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const focusFrame = useRef<number | undefined>(undefined)
@@ -92,6 +99,10 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, sec
   }
   const required = order.filter((name) => schema.required?.includes(name))
   const optional = order.filter((name) => !schema.required?.includes(name))
+  const [optionalOpen, setOptionalOpen] = useState(() => optional.some((name) => !isEmptyFormValue(value[name])))
+  useEffect(() => {
+    if (Object.keys(errors).some((path) => optional.some((name) => path === `/${name}` || path.startsWith(`/${name}/`)))) setOptionalOpen(true)
+  }, [errors, optional])
   const firstError = Object.keys(errors)[0]
   const focusFirstError = () => document.getElementById(fieldID(firstError))?.focus()
 
@@ -100,14 +111,22 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, sec
       {firstError && <button className="form-error-summary" type="button" onClick={focusFirstError}>{Object.keys(errors).length} 项需要处理</button>}
       {groupOptional ? <>
         {required.length > 0 && <section className="schema-section"><h3>必要配置</h3>{required.map(renderField)}</section>}
-        {optional.length > 0 && <details className="schema-optional"><summary>可选配置</summary>{optional.map(renderField)}</details>}
+        {optional.length > 0 && <details className="schema-optional" open={optionalOpen} onToggle={(event) => setOptionalOpen(event.currentTarget.open)}><summary>可选配置</summary>{optional.map(renderField)}</details>}
       </> : order.map(renderField)}
       <div className="schema-form-actions">
+        {resetAction && <button type="button" disabled={resetAction.disabled} onClick={resetAction.onReset}>{resetAction.label}</button>}
         <button className="primary-button" type="submit" disabled={disabled}>{submitLabel}</button>
         {secondarySubmit && <button type="submit" data-intent="secondary" disabled={disabled || secondarySubmit.disabled}>{secondarySubmit.label}</button>}
       </div>
     </form>
   )
+}
+
+export function isEmptyFormValue(value: unknown): boolean {
+  if (value === undefined || value === null || value === '') return true
+  if (Array.isArray(value)) return value.length === 0
+  if (typeof value === 'object') return Object.keys(value).length === 0
+  return false
 }
 
 function fieldID(path: string) {

@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition, type Workflow } from '../../lib/api/client'
 import type { RunEvent } from '../../lib/api/ndjson'
-import { activeRunNodeID, connectionIssue, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
+import { activeRunNodeID, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, StudioPage } from './StudioPage'
+import { connectionIssue, markInvalidEdges } from './connections'
 import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {
@@ -50,6 +51,19 @@ const workflowWithDuplicateEnd = {
   },
 }
 
+const connectedTemplateWorkflow: Workflow = {
+  ...workflow,
+  draftGraph: {
+    schemaVersion: 1,
+    nodes: [
+      { id: 'start', type: 'start', typeVersion: '1', position: { x: 100, y: 100 }, config: { fields: [{ key: 'topic', label: '主题', type: 'text', required: true }] } },
+      { id: 'template', type: 'template', typeVersion: '1', position: { x: 300, y: 100 }, config: { template: '回答：{{topic}}' } },
+      { id: 'end', type: 'end', typeVersion: '1', position: { x: 500, y: 100 }, config: {} },
+    ],
+    edges: [{ id: 'edge-topic', source: 'start', sourcePort: 'topic', target: 'template', targetPort: 'topic' }],
+  },
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason?: unknown) => void
@@ -68,6 +82,27 @@ const renderStudio = () =>
       </Routes>
     </MemoryRouter>,
   )
+
+function renderConnectedStudio(saveFailure?: Error) {
+  vi.mocked(api.getWorkflow).mockResolvedValue(connectedTemplateWorkflow)
+  vi.mocked(api.resolveNodeType).mockImplementation(async (type, _version, config) => {
+    if (type === 'start') return { inputs: [], outputs: [{ key: 'topic', title: '主题', type: 'string', required: false, cardinality: 'one' }] }
+    if (type === 'template') return {
+      inputs: String(config.template).includes('{{topic}}') ? [{ key: 'topic', title: '主题', type: 'string', required: true, cardinality: 'one' }] : [],
+      outputs: [{ key: 'text', title: '文本', type: 'string', required: false, cardinality: 'one' }],
+    }
+    return { inputs: [], outputs: [] }
+  })
+  if (saveFailure) vi.mocked(api.saveWorkflow).mockRejectedValueOnce(saveFailure)
+  return renderStudio()
+}
+
+async function removeTemplateInput() {
+  fireEvent.click(await screen.findByTestId('node-template'))
+  await userEvent.clear(screen.getByLabelText('模板'))
+  await userEvent.type(screen.getByLabelText('模板'), '固定回答')
+  await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+}
 
 function confirmPendingPlacement() {
   const pane = document.querySelector<HTMLElement>('.react-flow__pane')
@@ -332,9 +367,7 @@ describe('StudioPage', () => {
     fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' })
 
     await vi.waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent(
-        '开始和结束节点不可删除',
-      ),
+      expect(screen.getByText(/开始和结束节点不可删除/)).toBeInTheDocument(),
     )
     expect(api.saveWorkflow).not.toHaveBeenCalled()
     expect(screen.getByTestId('node-start')).toBeInTheDocument()
@@ -631,6 +664,112 @@ describe('StudioPage', () => {
     expect(vi.mocked(api.saveWorkflow).mock.calls[0][1].graph.nodes.find((node) => node.type === 'template')?.config).toEqual({ template: '回答：{{topic}}' })
   })
 
+  it('破坏性端口变化确认前不改图，确认后保留失效边并阻断测试发布', async () => {
+    renderConnectedStudio()
+    await removeTemplateInput()
+
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
+    expect(screen.getByRole('dialog', { name: '确认端口变化' })).toBeVisible()
+    fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' })
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+    expect(screen.getByTestId('node-template')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '确认应用' }))
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce())
+    expect(vi.mocked(api.saveWorkflow).mock.calls[0][1].graph.edges).toContainEqual(expect.objectContaining({ id: 'edge-topic' }))
+    expect(screen.getByText(/存在 1 条失效连线/)).toBeVisible()
+    expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+  })
+
+  it('破坏性端口变化取消确认时不保存', async () => {
+    renderConnectedStudio()
+    await removeTemplateInput()
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
+    await userEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog', { name: '确认端口变化' })).not.toBeInTheDocument()
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('应用并继续只有保存成功后才离开配置面板', async () => {
+    renderConnectedStudio(new APIError(503, 'TEMPORARY_UNAVAILABLE', '保存失败'))
+    fireEvent.click(await screen.findByTestId('node-template'))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '新版：{{topic}}' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    const applyAndContinue = screen.getByRole('button', { name: '应用并继续' })
+    expect(applyAndContinue).toBeEnabled()
+    await userEvent.click(applyAndContinue)
+
+    expect(screen.queryByRole('dialog', { name: '保存节点配置更改？' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: '确认端口变化' })).not.toBeInTheDocument()
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce())
+    expect(await screen.findByRole('alert')).toHaveTextContent('保存失败')
+    expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
+  })
+
+  it('保存失败重试成功后才执行原继续意图', async () => {
+    vi.mocked(api.saveWorkflow)
+      .mockRejectedValueOnce(new APIError(503, 'TEMPORARY_UNAVAILABLE', '保存失败'))
+      .mockResolvedValueOnce({ ...connectedTemplateWorkflow, draftRevision: 2 })
+    renderConnectedStudio()
+    fireEvent.click(await screen.findByTestId('node-template'))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '新版：{{topic}}' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    await userEvent.click(screen.getByRole('button', { name: '应用并继续' }))
+    const retry = await screen.findByRole('button', { name: '重试保存' })
+    expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
+
+    await userEvent.click(retry)
+    expect(await screen.findByRole('dialog', { name: '测试运行' })).toBeVisible()
+    expect(api.saveWorkflow).toHaveBeenCalledTimes(2)
+  })
+
+  it('配置保存冲突时保留配置面板且不执行旧继续意图', async () => {
+    renderConnectedStudio(new APIError(409, 'REVISION_CONFLICT', '草稿冲突'))
+    fireEvent.click(await screen.findByTestId('node-template'))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '冲突版：{{topic}}' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    await userEvent.click(screen.getByRole('button', { name: '应用并继续' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('草稿冲突')
+    expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '刷新工作流' })).toBeVisible()
+  })
+
+  it('破坏性应用并试运行只应用配置且提示先修复连线', async () => {
+    const runDraft = vi.spyOn(api, 'runDraft')
+    renderConnectedStudio()
+    await removeTemplateInput()
+    await userEvent.click(screen.getByRole('button', { name: '应用并试运行' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认应用' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('请先修复失效连线')
+    expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
+    expect(runDraft).not.toHaveBeenCalled()
+  })
+
+  it('恢复缺失端口后自动解除测试和发布门禁', async () => {
+    renderConnectedStudio()
+    await removeTemplateInput()
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认应用' }))
+    expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '恢复：{{topic}}' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
+
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '测试运行' })).toBeEnabled())
+    expect(screen.getByRole('button', { name: '发布' })).toBeEnabled()
+    expect(screen.queryByText(/存在 1 条失效连线/)).not.toBeInTheDocument()
+  })
+
   it('保存 Agent 页面设置后接纳服务端 revision 并用于发布', async () => {
     const nextPresentation = { ...workflow.agentPresentation, title: '研究助手', accent: 'teal' as const }
     vi.spyOn(api, 'saveAgentPresentation').mockResolvedValue({ ...workflow, draftRevision: 2, agentPresentation: nextPresentation })
@@ -687,7 +826,7 @@ describe('StudioPage', () => {
     expect(listVersions).not.toHaveBeenCalled()
     resolveSave({ ...workflow, draftRevision: 2 })
     expect(await screen.findByRole('heading', { name: '版本历史' })).toBeInTheDocument()
-    expect(listVersions).toHaveBeenCalledWith('w1', { limit: 20 }, expect.any(AbortSignal))
+    await vi.waitFor(() => expect(listVersions).toHaveBeenCalledWith('w1', { limit: 20 }, expect.any(AbortSignal)))
   })
 
   it('回滚期间锁定画布和工作台，并接纳服务端 revision', async () => {

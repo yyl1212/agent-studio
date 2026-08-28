@@ -9,6 +9,7 @@ export function GenericNode({ data, selected, id }: NodeProps<StudioNode>) {
   const portKey = JSON.stringify([
     ...(data.ports.inputs ?? []).map((port) => ['target', port.key]),
     ...(data.ports.outputs ?? []).map((port) => ['source', port.key]),
+    ...(data.invalidPortAnchors ?? []).map((port) => [port.direction, port.key]),
   ])
   useEffect(() => updateNodeInternals(id), [id, portKey, updateNodeInternals])
   const category = data.definition?.category ?? data.nodeType
@@ -30,6 +31,7 @@ export function GenericNode({ data, selected, id }: NodeProps<StudioNode>) {
       data-read-only={data.readOnly || undefined}
       data-boundary={data.boundary || undefined}
     >
+      <GhostPortList anchors={data.invalidPortAnchors ?? []} />
       <PortList id={id} direction="input" ports={data.ports.inputs ?? []} />
       <header className="node-card-header">
         <span className="node-card-icon"><NodeIcon category={category} decorative /></span>
@@ -57,6 +59,24 @@ export function GenericNode({ data, selected, id }: NodeProps<StudioNode>) {
       <PortList id={id} direction="output" ports={data.ports.outputs ?? []} />
     </div>
   )
+}
+
+function GhostPortList({ anchors }: { anchors: NonNullable<StudioNode['data']['invalidPortAnchors']> }) {
+  const grouped = {
+    input: anchors.filter((anchor) => anchor.direction === 'input'),
+    output: anchors.filter((anchor) => anchor.direction === 'output'),
+  }
+  return <>{(['input', 'output'] as const).flatMap((direction) => grouped[direction].map((anchor, index) => {
+    const input = direction === 'input'
+    return <span
+      aria-hidden="true"
+      className={`node-invalid-port-anchor node-invalid-port-${direction}`}
+      key={`${direction}-${anchor.key}`}
+      style={{ top: `${((index + 1) / (grouped[direction].length + 1)) * 100}%` }}
+    >
+      <Handle id={anchor.key} type={input ? 'target' : 'source'} position={input ? Position.Left : Position.Right} isConnectable={false} />
+    </span>
+  }))}</>
 }
 
 function debugStatusLabel(status: string) {
