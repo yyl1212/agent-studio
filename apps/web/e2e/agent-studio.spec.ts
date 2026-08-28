@@ -19,6 +19,10 @@ test('点击预览可取消并在确认后只创建一次', async ({ page }) => 
 test('节点目录和结构化卡片在三档视口无溢出', async ({ page }) => {
   await createWorkflow(page, `visual-${Date.now()}`, '节点视觉')
   await expect(page.getByTestId('node-start')).toContainText('工作流唯一')
+  const portBox = await page.getByTestId('node-end').locator('.react-flow__handle').first().boundingBox()
+  if (!portBox) throw new Error('无法读取端口热区尺寸')
+  expect(portBox.width).toBeGreaterThanOrEqual(44)
+  expect(portBox.height).toBeGreaterThanOrEqual(44)
   for (const viewport of [{ width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport)
     await page.getByRole('button', { name: '添加节点' }).click()
