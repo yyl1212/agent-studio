@@ -54,6 +54,37 @@ export function dropNodePosition(
   return origin
 }
 
+export function safeBoundaryPosition(
+  kind: 'start' | 'end',
+  nodes: StudioNode[],
+): XYPosition {
+  if (nodes.length === 0) {
+    return kind === 'start' ? { x: 120, y: 180 } : { x: 520, y: 180 }
+  }
+  const xValues = nodes.map((node) => node.position.x)
+  const yValues = nodes.map((node) => node.position.y)
+  const centerY = (Math.min(...yValues) + Math.max(...yValues)) / 2
+  const position = {
+    x:
+      kind === 'start'
+        ? Math.min(...xValues) - 320
+        : Math.max(...xValues) + 320,
+    y: centerY,
+  }
+  return dropNodePosition(position, nodes)
+}
+
+export function boundaryMidpoint(nodes: StudioNode[]): XYPosition | undefined {
+  if (nodes.length !== 2) return undefined
+  const startNodes = nodes.filter((node) => node.data.nodeType === 'start')
+  const endNodes = nodes.filter((node) => node.data.nodeType === 'end')
+  if (startNodes.length !== 1 || endNodes.length !== 1) return undefined
+  return {
+    x: (startNodes[0].position.x + endNodes[0].position.x) / 2,
+    y: (startNodes[0].position.y + endNodes[0].position.y) / 2,
+  }
+}
+
 function isOccupied(candidate: XYPosition, nodes: StudioNode[]) {
   return nodes.some(
     (node) =>

@@ -35,6 +35,7 @@ type fixtureWorkflowService struct {
 	templateExportErr        error
 	templateImportErr        error
 	validateErr              error
+	saveDraftErr             error
 	manifestErr              error
 	lastExportRevision       int64
 	lastImported             workflow.ImportWorkflowTemplateInput
@@ -63,6 +64,9 @@ func (service *fixtureWorkflowService) Create(_ context.Context, input workflow.
 }
 
 func (service *fixtureWorkflowService) SaveDraft(context.Context, string, int64, domain.Graph) (domain.Workflow, error) {
+	if service.saveDraftErr != nil {
+		return domain.Workflow{}, service.saveDraftErr
+	}
 	return domain.Workflow{}, domain.ErrRevisionConflict
 }
 
@@ -319,6 +323,26 @@ func TestRevisionConflictUsesStableErrorShape(t *testing.T) {
 	dependencies := fixtureDeps()
 	recorder := performRequest(NewRouter(dependencies), http.MethodPut, "/api/workflows/w1", `{"draftRevision":1,"graph":{"schemaVersion":1,"nodes":[],"edges":[]}}`)
 	assertJSONError(t, recorder, http.StatusConflict, "WORKFLOW_REVISION_CONFLICT")
+}
+
+func TestWorkflowValidationErrorReturnsIssues(t *testing.T) {
+	issues := []domain.ValidationIssue{
+		{Code: "WORKFLOW_START_COUNT", Message: "工作流必须恰有一个开始节点", Path: "nodes"},
+		{Code: "WORKFLOW_END_COUNT", Message: "工作流必须恰有一个结束节点", Path: "nodes"},
+	}
+	dependencies := fixtureDeps()
+	dependencies.Workflows.(*fixtureWorkflowService).saveDraftErr = &workflow.ValidationError{Issues: issues}
+	recorder := performRequest(NewRouter(dependencies), http.MethodPut, "/api/workflows/w1", `{"draftRevision":1,"graph":{"schemaVersion":1,"nodes":[],"edges":[]}}`)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != "WORKFLOW_INVALID" || response.Message != "工作流校验失败" || !reflect.DeepEqual(response.Issues, issues) {
+		t.Fatalf("response=%+v", response)
+	}
 }
 
 func TestAgentPresentationEndpoint(t *testing.T) {

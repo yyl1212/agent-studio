@@ -389,6 +389,91 @@ func TestCreateValidatesIdentityAndAllowsIncompleteInitialDraft(t *testing.T) {
 	}
 }
 
+func TestCreateIncludesUnconnectedBoundaryNodes(t *testing.T) {
+	service, _ := newServiceFixture(t)
+	created, err := service.Create(context.Background(), CreateWorkflowInput{
+		Name: "边界 Agent",
+		Slug: "boundary-agent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var graph domain.Graph
+	if err := json.Unmarshal(created.DraftGraph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Edges) != 0 {
+		t.Fatalf("edges=%+v", graph.Edges)
+	}
+
+	counts := map[string]int{}
+	positions := map[string]domain.Position{}
+	for _, node := range graph.Nodes {
+		counts[node.Type]++
+		positions[node.Type] = node.Position
+	}
+	if counts["start"] != 1 || counts["end"] != 1 {
+		t.Fatalf("counts=%v graph=%+v", counts, graph)
+	}
+	if positions["start"] != (domain.Position{X: 120, Y: 180}) {
+		t.Fatalf("start position=%+v", positions["start"])
+	}
+	if positions["end"] != (domain.Position{X: 520, Y: 180}) {
+		t.Fatalf("end position=%+v", positions["end"])
+	}
+}
+
+func TestSaveDraftBoundaryGuard(t *testing.T) {
+	tests := []struct {
+		name  string
+		nodes []domain.Node
+		code  string
+	}{
+		{name: "missing start", nodes: []domain.Node{{ID: "end", Type: "end"}}, code: "WORKFLOW_START_COUNT"},
+		{name: "missing end", nodes: []domain.Node{{ID: "start", Type: "start"}}, code: "WORKFLOW_END_COUNT"},
+		{name: "duplicate start", nodes: []domain.Node{{ID: "start-a", Type: "start"}, {ID: "start-b", Type: "start"}, {ID: "end", Type: "end"}}, code: "WORKFLOW_START_COUNT"},
+		{name: "duplicate end", nodes: []domain.Node{{ID: "start", Type: "start"}, {ID: "end-a", Type: "end"}, {ID: "end-b", Type: "end"}}, code: "WORKFLOW_END_COUNT"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, store := newServiceFixture(t)
+			_, err := service.SaveDraft(context.Background(), store.workflow.ID, store.workflow.DraftRevision, domain.Graph{
+				SchemaVersion: 1,
+				Nodes:         test.nodes,
+			})
+			var validation *ValidationError
+			if !errors.As(err, &validation) {
+				t.Fatalf("error=%v", err)
+			}
+			if len(validation.Issues) != 1 || validation.Issues[0].Code != test.code {
+				t.Fatalf("issues=%+v want=%s", validation.Issues, test.code)
+			}
+			if store.updateDraftCalls != 0 {
+				t.Fatalf("update calls=%d", store.updateDraftCalls)
+			}
+		})
+	}
+
+	t.Run("unique unconnected boundaries", func(t *testing.T) {
+		service, store := newServiceFixture(t)
+		_, err := service.SaveDraft(context.Background(), store.workflow.ID, store.workflow.DraftRevision, domain.Graph{
+			SchemaVersion: 1,
+			Nodes: []domain.Node{
+				{ID: "start", Type: "start"},
+				{ID: "end", Type: "end"},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if store.updateDraftCalls != 1 {
+			t.Fatalf("update calls=%d", store.updateDraftCalls)
+		}
+	})
+}
+
 func TestSaveAgentPresentationValidatesAndAdvancesRevision(t *testing.T) {
 	service, store := newServiceFixture(t)
 	input := domain.AgentPresentation{

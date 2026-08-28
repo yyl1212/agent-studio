@@ -2,6 +2,141 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, openMoreActions, saveDraftGraph, type AgentPresentationSettings } from './helpers'
 
+test('新建工作流保护唯一边界并显示首节点引导', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  await createWorkflow(page, `boundary-${suffix}`, `边界保护 ${suffix}`)
+
+  await expect(page.getByTestId('node-start')).toHaveCount(1)
+  await expect(page.getByTestId('node-end')).toHaveCount(1)
+  const guide = page.getByRole('button', { name: '在这里添加第一个节点' })
+  await expect(guide).toBeVisible()
+  await expect(page.locator('.canvas-empty-guide')).toHaveCSS('display', 'grid')
+  const guideBox = await guide.boundingBox()
+  if (!guideBox) throw new Error('无法读取首节点引导按钮尺寸')
+  expect(guideBox.height).toBeGreaterThanOrEqual(44)
+
+  await page.getByTestId('node-start').click()
+  await page.keyboard.press('Delete')
+  await expect(page.getByTestId('node-start')).toHaveCount(1)
+  await expect(page.getByText(/不可删除/)).toBeVisible()
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 768, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport)
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true)
+  }
+})
+
+test('草稿 API 拒绝缺失开始节点且不推进 revision', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const workflowURL = await createWorkflow(
+    page,
+    `boundary-api-${suffix}`,
+    `边界 API ${suffix}`,
+  )
+  const workflowID = workflowURL.split('/').at(-1)
+  if (!workflowID) throw new Error('创建后未获得工作流 ID')
+  const endpoint = `http://127.0.0.1:8080/api/workflows/${workflowID}`
+  const beforeResponse = await page.request.get(endpoint)
+  expect(beforeResponse.ok()).toBe(true)
+  const before = await beforeResponse.json() as {
+    draftRevision: number
+    draftGraph: { nodes: Array<{ type: string }>; edges: unknown[] }
+  }
+
+  const rejected = await page.request.put(endpoint, {
+    data: {
+      draftRevision: before.draftRevision,
+      graph: {
+        ...before.draftGraph,
+        nodes: before.draftGraph.nodes.filter((node) => node.type !== 'start'),
+      },
+    },
+  })
+  expect(rejected.status()).toBe(422)
+  const failure = await rejected.json() as {
+    code: string
+    issues: Array<{ code: string }>
+  }
+  expect(failure.code).toBe('WORKFLOW_INVALID')
+  expect(failure.issues).toContainEqual(
+    expect.objectContaining({ code: 'WORKFLOW_START_COUNT' }),
+  )
+
+  const after = await (await page.request.get(endpoint)).json() as {
+    draftRevision: number
+  }
+  expect(after.draftRevision).toBe(before.draftRevision)
+})
+
+test('历史异常草稿显式修复后才替换画布', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const workflowURL = await createWorkflow(
+    page,
+    `boundary-repair-${suffix}`,
+    `历史修复 ${suffix}`,
+  )
+  const workflowID = workflowURL.split('/').at(-1)
+  if (!workflowID) throw new Error('创建后未获得工作流 ID')
+  const endpoint = `http://127.0.0.1:8080/api/workflows/${workflowID}`
+  const valid = await (await page.request.get(endpoint)).json() as {
+    draftRevision: number
+    draftGraph: {
+      schemaVersion: number
+      nodes: Array<{ id: string; type: string }>
+      edges: unknown[]
+    }
+    [key: string]: unknown
+  }
+  const invalid = {
+    ...valid,
+    draftGraph: {
+      ...valid.draftGraph,
+      nodes: valid.draftGraph.nodes.filter((node) => node.type !== 'start'),
+    },
+  }
+  let repairedGraph: typeof valid.draftGraph | undefined
+
+  await page.route(`**/api/workflows/${workflowID}`, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, json: invalid })
+      return
+    }
+    if (route.request().method() === 'PUT') {
+      const request = route.request().postDataJSON() as {
+        graph: typeof valid.draftGraph
+      }
+      repairedGraph = request.graph
+      await route.fulfill({
+        status: 200,
+        json: {
+          ...valid,
+          draftRevision: valid.draftRevision + 1,
+          draftGraph: request.graph,
+        },
+      })
+      return
+    }
+    await route.continue()
+  })
+  await page.reload()
+
+  await expect(page.getByTestId('node-start')).toHaveCount(0)
+  await page.getByRole('button', { name: '修复工作流边界' }).click()
+  await page.getByRole('button', { name: '确认修复' }).click()
+  await expect(page.getByTestId('node-start')).toHaveCount(1)
+  expect(repairedGraph?.nodes.filter((node) => node.type === 'start')).toHaveLength(1)
+  expect(repairedGraph?.nodes.filter((node) => node.type === 'end')).toHaveLength(1)
+  expect(repairedGraph?.edges).toEqual([])
+})
+
 test('全画布内应用配置并试运行最新草稿', async ({ page }) => {
   const suffix = Date.now().toString(36)
   const workflowURL = await createWorkflow(page, `studio-ux-${suffix}`, `全画布助手 ${suffix}`)

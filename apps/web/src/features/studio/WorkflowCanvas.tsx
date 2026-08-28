@@ -4,6 +4,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  ViewportPortal,
   type Connection,
   type EdgeChange,
   type NodeChange,
@@ -23,6 +24,7 @@ import {
 } from 'react'
 
 import { GenericNode } from './GenericNode'
+import { CanvasEmptyGuide } from './CanvasEmptyGuide'
 import { NODE_DEFINITION_MIME } from './nodeLibraryModel'
 import type { StudioEdge, StudioNode } from './types'
 
@@ -43,6 +45,7 @@ interface WorkflowCanvasProps {
   onViewportChange?: (viewport: Viewport) => void
   onInvalidConnection?: (attempt: InvalidConnectionAttempt) => void
   onNodeDefinitionDrop?: (nodeKey: string, position: XYPosition) => void
+  emptyGuide?: { position: XYPosition; onAdd: () => void }
 }
 
 export interface InvalidConnectionAttempt {
@@ -159,6 +162,14 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
           <Background gap={22} size={1.2} />
           <Controls />
           <MiniMap pannable zoomable />
+          {props.emptyGuide && (
+            <ViewportPortal>
+              <CanvasEmptyGuide
+                position={props.emptyGuide.position}
+                onAdd={props.emptyGuide.onAdd}
+              />
+            </ViewportPortal>
+          )}
         </ReactFlow>
       </ReactFlowProvider>
     </div>

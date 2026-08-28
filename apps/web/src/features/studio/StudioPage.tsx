@@ -16,6 +16,7 @@ import { APIError, api, type AgentPresentation, type NodeDefinition, type Resolv
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { applyNodeConfig } from './configDraft'
 import { AgentPageSettingsDialog } from './AgentPageSettingsDialog'
+import { BoundaryRepairBanner } from './BoundaryRepairBanner'
 import { fromFlowGraph, portsFromDefinition } from './graphAdapter'
 import { hydrateWorkflowGraph } from './hydrateWorkflowGraph'
 import { NodeConfigPanel } from './NodeConfigPanel'
@@ -25,7 +26,11 @@ import {
   readRecentNodeKeys,
   rememberRecentNodeKey,
 } from './nodeLibraryModel'
-import { availableNodePosition, dropNodePosition } from './nodePlacement'
+import {
+  availableNodePosition,
+  boundaryMidpoint,
+  dropNodePosition,
+} from './nodePlacement'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
 import { StudioCommandBar } from './StudioCommandBar'
@@ -40,6 +45,15 @@ import { WorkflowCanvas, type WorkflowCanvasHandle } from './WorkflowCanvas'
 import { VersionGovernancePanel } from './VersionGovernancePanel'
 import '@xyflow/react/dist/style.css'
 import './studio.css'
+import {
+  buildBoundaryRepairPlan,
+  diagnoseWorkflowBoundaries,
+  isBoundaryNode,
+  protectGraphDelete,
+  protectNodeChanges,
+  type BoundaryKind,
+  type BoundaryRepairSelection,
+} from './workflowBoundaries'
 
 export function StudioPage() {
   const { id = '' } = useParams()
@@ -74,6 +88,9 @@ export function StudioPage() {
 	const [versionLocked, setVersionLocked] = useState(false)
 	const [versionError, setVersionError] = useState('')
 	const [fitRequest, setFitRequest] = useState(0)
+  const [canvasNotice, setCanvasNotice] = useState('')
+  const [repairingBoundaries, setRepairingBoundaries] = useState(false)
+  const [boundaryRepairError, setBoundaryRepairError] = useState('')
   const saveQueue = useRef<SaveQueue | undefined>(undefined)
   const runController = useRef<AbortController | undefined>(undefined)
   const exportController = useRef<AbortController | undefined>(undefined)
@@ -122,6 +139,11 @@ export function StudioPage() {
   const selectedNode = nodes.find((node) => node.id === selectedID)
   const archived = Boolean(workflow?.archivedAt)
   const saveBlocked = saveState === 'error' || saveState === 'conflict'
+  const boundaryDiagnosis = useMemo(
+    () => diagnoseWorkflowBoundaries(nodes),
+    [nodes],
+  )
+  const boundaryBlocked = !boundaryDiagnosis.healthy
   const resolveNodePorts = useCallback((type: string, version: string, config: Record<string, unknown>, signal: AbortSignal) => api.resolveNodeType(type, version, config, signal), [])
   const configDraft = useNodeConfigDraft({ node: selectedNode, edges, resolve: resolveNodePorts })
 
@@ -132,24 +154,31 @@ export function StudioPage() {
 		}
   }
   const handleNodesChange = (changes: NodeChange<StudioNode>[]) => {
-    if (archived) return
+    if (archived || versionLocked || boundaryBlocked) return
     setNodes((current) => {
-      const next = applyNodeChanges(changes, current)
-		  if (changes.some((change) => change.type !== 'remove' && isPersistentNodeChange(change))) commit(next, edges)
+      const protectedResult = protectNodeChanges(changes, current)
+      if (protectedResult.skippedBoundaryNodeIds.length > 0) {
+        setCanvasNotice(
+          '开始和结束节点不可删除，已跳过工作流唯一节点',
+        )
+      }
+      const next = applyNodeChanges(protectedResult.changes, current)
+		  if (protectedResult.changes.some((change) => change.type !== 'remove' && isPersistentNodeChange(change))) commit(next, edges)
       return next
     })
   }
   const handleEdgesChange = (changes: EdgeChange<StudioEdge>[]) => {
-    if (archived) return
+    if (archived || versionLocked || boundaryBlocked) return
     setEdges((current) => {
       const next = applyEdgeChanges(changes, current)
 		  if (changes.some((change) => change.type !== 'remove' && isPersistentEdgeChange(change))) commit(nodes, next)
       return next
     })
   }
-  const isValidConnection = (connection: Connection | StudioEdge) => validateConnection(connection, nodes, edges)
+  const isValidConnection = (connection: Connection | StudioEdge) =>
+    !boundaryBlocked && validateConnection(connection, nodes, edges)
   const handleConnect = (connection: Connection) => {
-    if (archived || !isValidConnection(connection)) return
+    if (archived || versionLocked || boundaryBlocked || !isValidConnection(connection)) return
     setConnectionStatus(undefined)
     setEdges((current) => {
       const next = addEdge({ ...connection, id: createID('edge'), data: {} }, current)
@@ -158,8 +187,19 @@ export function StudioPage() {
     })
   }
   const handleDelete = (deleted: { nodes: StudioNode[]; edges: StudioEdge[] }) => {
-    if (archived) return
-    const next = graphAfterDelete(nodes, edges, deleted.nodes, deleted.edges)
+    if (archived || versionLocked || boundaryBlocked) return
+    const next = protectGraphDelete(
+      nodes,
+      edges,
+      deleted.nodes,
+      deleted.edges,
+    )
+    if (next.skippedBoundaryNodeIds.length > 0) {
+      setCanvasNotice(
+        '开始和结束节点不可删除，已跳过工作流唯一节点',
+      )
+    }
+    if (!next.changed) return
     setNodes(next.nodes)
     setEdges(next.edges)
     commit(next.nodes, next.edges)
@@ -169,7 +209,7 @@ export function StudioPage() {
     definition: NodeDefinition,
     requestedPosition?: XYPosition,
   ) => {
-    if (archived || versionLocked) return
+    if (archived || versionLocked || boundaryBlocked) return
     const position = requestedPosition
       ? dropNodePosition(requestedPosition, nodes)
       : availableNodePosition(
@@ -215,7 +255,7 @@ export function StudioPage() {
   }
 
   const applySelectedConfig = (config: Record<string, unknown>, ports: ResolvedPorts) => {
-    if (archived || !selectedID) return false
+    if (archived || versionLocked || boundaryBlocked || !selectedID) return false
     const applied = applyNodeConfig(nodes, edges, selectedID, config, ports)
     setNodes(applied.nodes)
     setEdges(applied.edges)
@@ -236,7 +276,7 @@ export function StudioPage() {
 
   const startSchema = useMemo(() => deriveStartSchema(nodes), [nodes])
   const runDraft = async (input: Record<string, unknown>) => {
-    if (!workflow || archived) return
+    if (!workflow || archived || versionLocked || boundaryBlocked) return
     runController.current?.abort()
     const controller = new AbortController()
     runController.current = controller
@@ -267,7 +307,7 @@ export function StudioPage() {
   }
 
   const publish = async () => {
-    if (!workflow || archived) return
+    if (!workflow || archived || versionLocked || boundaryBlocked) return
     setPublishing(true)
     setPublishError('')
     try {
@@ -421,6 +461,13 @@ export function StudioPage() {
 
   const requestIntent = (intent: WorkbenchIntent) => {
     if (archived && intent.kind !== 'export' && intent.kind !== 'close' && intent.kind !== 'version-history') return
+    if (
+      boundaryBlocked &&
+      (intent.kind === 'open-library' ||
+        intent.kind === 'config' ||
+        intent.kind === 'test' ||
+        intent.kind === 'publish')
+    ) return
     if (activeDisclosure) setActiveDisclosure(undefined)
     if (intent.kind === 'config' && workbench.mode.kind === 'config' && intent.nodeId === workbench.mode.nodeId) return
     if (configDraft.dirty && workbench.mode.kind === 'config') workbench.request(intent, true)
@@ -458,6 +505,32 @@ export function StudioPage() {
     requestIntent({ kind: 'open-library' })
   }
 
+  const handleBoundaryRepair = async (
+    selection: BoundaryRepairSelection,
+  ) => {
+    if (archived || versionLocked || !saveQueue.current) return
+    const plan = buildBoundaryRepairPlan(
+      nodes,
+      edges,
+      selection,
+      (kind, position) => createBoundaryNode(kind, position, definitions),
+    )
+    setRepairingBoundaries(true)
+    setBoundaryRepairError('')
+    try {
+      saveQueue.current.enqueue(fromFlowGraph(plan.nodes, plan.edges))
+      await saveQueue.current.flush()
+      setNodes(plan.nodes)
+      setEdges(plan.edges)
+		  setDraftEditSerial((value) => value + 1)
+      setFitRequest((value) => value + 1)
+    } catch (error) {
+      setBoundaryRepairError(publicMessage(error))
+    } finally {
+      setRepairingBoundaries(false)
+    }
+  }
+
   const retrySave = () => {
     if (saveState === 'error') commit(nodes, edges)
   }
@@ -476,13 +549,19 @@ export function StudioPage() {
   if (loadError) return <main className="page-container"><p role="alert">{loadError}</p></main>
   if (!workflow) return <main className="page-container" aria-live="polite">正在加载编辑器…</main>
 
+  const emptyGuidePosition =
+    boundaryDiagnosis.healthy &&
+    nodes.every(isBoundaryNode)
+      ? boundaryMidpoint(nodes)
+      : undefined
+
   return (
     <main className="studio-page">
       <StudioShell
         layer={activeDisclosure ?? (libraryOpen ? 'library' : workbench.mode.kind !== 'closed' ? 'workbench' : 'none')}
         returnFocusRef={lastTriggerRef}
         onOpenNodeLibrary={() => {
-          if (archived || versionLocked) return
+          if (archived || versionLocked || boundaryBlocked) return
           rememberTrigger(disclosureTrigger() ?? (document.activeElement instanceof HTMLElement ? document.activeElement : addButtonRef.current))
           setActiveDisclosure(undefined)
           requestIntent({ kind: 'open-library' })
@@ -496,7 +575,7 @@ export function StudioPage() {
           runsHref={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}
           actionError={exportError || versionError || (!agentSettingsOpen && agentSettingsError) || ''}
           testLabel="测试运行"
-          testDisabled={archived || versionLocked || saveBlocked}
+          testDisabled={archived || versionLocked || saveBlocked || boundaryBlocked}
           testButtonRef={testButtonRef}
           moreActionsTriggerRef={moreActionsTriggerRef}
           moreActionsOpen={activeDisclosure === 'commands'}
@@ -514,11 +593,11 @@ export function StudioPage() {
           onAgentPresentation={() => requestIntent({ kind: 'agent-presentation' })}
           onVersionHistory={() => { rememberTrigger(moreActionsTriggerRef.current); requestIntent({ kind: 'version-history' }) }}
           onExport={() => requestIntent({ kind: 'export' })}
-          onRetrySave={retrySave}
+          onRetrySave={boundaryBlocked ? undefined : retrySave}
           onRefreshConflict={() => window.location.reload()}
         />}
         quickTools={<StudioQuickTools
-          disabled={archived || versionLocked}
+          disabled={archived || versionLocked || boundaryBlocked}
           addButtonRef={addButtonRef}
           shortcutHelpTriggerRef={shortcutHelpTriggerRef}
           shortcutHelpOpen={activeDisclosure === 'shortcuts'}
@@ -536,7 +615,7 @@ export function StudioPage() {
         />}
         canvas={<WorkflowCanvas
           ref={canvasRef}
-          readOnly={archived || versionLocked}
+          readOnly={archived || versionLocked || boundaryBlocked}
           fitRequest={fitRequest}
           nodes={decorateRunNodes(nodes, events)}
           edges={edges}
@@ -555,9 +634,13 @@ export function StudioPage() {
             })
           }}
           onNodeDefinitionDrop={libraryOpen ? dropNodeDefinition : undefined}
+          emptyGuide={emptyGuidePosition ? {
+            position: emptyGuidePosition,
+            onAdd: openLibraryFromQuickTools,
+          } : undefined}
           onNodeClick={(node, trigger) => {
             rememberTrigger(trigger)
-            if (!archived && !versionLocked) requestIntent({ kind: 'config', nodeId: node.id })
+            if (!archived && !versionLocked && !boundaryBlocked) requestIntent({ kind: 'config', nodeId: node.id })
           }}
         />}
         nodeLibrary={libraryOpen ? <NodeLibraryDrawer
@@ -576,6 +659,15 @@ export function StudioPage() {
           {workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
         </WorkbenchPanel> : undefined}
       />
+      <BoundaryRepairBanner
+        diagnosis={boundaryDiagnosis}
+        nodes={nodes}
+        edges={edges}
+        busy={repairingBoundaries || archived || versionLocked}
+        error={boundaryRepairError}
+        onConfirm={handleBoundaryRepair}
+      />
+      {canvasNotice && <output className="studio-canvas-status studio-canvas-notice" aria-live="polite">{canvasNotice}</output>}
       {connectionStatus && <output className="studio-canvas-status" aria-live="polite" style={{ left: connectionStatus.clientX, top: connectionStatus.clientY }}>{connectionStatus.message}</output>}
       {archived && <div className="studio-archive-banner" role="status">已归档，只读模式。恢复后才能保存、测试或发布。</div>}
       <ConfirmDialog
@@ -607,6 +699,37 @@ export function StudioPage() {
 
 function createID(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
+}
+
+function createBoundaryNode(
+  kind: BoundaryKind,
+  position: XYPosition,
+  definitions: NodeDefinition[],
+): StudioNode {
+  const definition = definitions.find(
+    (candidate) => candidate.type === kind,
+  )
+  const configured = definition
+    ? defaultValue(definition.configSchema as JSONSchema)
+    : {}
+  return {
+    id: createID(kind),
+    type: 'studio',
+    position,
+    data: {
+      nodeType: kind,
+      typeVersion: definition?.version ?? '1',
+      config:
+        typeof configured === 'object' &&
+        configured !== null &&
+        !Array.isArray(configured)
+          ? configured as Record<string, unknown>
+          : {},
+      definition,
+      ports: portsFromDefinition(definition),
+      issues: [],
+    },
+  }
 }
 
 export function graphAfterDelete(nodes: StudioNode[], edges: StudioEdge[], deletedNodes: StudioNode[], deletedEdges: StudioEdge[]) {

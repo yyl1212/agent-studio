@@ -215,6 +215,9 @@ func (service *Service) SaveDraft(ctx context.Context, id string, revision int64
 	if graph.SchemaVersion != 1 {
 		return domain.Workflow{}, ErrInvalidWorkflowInput
 	}
+	if issues := validateDraftBoundaries(graph); len(issues) > 0 {
+		return domain.Workflow{}, &ValidationError{Issues: issues}
+	}
 	raw, err := json.Marshal(graph)
 	if err != nil {
 		return domain.Workflow{}, fmt.Errorf("encode draft graph: %w", err)
