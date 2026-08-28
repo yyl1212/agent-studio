@@ -41,6 +41,38 @@ const documentsSchema = {
 }
 
 describe('SchemaForm', () => {
+  it('有值的可选配置在首次渲染时自动展开', () => {
+    const optionalSchema = { type: 'object' as const, required: ['topic'], properties: { topic: { type: 'string' as const, title: '主题' }, note: { type: 'string' as const, title: '备注', minLength: 2 } } }
+    render(<SchemaForm schema={optionalSchema} value={{ topic: 'ok', note: '已有备注' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用" groupOptional />)
+    expect(screen.getByText('可选配置').closest('details')).toHaveAttribute('open')
+  })
+
+  it('折叠的可选字段有错误时重新展开并聚焦', async () => {
+    const optionalSchema = { type: 'object' as const, required: ['topic'], properties: { topic: { type: 'string' as const, title: '主题' }, note: { type: 'string' as const, title: '备注', minLength: 2 } } }
+    render(<SchemaForm schema={optionalSchema} value={{ topic: 'ok', note: 'x' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用" groupOptional />)
+    const details = screen.getByText('可选配置').closest('details')!
+    await userEvent.click(screen.getByText('可选配置'))
+    expect(details).not.toHaveAttribute('open')
+    await userEvent.click(screen.getByRole('button', { name: '应用' }))
+    await vi.waitFor(() => expect(details).toHaveAttribute('open'))
+    await vi.waitFor(() => expect(screen.getByLabelText('备注')).toHaveFocus())
+  })
+
+  it('操作栏提供独立重置且不提交', async () => {
+    const onReset = vi.fn()
+    const onSubmit = vi.fn()
+    render(<SchemaForm schema={schema} value={{ topic: 'ok' }} onChange={vi.fn()} onSubmit={onSubmit} submitLabel="应用" resetAction={{ label: '重置', onReset }} />)
+    await userEvent.click(screen.getByRole('button', { name: '重置' }))
+    expect(onReset).toHaveBeenCalledOnce()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('必填标记可见但字段可访问名称保持原标题', () => {
+    render(<SchemaForm schema={schema} value={{ topic: 'Agent' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用" />)
+    expect(screen.getByText('必填')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByLabelText('主题')).toBeRequired()
+  })
+
   it('第二提交复用校验并调用独立处理器', async () => {
     const onSecondarySubmit = vi.fn()
     render(<SchemaForm schema={schema} value={{ topic: 'Agent' }} onChange={vi.fn()} onSubmit={vi.fn()} submitLabel="应用"
