@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, openMoreActions, saveDraftGraph, type AgentPresentationSettings } from './helpers'
+import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, openMoreActions, placeNodePreview, saveDraftGraph, type AgentPresentationSettings } from './helpers'
 
 test('点击预览可取消并在确认后只创建一次', async ({ page }) => {
   await createWorkflow(page, `placement-${Date.now()}`, '放置预览')
@@ -658,17 +658,6 @@ async function buildAndPublish(page: Page, name: string, slug: string, template:
   const agentURL = await agentLink.getAttribute('href')
   if (!agentURL) throw new Error('发布后未返回 Agent URL')
   return { agentURL, workflowURL }
-}
-
-async function placeNodePreview(page: Page) {
-  await expect(page.getByText('点击画布放置，Esc 取消')).toBeVisible()
-  const pane = page.locator('.react-flow__pane')
-  const box = await pane.boundingBox()
-  if (!box) throw new Error('无法读取画布放置区域')
-  await pane.click({
-    position: { x: box.width / 2, y: box.height * 0.72 },
-    force: true,
-  })
 }
 
 function versionGraph(startLabel: string, template: string) {

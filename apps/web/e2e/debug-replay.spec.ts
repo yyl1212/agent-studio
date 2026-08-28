@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { applyNodeConfig, configureStartTextField, connectIndexedPorts, createWorkflow, moveIndexedNode, openMoreActions } from './helpers'
+import { applyNodeConfig, configureStartTextField, connectIndexedPorts, createWorkflow, moveIndexedNode, openMoreActions, placeNodePreview } from './helpers'
 
 test('fork/join 完整运行、回放与冻结外部分支局部重跑', async ({ page }) => {
 	const suffix = Date.now().toString(36)
@@ -10,6 +10,7 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	for (const template of ['L-{{topic}}', 'R-{{topic}}', '{{left}}+{{right}}']) {
 		await page.getByRole('button', { name: '添加节点' }).click()
 		await page.getByRole('button', { name: '提示词模板' }).click()
+		await placeNodePreview(page)
 		await page.getByLabel('模板', { exact: true }).fill(template)
 		await applyNodeConfig(page)
 		await page.getByRole('button', { name: '关闭工作台' }).click()
@@ -21,10 +22,10 @@ test('fork/join 完整运行、回放与冻结外部分支局部重跑', async (
 	const joinID = await templates.nth(2).getAttribute('data-node-id')
 	if (!leftID || !rightID || !joinID) throw new Error('模板节点缺少稳定实例 ID')
 	await page.getByRole('button', { name: 'Fit View' }).click()
-	await moveIndexedNode(page, 'template', 0, 0.42, 0.25)
-	await moveIndexedNode(page, 'template', 1, 0.42, 0.72)
-	await moveIndexedNode(page, 'template', 2, 0.64, 0.48)
-	await moveIndexedNode(page, 'end', 0, 0.84, 0.48)
+	await moveIndexedNode(page, 'template', 0, 0.48, 0.25)
+	await moveIndexedNode(page, 'template', 1, 0.48, 0.72)
+	await moveIndexedNode(page, 'template', 2, 0.68, 0.48)
+	await moveIndexedNode(page, 'end', 0, 0.9, 0.48)
 
 	await connectIndexedPorts(page, [
 		['start', 0, 'topic', 'template', 0, 'topic'],
