@@ -114,7 +114,7 @@ export function SchemaForm({ schema, value, onChange, onSubmit, submitLabel, sec
         {optional.length > 0 && <details className="schema-optional" open={optionalOpen} onToggle={(event) => setOptionalOpen(event.currentTarget.open)}><summary>可选配置</summary>{optional.map(renderField)}</details>}
       </> : order.map(renderField)}
       <div className="schema-form-actions">
-        {resetAction && <button type="button" disabled={disabled || resetAction.disabled} onClick={resetAction.onReset}>{resetAction.label}</button>}
+        {resetAction && <button type="button" disabled={resetAction.disabled} onClick={resetAction.onReset}>{resetAction.label}</button>}
         <button className="primary-button" type="submit" disabled={disabled}>{submitLabel}</button>
         {secondarySubmit && <button type="submit" data-intent="secondary" disabled={disabled || secondarySubmit.disabled}>{secondarySubmit.label}</button>}
       </div>

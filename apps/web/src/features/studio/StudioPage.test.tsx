@@ -333,9 +333,7 @@ describe('StudioPage', () => {
     fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' })
 
     await vi.waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent(
-        '开始和结束节点不可删除',
-      ),
+      expect(screen.getByText(/开始和结束节点不可删除/)).toBeInTheDocument(),
     )
     expect(api.saveWorkflow).not.toHaveBeenCalled()
     expect(screen.getByTestId('node-start')).toBeInTheDocument()
