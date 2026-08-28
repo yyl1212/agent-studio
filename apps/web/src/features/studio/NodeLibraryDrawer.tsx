@@ -9,32 +9,45 @@ import {
 import type { NodeDefinition } from '../../lib/api/client'
 import {
   buildNodeLibraryView,
+  compatibleInputPorts,
   NODE_DEFINITION_MIME,
   nodeDefinitionKey,
+  type NodeLibraryCompatibility,
   type NodeLibraryScope,
 } from './nodeLibraryModel'
+import { NodeIcon } from './NodeIcon'
 
-interface NodeLibraryDrawerProps {
+export interface NodeLibrarySelection {
+  definition: NodeDefinition
+  targetPortKey?: string
+}
+
+export interface NodeLibraryDrawerProps {
   definitions: NodeDefinition[]
   recentNodeKeys: string[]
+  compatibility?: NodeLibraryCompatibility
   error?: string
-  onAdd: (definition: NodeDefinition) => void
+  onAdd: (selection: NodeLibrarySelection) => void
   onClose: () => void
 }
 
 export function NodeLibraryDrawer({
   definitions,
   recentNodeKeys,
+  compatibility,
   error,
   onAdd,
   onClose,
 }: NodeLibraryDrawerProps) {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<NodeLibraryScope>({ kind: 'all' })
+  const [pendingDefinition, setPendingDefinition] = useState<NodeDefinition>()
+  const [selectedPortKey, setSelectedPortKey] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
   const view = useMemo(
-    () => buildNodeLibraryView(definitions, { query, scope, recentNodeKeys }),
-    [definitions, query, scope, recentNodeKeys],
+    () => buildNodeLibraryView(definitions, { query, scope, recentNodeKeys, compatibility }),
+    [compatibility, definitions, query, scope, recentNodeKeys],
   )
   const orderedDefinitions = useMemo(
     () => view.sections.flatMap((section) => section.definitions),
@@ -47,6 +60,26 @@ export function NodeLibraryDrawer({
     itemRefs.current[
       (index + orderedDefinitions.length) % orderedDefinitions.length
     ]?.focus()
+  }
+
+  const returnToCatalog = () => {
+    setPendingDefinition(undefined)
+    setSelectedPortKey('')
+    queueMicrotask(() => searchRef.current?.focus())
+  }
+
+  const chooseDefinition = (definition: NodeDefinition) => {
+    if (!compatibility) {
+      onAdd({ definition })
+      return
+    }
+    const ports = compatibleInputPorts(definition, compatibility.sourceType)
+    if (ports.length === 1) {
+      onAdd({ definition, targetPortKey: ports[0].key })
+      return
+    }
+    setPendingDefinition(definition)
+    setSelectedPortKey('')
   }
 
   const handleItemKeyDown = (
@@ -62,10 +95,7 @@ export function NodeLibraryDrawer({
       focusItem(index - 1)
     } else if (event.key === 'Enter') {
       event.preventDefault()
-      onAdd(definition)
-    } else if (event.key === 'Escape') {
-      event.preventDefault()
-      onClose()
+      chooseDefinition(definition)
     }
   }
 
@@ -85,6 +115,16 @@ export function NodeLibraryDrawer({
       className="studio-drawer left node-library-drawer"
       role="dialog"
       aria-label="节点库"
+      onKeyDownCapture={(event) => {
+        if (event.key !== 'Escape') return
+        event.preventDefault()
+        event.stopPropagation()
+        if (pendingDefinition) {
+          returnToCatalog()
+        } else {
+          onClose()
+        }
+      }}
     >
       <header className="node-library-heading">
         <div>
@@ -95,7 +135,7 @@ export function NodeLibraryDrawer({
           ×
         </button>
       </header>
-      <nav className="node-library-categories" aria-label="节点分类">
+      {!pendingDefinition && <nav className="node-library-categories" aria-label="节点分类">
         <button
           type="button"
           aria-pressed={scope.kind === 'all'}
@@ -122,11 +162,55 @@ export function NodeLibraryDrawer({
             {category}
           </button>
         ))}
-      </nav>
+      </nav>}
       <div className="node-library-catalog">
+        {pendingDefinition ? (
+          <section className="node-port-selection" aria-labelledby="node-port-selection-title">
+            <button type="button" className="secondary" onClick={returnToCatalog}>
+              ← 返回节点目录
+            </button>
+            <div className="node-port-selection-heading">
+              <NodeIcon category={pendingDefinition.category} decorative />
+              <div>
+                <span className="node-category">{pendingDefinition.title}</span>
+                <h3 id="node-port-selection-title">选择输入端口</h3>
+              </div>
+            </div>
+            <p>该节点有多个兼容输入，请选择本次连线的目标端口。</p>
+            <fieldset>
+              <legend>兼容输入端口</legend>
+              {compatibility && compatibleInputPorts(pendingDefinition, compatibility.sourceType).map((port, index) => (
+                <label key={port.key} className="node-port-option">
+                  <input
+                    autoFocus={index === 0}
+                    type="radio"
+                    name="target-port"
+                    value={port.key}
+                    checked={selectedPortKey === port.key}
+                    onChange={() => setSelectedPortKey(port.key)}
+                  />
+                  <span>{port.title}</span>
+                  <small>{port.key} · {port.type}</small>
+                </label>
+              ))}
+            </fieldset>
+            <button
+              type="button"
+              className="primary"
+              disabled={!selectedPortKey}
+              onClick={() => {
+                if (!selectedPortKey) return
+                onAdd({ definition: pendingDefinition, targetPortKey: selectedPortKey })
+              }}
+            >
+              添加并连接
+            </button>
+          </section>
+        ) : <>
         <label className="search-field">
           搜索节点
           <input
+            ref={searchRef}
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
@@ -134,9 +218,6 @@ export function NodeLibraryDrawer({
               if (event.key === 'ArrowDown') {
                 event.preventDefault()
                 focusItem(0)
-              } else if (event.key === 'Escape') {
-                event.preventDefault()
-                onClose()
               }
             }}
           />
@@ -165,14 +246,23 @@ export function NodeLibraryDrawer({
                     type="button"
                     draggable
                     onDragStart={(event) => beginDrag(event, definition)}
-                    onClick={() => onAdd(definition)}
+                    onClick={() => chooseDefinition(definition)}
                     onKeyDown={(event) =>
                       handleItemKeyDown(event, index, definition)
                     }
                   >
-                    <strong>{definition.title}</strong>
+                    <span className="library-node-heading">
+                      <NodeIcon category={definition.category} decorative />
+                      <span>
+                        <strong>{definition.title}</strong>
+                        <small>{definition.type}@{definition.version}</small>
+                      </span>
+                    </span>
                     <small className="library-node-description">
                       {definition.description}
+                    </small>
+                    <small className="library-node-ports">
+                      {definition.inputs.length} 输入 · {definition.outputs.length} 输出
                     </small>
                     <small className="package-summary">
                       {definition.package.displayName}
@@ -202,6 +292,7 @@ export function NodeLibraryDrawer({
             )}
           </div>
         )}
+        </>}
       </div>
     </aside>
   )
