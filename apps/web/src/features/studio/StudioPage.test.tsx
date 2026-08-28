@@ -670,7 +670,9 @@ describe('StudioPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '应用配置' }))
     expect(screen.getByRole('dialog', { name: '确认端口变化' })).toBeVisible()
+    fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' })
     expect(api.saveWorkflow).not.toHaveBeenCalled()
+    expect(screen.getByTestId('node-template')).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: '确认应用' }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce())

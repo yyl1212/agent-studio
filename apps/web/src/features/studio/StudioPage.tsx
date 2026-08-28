@@ -189,6 +189,7 @@ export function StudioPage() {
   const selectedID = workbench.mode.kind === 'config' ? workbench.mode.nodeId : undefined
   const selectedNode = nodes.find((node) => node.id === selectedID)
   const archived = Boolean(workflow?.archivedAt)
+  const configConfirmationOpen = Boolean(pendingConfigApplication)
   const saveBlocked = saveState === 'error' || saveState === 'conflict'
   const boundaryDiagnosis = useMemo(
     () => diagnoseWorkflowBoundaries(nodes),
@@ -207,7 +208,7 @@ export function StudioPage() {
 		}
   }
   const handleNodesChange = (changes: NodeChange<StudioNode>[]) => {
-    if (archived || versionLocked || boundaryBlocked) return
+    if (archived || versionLocked || boundaryBlocked || configConfirmationOpen) return
     setNodes((current) => {
       const protectedResult = protectNodeChanges(changes, current)
       if (protectedResult.skippedBoundaryNodeIds.length > 0) {
@@ -221,7 +222,7 @@ export function StudioPage() {
     })
   }
   const handleEdgesChange = (changes: EdgeChange<StudioEdge>[]) => {
-    if (archived || versionLocked || boundaryBlocked) return
+    if (archived || versionLocked || boundaryBlocked || configConfirmationOpen) return
     setEdges((current) => {
       const next = applyEdgeChanges(changes, current)
 		  if (changes.some((change) => change.type !== 'remove' && isPersistentEdgeChange(change))) commit(nodes, next)
@@ -231,7 +232,7 @@ export function StudioPage() {
   const isValidConnection = (connection: Connection | StudioEdge) =>
     !boundaryBlocked && validateConnection(connection, nodes, edges)
   const handleConnect = (connection: Connection) => {
-    if (archived || versionLocked || boundaryBlocked || !isValidConnection(connection)) return
+    if (archived || versionLocked || boundaryBlocked || configConfirmationOpen || !isValidConnection(connection)) return
     setConnectionStatus(undefined)
     setEdges((current) => {
       const next = addEdge({ ...connection, id: createID('edge'), data: {} }, current)
@@ -240,7 +241,7 @@ export function StudioPage() {
     })
   }
   const handleDelete = (deleted: { nodes: StudioNode[]; edges: StudioEdge[] }) => {
-    if (archived || versionLocked || boundaryBlocked) return
+    if (archived || versionLocked || boundaryBlocked || configConfirmationOpen) return
     const next = protectGraphDelete(
       nodes,
       edges,
@@ -262,7 +263,7 @@ export function StudioPage() {
     definition: NodeDefinition,
     options: NodeCreationOptions,
   ): StudioNode | undefined => {
-    if (archived || versionLocked || boundaryBlocked) return undefined
+    if (archived || versionLocked || boundaryBlocked || configConfirmationOpen) return undefined
     const currentDefinition = definitions.find(
       (candidate) => nodeDefinitionKey(candidate) === nodeDefinitionKey(definition),
     )
@@ -385,7 +386,7 @@ export function StudioPage() {
   }
 
   const handleConnectionEnd = (intent: ConnectionEndIntent) => {
-    if (archived || versionLocked || boundaryBlocked) return
+    if (archived || versionLocked || boundaryBlocked || configConfirmationOpen) return
     const sourceNode = nodes.find((node) => node.id === intent.sourceNodeId)
     const sourcePort = sourceNode?.data.ports.outputs.find(
       (port) => port.key === intent.sourceHandleId,
@@ -781,7 +782,7 @@ export function StudioPage() {
         layer={placement ? 'placement' : activeDisclosure ?? (libraryOpen ? 'library' : workbench.mode.kind !== 'closed' ? 'workbench' : 'none')}
         returnFocusRef={lastTriggerRef}
         onOpenNodeLibrary={() => {
-          if (archived || versionLocked || boundaryBlocked) return
+          if (archived || versionLocked || boundaryBlocked || configConfirmationOpen) return
           rememberTrigger(disclosureTrigger() ?? (document.activeElement instanceof HTMLElement ? document.activeElement : addButtonRef.current))
           setPendingConnection(undefined)
           setPlacement(undefined)
@@ -824,7 +825,7 @@ export function StudioPage() {
           }}
         />}
         quickTools={<StudioQuickTools
-          disabled={archived || versionLocked || boundaryBlocked}
+          disabled={archived || versionLocked || boundaryBlocked || configConfirmationOpen}
           addButtonRef={addButtonRef}
           shortcutHelpTriggerRef={shortcutHelpTriggerRef}
           shortcutHelpOpen={activeDisclosure === 'shortcuts'}
@@ -842,7 +843,7 @@ export function StudioPage() {
         />}
         canvas={<WorkflowCanvas
           ref={canvasRef}
-          readOnly={archived || versionLocked || boundaryBlocked}
+          readOnly={archived || versionLocked || boundaryBlocked || configConfirmationOpen}
           fitRequest={fitRequest}
           nodes={decorateRunNodes(nodes, events)}
           edges={edges}
@@ -878,7 +879,7 @@ export function StudioPage() {
           } : undefined}
           onNodeClick={(node, trigger) => {
             rememberTrigger(trigger)
-            if (!archived && !versionLocked && !boundaryBlocked) requestIntent({ kind: 'config', nodeId: node.id })
+            if (!archived && !versionLocked && !boundaryBlocked && !configConfirmationOpen) requestIntent({ kind: 'config', nodeId: node.id })
           }}
         />}
         nodeLibrary={libraryOpen ? <NodeLibraryDrawer
