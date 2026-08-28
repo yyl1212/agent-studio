@@ -17,7 +17,7 @@ interface NodeConfigPanelProps {
 export function NodeConfigPanel({ titleId, node, draft, onApply, onApplyAndTest }: NodeConfigPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const canApply = Boolean(draft.dirty && draft.status === 'ready' && draft.normalized && draft.preview)
-  const submitDisabled = !draft.dirty || draft.status === 'idle' || draft.status === 'resolving' || draft.status === 'error'
+  const submitDisabled = !canApply
   const apply = () => canApply ? onApply(draft.normalized!, draft.preview!.ports) : undefined
   const applyAndTest = () => canApply ? onApplyAndTest(draft.normalized!, draft.preview!.ports) : undefined
   useEffect(() => {

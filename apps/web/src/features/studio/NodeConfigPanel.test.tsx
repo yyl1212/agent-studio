@@ -11,6 +11,7 @@ const definition: NodeDefinition = { type: 'dynamic', version: '1', title: 'åŠ¨æ
 const node: StudioNode = { id: 'node-a', type: 'studio', position: { x: 0, y: 0 }, data: { nodeType: 'dynamic', typeVersion: '1', config: { mode: 'old' }, definition, ports: { inputs: [], outputs: [] }, issues: [] } }
 const readyDraft: UseNodeConfigDraftResult = {
   nodeId: 'node-a', draft: { mode: 'new' }, normalized: { mode: 'new' }, dirty: true, status: 'ready',
+  validation: { normalized: { mode: 'new' }, errors: {}, valid: true },
   preview: { ports: { inputs: [], outputs: [] }, added: [], removed: [], invalidEdges: [] }, error: '',
   setDraft: vi.fn(), reset: vi.fn(), retry: vi.fn(), markApplied: vi.fn(),
 }
