@@ -58,15 +58,19 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	storeClosed := false
+	databaseClosed := false
+	var maintenance maintenanceReleaser
 	defer func() {
-		if !storeClosed {
-			store.Close()
+		if !databaseClosed {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			closeDatabaseRuntime(ctx, logger, maintenance, store)
 		}
 	}()
 	defer shutdownTelemetry(logger, telemetry, defaultTelemetryShutdownContext)
-	if err := store.Migrate(startupContext); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
+	maintenance, err = store.PrepareRuntime(startupContext)
+	if err != nil {
+		return fmt.Errorf("prepare database runtime: %w", err)
 	}
 	poolMetrics, err := store.RegisterPoolMetrics(telemetry.Providers())
 	if err != nil {
@@ -164,10 +168,10 @@ func run(logger *slog.Logger) error {
 	defer cancelShutdown()
 	shutdownErr := shutdownRuntime(
 		shutdownContext, logger, agentRunSupervisor, runCoordinator, server.Shutdown, stopCoordinator, coordinatorDone,
-		poolMetrics, telemetry, store, defaultTelemetryShutdownContext,
+		poolMetrics, telemetry, maintenance, store, defaultTelemetryShutdownContext,
 	)
 	poolMetricsUnregistered = true
-	storeClosed = true
+	databaseClosed = true
 	if serveErr != nil {
 		return serveErr
 	}
@@ -194,6 +198,10 @@ type telemetryRuntime interface {
 
 type storeCloser interface {
 	Close()
+}
+
+type maintenanceReleaser interface {
+	Release(context.Context) error
 }
 
 type telemetryShutdownContextFactory func() (context.Context, context.CancelFunc)
@@ -255,6 +263,7 @@ func shutdownRuntime(
 	coordinatorDone <-chan error,
 	poolMetrics poolMetricRegistration,
 	telemetry telemetryRuntime,
+	maintenance maintenanceReleaser,
 	store storeCloser,
 	telemetryContext telemetryShutdownContextFactory,
 ) error {
@@ -283,9 +292,7 @@ func shutdownRuntime(
 		}
 	}
 	shutdownTelemetry(logger, telemetry, telemetryContext)
-	if store != nil {
-		store.Close()
-	}
+	closeDatabaseRuntime(ctx, logger, maintenance, store)
 	if httpErr != nil {
 		return fmt.Errorf("shutdown HTTP server: %w", httpErr)
 	}
@@ -296,6 +303,21 @@ func shutdownRuntime(
 		return fmt.Errorf("shutdown run coordinator: %w", coordinatorErr)
 	}
 	return nil
+}
+
+func closeDatabaseRuntime(ctx context.Context, logger *slog.Logger, maintenance maintenanceReleaser, store storeCloser) {
+	if maintenance != nil {
+		if err := maintenance.Release(ctx); err != nil {
+			observability.Log(ctx, logger, slog.LevelError, "database maintenance release failed", observability.IDs{},
+				slog.String("component", "database_maintenance"),
+				slog.String("reason", "shutdown"),
+				slog.String("error_category", string(observability.ErrorCategoryInternal)),
+			)
+		}
+	}
+	if store != nil {
+		store.Close()
+	}
 }
 
 type nodeIndexStoreOpener func(string) (*nodeindex.Store, error)

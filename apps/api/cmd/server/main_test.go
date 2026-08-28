@@ -71,6 +71,16 @@ type recordingStoreCloser struct{ events *[]string }
 
 func (store recordingStoreCloser) Close() { *store.events = append(*store.events, "store-close") }
 
+type recordingMaintenanceLease struct {
+	events     *[]string
+	releaseErr error
+}
+
+func (lease recordingMaintenanceLease) Release(context.Context) error {
+	*lease.events = append(*lease.events, "maintenance-release")
+	return lease.releaseErr
+}
+
 func TestShutdownRuntimeCancelsRunsBeforeHTTPAndStopsLoopLast(t *testing.T) {
 	events := []string{}
 	done := make(chan error, 1)
@@ -88,7 +98,8 @@ func TestShutdownRuntimeCancelsRunsBeforeHTTPAndStopsLoopLast(t *testing.T) {
 		recordingShutdownSupervisor{events: &events},
 		recordingShutdownCoordinator{events: &events},
 		shutdownHTTP, stop, done,
-		recordingPoolRegistration{events: &events}, telemetry, recordingStoreCloser{events: &events},
+		recordingPoolRegistration{events: &events}, telemetry,
+		recordingMaintenanceLease{events: &events}, recordingStoreCloser{events: &events},
 		func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
 	)
 	if err != nil {
@@ -96,7 +107,7 @@ func TestShutdownRuntimeCancelsRunsBeforeHTTPAndStopsLoopLast(t *testing.T) {
 	}
 	want := []string{
 		"agent-runs-begin-shutdown", "coordinator-stop", "http-shutdown", "agent-runs-wait",
-		"pool-metrics-unregister", "telemetry-shutdown", "store-close",
+		"pool-metrics-unregister", "telemetry-shutdown", "maintenance-release", "store-close",
 	}
 	if len(events) != len(want) {
 		t.Fatalf("shutdown events=%v", events)
@@ -119,7 +130,8 @@ func TestShutdownRuntimeBoundsAndSanitizesTelemetryFailure(t *testing.T) {
 		context.Background(), logger,
 		recordingShutdownSupervisor{events: &[]string{}}, recordingShutdownCoordinator{events: &[]string{}},
 		func(context.Context) error { return nil }, func() {}, done,
-		recordingPoolRegistration{events: &[]string{}}, telemetry, recordingStoreCloser{events: &[]string{}},
+		recordingPoolRegistration{events: &[]string{}}, telemetry,
+		recordingMaintenanceLease{events: &[]string{}}, recordingStoreCloser{events: &[]string{}},
 		func() (context.Context, context.CancelFunc) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			deadline, _ := ctx.Deadline()
@@ -135,6 +147,35 @@ func TestShutdownRuntimeBoundsAndSanitizesTelemetryFailure(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "sentinel-telemetry-shutdown") || strings.Contains(logs.String(), "postgres://") || !strings.Contains(logs.String(), `"component":"telemetry"`) || !strings.Contains(logs.String(), `"reason":"shutdown"`) {
 		t.Fatalf("unsafe telemetry shutdown log=%s", logs.String())
+	}
+}
+
+func TestCloseDatabaseRuntimeReleasesMaintenanceBeforeStoreOnStartupFailure(t *testing.T) {
+	events := []string{}
+	closeDatabaseRuntime(
+		context.Background(), slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)),
+		recordingMaintenanceLease{events: &events}, recordingStoreCloser{events: &events},
+	)
+	want := []string{"maintenance-release", "store-close"}
+	if len(events) != len(want) || events[0] != want[0] || events[1] != want[1] {
+		t.Fatalf("close events = %v; want %v", events, want)
+	}
+}
+
+func TestCloseDatabaseRuntimeSanitizesMaintenanceReleaseFailure(t *testing.T) {
+	events := []string{}
+	var logs bytes.Buffer
+	closeDatabaseRuntime(
+		context.Background(), slog.New(slog.NewJSONHandler(&logs, nil)),
+		recordingMaintenanceLease{events: &events, releaseErr: errors.New("postgres://secret sentinel-maintenance")},
+		recordingStoreCloser{events: &events},
+	)
+	if len(events) != 2 || events[1] != "store-close" {
+		t.Fatalf("close events = %v", events)
+	}
+	if strings.Contains(logs.String(), "sentinel-maintenance") || strings.Contains(logs.String(), "postgres://") ||
+		!strings.Contains(logs.String(), `"component":"database_maintenance"`) || !strings.Contains(logs.String(), `"reason":"shutdown"`) {
+		t.Fatalf("unsafe maintenance log = %s", logs.String())
 	}
 }
 

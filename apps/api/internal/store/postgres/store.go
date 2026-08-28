@@ -32,6 +32,10 @@ func (store *Store) Close() {
 	store.pool.Close()
 }
 
+func (store *Store) PrepareRuntime(ctx context.Context) (*database.MaintenanceLease, error) {
+	return database.PrepareRuntime(ctx, store.pool)
+}
+
 func mapNotFound(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
