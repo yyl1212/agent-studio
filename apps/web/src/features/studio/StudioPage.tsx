@@ -14,13 +14,14 @@ import type { JSONSchema } from '../../components/schema-form/types'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { APIError, api, type AgentPresentation, type NodeDefinition, type ResolvedPorts, type Workflow } from '../../lib/api/client'
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
-import { applyNodeConfig } from './configDraft'
-import { connectionIssue, validateConnection } from './connections'
+import { applyNodeConfig, type PortPreview } from './configDraft'
+import { connectionIssue, hasInvalidEdges, validateConnection } from './connections'
 import { AgentPageSettingsDialog } from './AgentPageSettingsDialog'
 import { BoundaryRepairBanner } from './BoundaryRepairBanner'
 import { fromFlowGraph, portsFromDefinition } from './graphAdapter'
 import { hydrateWorkflowGraph } from './hydrateWorkflowGraph'
 import { NodeConfigPanel } from './NodeConfigPanel'
+import { PortChangeConfirmation } from './PortChangeConfirmation'
 import { NodeLibraryDrawer, type NodeLibrarySelection } from './NodeLibraryDrawer'
 import {
   nodeDefinitionKey,
@@ -72,6 +73,22 @@ interface NodeCreationOptions {
   connection?: PendingConnection
 }
 
+type ConfigApplyMode = 'apply' | 'apply-and-test' | 'apply-and-continue'
+
+interface PendingConfigApplication {
+  mode: ConfigApplyMode
+  nodeId: string
+  config: Record<string, unknown>
+  ports: ResolvedPorts
+  preview: PortPreview
+  continueIntent?: WorkbenchIntent
+}
+
+interface PendingPostSaveAction {
+  mode: 'apply-and-test' | 'apply-and-continue'
+  continueIntent?: WorkbenchIntent
+}
+
 export function StudioPage() {
   const { id = '' } = useParams()
   const [workflow, setWorkflow] = useState<Workflow>()
@@ -110,6 +127,10 @@ export function StudioPage() {
   const [canvasNotice, setCanvasNotice] = useState('')
   const [repairingBoundaries, setRepairingBoundaries] = useState(false)
   const [boundaryRepairError, setBoundaryRepairError] = useState('')
+  const [pendingConfigApplication, setPendingConfigApplication] = useState<PendingConfigApplication>()
+  const [pendingPostSaveAction, setPendingPostSaveAction] = useState<PendingPostSaveAction>()
+  const [configActionError, setConfigActionError] = useState('')
+  const [configApplyBusy, setConfigApplyBusy] = useState(false)
   const saveQueue = useRef<SaveQueue | undefined>(undefined)
   const runController = useRef<AbortController | undefined>(undefined)
   const exportController = useRef<AbortController | undefined>(undefined)
@@ -126,18 +147,24 @@ export function StudioPage() {
     exportController.current?.abort()
     runController.current?.abort()
 		hydrateController.current?.abort()
+    saveQueue.current?.stop()
   }, [])
 
   useEffect(() => {
     const controller = new AbortController()
+    let ownedQueue: SaveQueue | undefined
+    setPendingConfigApplication(undefined)
+    setPendingPostSaveAction(undefined)
+    setConfigActionError('')
     Promise.all([api.getWorkflow(id, controller.signal), api.listNodeTypes(controller.signal)])
       .then(async ([loadedWorkflow, loadedDefinitions]) => {
 		const flow = await hydrateWorkflowGraph(loadedWorkflow, loadedDefinitions, api.resolveNodeType, controller.signal)
+        if (controller.signal.aborted) return
         setWorkflow(loadedWorkflow)
         setDefinitions(loadedDefinitions)
         setNodes(flow.nodes)
         setEdges(flow.edges)
-        saveQueue.current = loadedWorkflow.archivedAt ? undefined : new SaveQueue(
+        ownedQueue = loadedWorkflow.archivedAt ? undefined : new SaveQueue(
           loadedWorkflow.draftRevision,
           async (request) => {
             const saved = await api.saveWorkflow(id, request)
@@ -147,11 +174,16 @@ export function StudioPage() {
           800,
           setSaveState,
         )
+        saveQueue.current = ownedQueue
       })
       .catch((error: unknown) => {
         if (!(error instanceof DOMException && error.name === 'AbortError')) setLoadError('加载工作流失败，请返回列表重试')
       })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      ownedQueue?.stop()
+      if (saveQueue.current === ownedQueue) saveQueue.current = undefined
+    }
   }, [id])
 
   const selectedID = workbench.mode.kind === 'config' ? workbench.mode.nodeId : undefined
@@ -163,6 +195,8 @@ export function StudioPage() {
     [nodes],
   )
   const boundaryBlocked = !boundaryDiagnosis.healthy
+  const invalidEdgeCount = edges.filter((edge) => edge.data?.invalid).length
+  const graphActionBlocked = boundaryBlocked || invalidEdgeCount > 0
   const resolveNodePorts = useCallback((type: string, version: string, config: Record<string, unknown>, signal: AbortSignal) => api.resolveNodeType(type, version, config, signal), [])
   const configDraft = useNodeConfigDraft({ node: selectedNode, edges, resolve: resolveNodePorts })
 
@@ -372,29 +406,66 @@ export function StudioPage() {
     requestIntent({ kind: 'open-library' })
   }
 
-  const applySelectedConfig = (config: Record<string, unknown>, ports: ResolvedPorts) => {
-    if (archived || versionLocked || boundaryBlocked || !selectedID) return false
-    const applied = applyNodeConfig(nodes, edges, selectedID, config, ports)
+  const applyConfigNow = async (application: PendingConfigApplication) => {
+    if (archived || versionLocked || boundaryBlocked) return false
+    const applied = applyNodeConfig(nodes, edges, application.nodeId, application.config, application.ports)
     setNodes(applied.nodes)
     setEdges(applied.edges)
     commit(applied.nodes, applied.edges)
-    configDraft.markApplied(config, ports)
+    if (selectedID === application.nodeId) configDraft.markApplied(application.config, application.ports)
+    setConfigActionError('')
+
+    if (application.mode === 'apply') return true
+    if (hasInvalidEdges(applied.edges)) {
+      setPendingPostSaveAction(undefined)
+      setConfigActionError('配置已应用，请先修复失效连线后试运行或发布')
+      return true
+    }
+
+    const postSaveAction: PendingPostSaveAction = {
+      mode: application.mode,
+      continueIntent: application.continueIntent,
+    }
+    setPendingPostSaveAction(postSaveAction)
+    try {
+      await saveQueue.current?.flush()
+      setPendingPostSaveAction(undefined)
+      if (postSaveAction.mode === 'apply-and-test') executeIntent({ kind: 'test' })
+      else if (postSaveAction.continueIntent) executeIntent(postSaveAction.continueIntent)
+    } catch (error) {
+      setConfigActionError(publicMessage(error))
+      if (error instanceof APIError && error.status === 409) setPendingPostSaveAction(undefined)
+    }
     return true
   }
 
-  const applyAndOpenTest = async (config: Record<string, unknown>, ports: ResolvedPorts) => {
-    if (!applySelectedConfig(config, ports)) return
+  const requestConfigApplication = (application: PendingConfigApplication) => {
+    const frozenApplication = structuredClone(application)
+    if (frozenApplication.preview.invalidEdges.length > 0) {
+      setPendingConfigApplication(frozenApplication)
+      return
+    }
+    void applyConfigNow(frozenApplication)
+  }
+
+  const confirmConfigApplication = async () => {
+    if (!pendingConfigApplication || configApplyBusy) return
+    const application = pendingConfigApplication
+    setConfigApplyBusy(true)
     try {
-      await saveQueue.current?.flush()
-      executeIntent({ kind: 'test' })
-    } catch {
-      // SaveQueue exposes the failure through saveState; keep the configuration context open.
+      await applyConfigNow(application)
+      setPendingConfigApplication(undefined)
+    } finally {
+      setConfigApplyBusy(false)
     }
   }
 
   const startSchema = useMemo(() => deriveStartSchema(nodes), [nodes])
   const runDraft = async (input: Record<string, unknown>) => {
-    if (!workflow || archived || versionLocked || boundaryBlocked) return
+    if (!workflow || archived || versionLocked || boundaryBlocked || hasInvalidEdges(edges)) {
+      if (hasInvalidEdges(edges)) setRunError('请先修复失效连线后试运行')
+      return
+    }
     runController.current?.abort()
     const controller = new AbortController()
     runController.current = controller
@@ -425,7 +496,10 @@ export function StudioPage() {
   }
 
   const publish = async () => {
-    if (!workflow || archived || versionLocked || boundaryBlocked) return
+    if (!workflow || archived || versionLocked || boundaryBlocked || hasInvalidEdges(edges)) {
+      if (hasInvalidEdges(edges)) setPublishError('请先修复失效连线后发布')
+      return
+    }
     setPublishing(true)
     setPublishError('')
     try {
@@ -579,13 +653,14 @@ export function StudioPage() {
 
   const requestIntent = (intent: WorkbenchIntent) => {
     if (archived && intent.kind !== 'export' && intent.kind !== 'close' && intent.kind !== 'version-history') return
-    if (
-      boundaryBlocked &&
-      (intent.kind === 'open-library' ||
-        intent.kind === 'config' ||
-        intent.kind === 'test' ||
-        intent.kind === 'publish')
-    ) return
+    if (boundaryBlocked && (
+      intent.kind === 'open-library' || intent.kind === 'config' ||
+      intent.kind === 'test' || intent.kind === 'publish'
+    )) return
+    if (invalidEdgeCount > 0 && (intent.kind === 'test' || intent.kind === 'publish')) {
+      setConfigActionError('请先修复失效连线后测试或发布')
+      return
+    }
     if (activeDisclosure) setActiveDisclosure(undefined)
     if (intent.kind === 'config' && workbench.mode.kind === 'config' && intent.nodeId === workbench.mode.nodeId) return
     if (configDraft.dirty && workbench.mode.kind === 'config') workbench.request(intent, true)
@@ -656,14 +731,34 @@ export function StudioPage() {
     }
   }
 
-  const retrySave = () => {
-    if (saveState === 'error') commit(nodes, edges)
+  const retrySave = async () => {
+    if (saveState !== 'error') return
+    commit(nodes, edges)
+    if (!pendingPostSaveAction) return
+    try {
+      await saveQueue.current?.flush()
+      const action = pendingPostSaveAction
+      setPendingPostSaveAction(undefined)
+      setConfigActionError('')
+      if (action.mode === 'apply-and-test') executeIntent({ kind: 'test' })
+      else if (action.continueIntent) executeIntent(action.continueIntent)
+    } catch (error) {
+      setConfigActionError(publicMessage(error))
+      if (error instanceof APIError && error.status === 409) setPendingPostSaveAction(undefined)
+    }
   }
 
   const continuePendingIntent = (choice: 'apply' | 'discard') => {
     if (choice === 'apply') {
-      if (!configDraft.normalized || !configDraft.preview || configDraft.status !== 'ready') return
-      applySelectedConfig(configDraft.normalized, configDraft.preview.ports)
+      if (!selectedID || !configDraft.normalized || !configDraft.preview) return
+      const application: PendingConfigApplication = {
+        mode: 'apply-and-continue', nodeId: selectedID,
+        config: configDraft.normalized, ports: configDraft.preview.ports,
+        preview: configDraft.preview,
+      }
+      const intent = workbench.resolveDirty('apply')
+      requestConfigApplication({ ...application, continueIntent: intent })
+      return
     } else {
       configDraft.reset()
     }
@@ -700,9 +795,10 @@ export function StudioPage() {
           archived={archived}
           exporting={exporting}
           runsHref={`/runs?workflowId=${encodeURIComponent(workflow.id)}`}
-          actionError={exportError || versionError || (!agentSettingsOpen && agentSettingsError) || ''}
+          actionError={configActionError || exportError || versionError || (!agentSettingsOpen && agentSettingsError) || ''}
+          invalidEdgeCount={invalidEdgeCount}
           testLabel="测试运行"
-          testDisabled={archived || versionLocked || saveBlocked || boundaryBlocked}
+          testDisabled={archived || versionLocked || saveBlocked || graphActionBlocked}
           testButtonRef={testButtonRef}
           moreActionsTriggerRef={moreActionsTriggerRef}
           moreActionsOpen={activeDisclosure === 'commands'}
@@ -720,8 +816,12 @@ export function StudioPage() {
           onAgentPresentation={() => requestIntent({ kind: 'agent-presentation' })}
           onVersionHistory={() => { rememberTrigger(moreActionsTriggerRef.current); requestIntent({ kind: 'version-history' }) }}
           onExport={() => requestIntent({ kind: 'export' })}
-          onRetrySave={boundaryBlocked ? undefined : retrySave}
-          onRefreshConflict={() => window.location.reload()}
+          onRetrySave={boundaryBlocked ? undefined : () => { void retrySave() }}
+          onRefreshConflict={() => {
+            setPendingConfigApplication(undefined)
+            setPendingPostSaveAction(undefined)
+            window.location.reload()
+          }}
         />}
         quickTools={<StudioQuickTools
           disabled={archived || versionLocked || boundaryBlocked}
@@ -794,7 +894,13 @@ export function StudioPage() {
           }}
         /> : undefined}
         workbench={workbench.mode.kind !== 'closed' ? <WorkbenchPanel titleId="studio-workbench-title" closeDisabled={workbench.mode.kind === 'versions' && versionLocked} onRequestClose={closeTopLayer}>
-          {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel titleId="studio-workbench-title" node={selectedNode} draft={configDraft} onApply={(config, ports) => { applySelectedConfig(config, ports) }} onApplyAndTest={applyAndOpenTest} />}
+          {workbench.mode.kind === 'config' && selectedNode && <NodeConfigPanel
+            titleId="studio-workbench-title"
+            node={selectedNode}
+            draft={configDraft}
+            onApply={(config, ports) => { if (configDraft.preview) requestConfigApplication({ mode: 'apply', nodeId: selectedNode.id, config, ports, preview: configDraft.preview }) }}
+            onApplyAndTest={(config, ports) => { if (configDraft.preview) requestConfigApplication({ mode: 'apply-and-test', nodeId: selectedNode.id, config, ports, preview: configDraft.preview }) }}
+          />}
           {workbench.mode.kind === 'test' && <><header className="workbench-heading"><span className="node-category">调试</span><h2 id="studio-workbench-title">测试运行</h2></header><TestRunPanel schema={startSchema} events={events} running={running} cancelled={runCancelled} error={runError} onRun={runDraft} onCancel={cancelRun} /></>}
           {workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
         </WorkbenchPanel> : undefined}
@@ -821,6 +927,15 @@ export function StudioPage() {
         onConfirm={() => continuePendingIntent('apply')}
         onDiscard={() => continuePendingIntent('discard')}
         onCancel={() => workbench.resolveDirty('cancel')}
+      />
+      <PortChangeConfirmation
+        open={Boolean(pendingConfigApplication)}
+        nodeTitle={nodes.find((node) => node.id === pendingConfigApplication?.nodeId)?.data.definition?.title ?? '节点'}
+        removedPorts={pendingConfigApplication?.preview.removed ?? []}
+        invalidEdges={pendingConfigApplication?.preview.invalidEdges ?? []}
+        busy={configApplyBusy}
+        onConfirm={confirmConfigApplication}
+        onCancel={() => setPendingConfigApplication(undefined)}
       />
       {publishOpen && <PublishDialog slug={workflow.slug} version={publishedVersion} error={publishError} publishing={publishing} onConfirm={publish} onClose={() => setPublishOpen(false)} />}
       <AgentPageSettingsDialog

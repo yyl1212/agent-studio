@@ -37,6 +37,14 @@ export class SaveQueue {
     return this.revision
   }
 
+  stop() {
+    this.stopped = true
+    this.pending = undefined
+    this.failure = undefined
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+  }
+
   adoptRevision(revision: number): void {
     if (this.timer || this.inFlight || this.pending || this.stopped) {
       throw new Error('save queue must be idle before adopting a revision')

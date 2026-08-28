@@ -48,6 +48,13 @@ it('持续呈现页面动作错误', () => {
   expect(screen.getByRole('alert')).toHaveTextContent('导出失败，请稍后重试')
 })
 
+it('明确呈现失效连线门禁原因', () => {
+  renderCommandBar({ invalidEdgeCount: 2, testDisabled: true })
+  expect(screen.getByRole('status')).toHaveTextContent('存在 2 条失效连线，请修复后测试或发布')
+  expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+})
+
 it('保存失败提供重试，冲突只提供刷新并阻断提交动作', async () => {
   const onRetrySave = vi.fn()
   const view = renderCommandBar({ saveState: 'error', onRetrySave })

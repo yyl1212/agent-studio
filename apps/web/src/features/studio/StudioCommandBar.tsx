@@ -11,6 +11,7 @@ export interface StudioCommandBarProps {
   exporting: boolean
   runsHref: string
   actionError: string
+  invalidEdgeCount?: number
   testLabel: string
   testDisabled: boolean
   onTest: () => void
@@ -58,6 +59,7 @@ export function StudioCommandBar(props: StudioCommandBarProps) {
       </details>
     </div>
     {props.actionError && <p className="studio-command-error" role="alert">{props.actionError}</p>}
+    {Boolean(props.invalidEdgeCount) && <p className="studio-command-error studio-invalid-edges" role="status">存在 {props.invalidEdgeCount} 条失效连线，请修复后测试或发布</p>}
   </header>
 }
 
