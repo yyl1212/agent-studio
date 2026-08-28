@@ -17,7 +17,9 @@ type CreateOptions struct {
 }
 
 type createHooks struct {
-	afterSnapshot func()
+	afterSnapshot   func()
+	snapshotBackend func(int32)
+	afterTables     func()
 }
 
 func Create(ctx context.Context, pool *pgxpool.Pool, options CreateOptions) (Summary, error) {
@@ -46,7 +48,7 @@ func createWithHooks(ctx context.Context, pool *pgxpool.Pool, options CreateOpti
 		return Summary{}, Wrap(CodeSchemaNotCurrent, "source schema is not current", nil)
 	}
 	if err := lease.ValidateCurrentSchema(ctx); err != nil {
-		return Summary{}, Wrap(CodeSchemaNotCurrent, "source schema is not current", nil)
+		return Summary{}, wrapSchemaValidationError(err)
 	}
 
 	transaction, err := lease.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -58,6 +60,13 @@ func createWithHooks(ctx context.Context, pool *pgxpool.Pool, options CreateOpti
 	if err := transaction.QueryRow(ctx, "SELECT transaction_timestamp()").Scan(&createdAt); err != nil {
 		return Summary{}, Wrap(CodeCreateFailed, "read source snapshot time", err)
 	}
+	if hooks.snapshotBackend != nil {
+		var backendPID int32
+		if err := transaction.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&backendPID); err != nil {
+			return Summary{}, Wrap(CodeCreateFailed, "read source snapshot backend", err)
+		}
+		hooks.snapshotBackend(backendPID)
+	}
 	if hooks.afterSnapshot != nil {
 		hooks.afterSnapshot()
 	}
@@ -65,10 +74,46 @@ func createWithHooks(ctx context.Context, pool *pgxpool.Pool, options CreateOpti
 	if err != nil {
 		return Summary{}, err
 	}
-	return WriteArchive(ctx, options.Output, Manifest{
+	archiveContext, cancelArchive := context.WithCancelCause(ctx)
+	monitorStop := make(chan struct{})
+	go func() {
+		select {
+		case cause := <-lease.MonitorConnectionLoss():
+			cancelArchive(cause)
+		case <-monitorStop:
+		}
+	}()
+	defer func() {
+		close(monitorStop)
+		cancelArchive(nil)
+	}()
+
+	summary, err := writeArchive(archiveContext, options.Output, Manifest{
 		APIVersion: APIVersion, CreatedAt: createdAt.UTC(), RuntimeVersion: options.RuntimeVersion,
 		DatabaseMigrationVersion: current, IncludesRuns: true,
-	}, writers)
+	}, writers, func(publishContext context.Context) error {
+		if hooks.afterTables != nil {
+			hooks.afterTables()
+		}
+		var alive int
+		if err := transaction.QueryRow(publishContext, "SELECT 1").Scan(&alive); err != nil {
+			return Wrap(CodeCreateFailed, "verify source snapshot before publish", err)
+		}
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		if cause := context.Cause(archiveContext); cause != nil {
+			return Summary{}, Wrap(CodeCreateFailed, "source maintenance lease lost", cause)
+		}
+	}
+	return summary, err
+}
+
+func wrapSchemaValidationError(err error) error {
+	if errors.Is(err, database.ErrSchemaIncomplete) {
+		return Wrap(CodeSchemaNotCurrent, "source schema is not current", nil)
+	}
+	return Wrap(CodeCreateFailed, "validate source schema", err)
 }
 
 func Inspect(ctx context.Context, path string) (Summary, error) {

@@ -7,7 +7,18 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/yyl1212/agent-studio/internal/database"
 )
+
+func TestWrapSchemaValidationErrorPreservesFailureClass(t *testing.T) {
+	if got := CodeOf(wrapSchemaValidationError(database.ErrSchemaIncomplete)); got != CodeSchemaNotCurrent {
+		t.Fatalf("incomplete schema code=%q", got)
+	}
+	if got := CodeOf(wrapSchemaValidationError(context.Canceled)); got != CodeCreateFailed {
+		t.Fatalf("database failure code=%q", got)
+	}
+}
 
 func TestInspectRejectsInvalidTypedRecords(t *testing.T) {
 	for _, test := range []struct {

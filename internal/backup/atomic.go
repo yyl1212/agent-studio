@@ -12,6 +12,10 @@ func publishAtomic(output string, write func(*os.File) error) error {
 }
 
 func publishAtomicContext(ctx context.Context, output string, write func(*os.File) error) error {
+	return publishAtomicContextGuarded(ctx, output, write, nil)
+}
+
+func publishAtomicContextGuarded(ctx context.Context, output string, write func(*os.File) error, beforePublish func(context.Context) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -46,6 +50,14 @@ func publishAtomicContext(ctx context.Context, output string, write func(*os.Fil
 	}
 	if err := temporary.Close(); err != nil {
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if beforePublish != nil {
+		if err := beforePublish(ctx); err != nil {
+			return err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err

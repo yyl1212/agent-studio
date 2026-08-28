@@ -101,15 +101,10 @@ func TestCreateUsesOneReadOnlyRepeatableReadSnapshot(t *testing.T) {
 func TestCreateAbortsWhenMaintenanceLockSessionIsTerminated(t *testing.T) {
 	pool := openBackupPool(t)
 	output := filepath.Join(t.TempDir(), "terminated.asbak")
+	var backendPID int32
 	_, err := createWithHooks(context.Background(), pool, CreateOptions{Output: output, RuntimeVersion: "test"}, createHooks{
-		afterSnapshot: func() {
-			var backendPID int32
-			if err := pool.QueryRow(context.Background(), `SELECT l.pid FROM pg_locks l
-				JOIN pg_stat_activity activity ON activity.pid=l.pid
-				WHERE l.locktype='advisory' AND l.mode='ShareLock' AND l.objid=$1
-				AND activity.datname=current_database() AND l.granted LIMIT 1`, int64(918273645)).Scan(&backendPID); err != nil {
-				t.Fatal(err)
-			}
+		snapshotBackend: func(pid int32) { backendPID = pid },
+		afterTables: func() {
 			var terminated bool
 			if err := pool.QueryRow(context.Background(), "SELECT pg_terminate_backend($1)", backendPID).Scan(&terminated); err != nil || !terminated {
 				t.Fatalf("terminate backend=%t err=%v", terminated, err)

@@ -92,7 +92,7 @@ func PrepareRuntime(ctx context.Context, pool *pgxpool.Pool) (*MaintenanceLease,
 			_ = lease.Release(context.Background())
 			return nil, err
 		}
-		lease.startMonitor()
+		lease.startMonitor(true)
 		return lease, nil
 	default:
 		lease, err := TryExclusive(ctx, pool)
@@ -122,22 +122,34 @@ func PrepareRuntime(ctx context.Context, pool *pgxpool.Pool) (*MaintenanceLease,
 			_ = lease.Release(context.Background())
 			return nil, err
 		}
-		lease.startMonitor()
+		lease.startMonitor(true)
 		return lease, nil
 	}
 }
 
 func (lease *MaintenanceLease) Lost() <-chan error { return lease.lost }
 
-func (lease *MaintenanceLease) startMonitor() {
+func (lease *MaintenanceLease) MonitorConnectionLoss() <-chan error {
+	if lease.monitorCancel == nil {
+		lease.startMonitor(false)
+	}
+	return lease.lost
+}
+
+func (lease *MaintenanceLease) startMonitor(ping bool) {
 	monitorContext, cancel := context.WithCancel(context.Background())
 	lease.monitorCancel = cancel
 	lease.monitorDone = make(chan struct{})
 	cleanupDone := lease.conn.Conn().PgConn().CleanupDone()
 	go func() {
 		defer close(lease.monitorDone)
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
+		var ticks <-chan time.Time
+		var ticker *time.Ticker
+		if ping {
+			ticker = time.NewTicker(time.Second)
+			ticks = ticker.C
+			defer ticker.Stop()
+		}
 		for {
 			select {
 			case <-monitorContext.Done():
@@ -145,7 +157,7 @@ func (lease *MaintenanceLease) startMonitor() {
 			case <-cleanupDone:
 				lease.reportLost(errors.New("database maintenance connection closed"))
 				return
-			case <-ticker.C:
+			case <-ticks:
 				pingContext, cancelPing := context.WithTimeout(context.Background(), time.Second)
 				err := lease.conn.Conn().Ping(pingContext)
 				cancelPing()

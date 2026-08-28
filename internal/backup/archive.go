@@ -31,6 +31,10 @@ var runtimeVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,12
 type TableWriter func(context.Context, io.Writer) (TableManifest, error)
 
 func WriteArchive(ctx context.Context, output string, base Manifest, writers map[TableName]TableWriter) (Summary, error) {
+	return writeArchive(ctx, output, base, writers, nil)
+}
+
+func writeArchive(ctx context.Context, output string, base Manifest, writers map[TableName]TableWriter, beforePublish func(context.Context) error) (Summary, error) {
 	if err := ctx.Err(); err != nil {
 		return Summary{}, err
 	}
@@ -42,7 +46,7 @@ func WriteArchive(ctx context.Context, output string, base Manifest, writers map
 	}
 
 	var result Manifest
-	err := publishAtomicContext(ctx, output, func(file *os.File) error {
+	err := publishAtomicContextGuarded(ctx, output, func(file *os.File) error {
 		zipWriter := zip.NewWriter(file)
 		closed := false
 		defer func() {
@@ -144,7 +148,7 @@ func WriteArchive(ctx context.Context, output string, base Manifest, writers map
 			return err
 		}
 		return nil
-	})
+	}, beforePublish)
 	if err != nil {
 		if CodeOf(err) != "" || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return Summary{}, err
