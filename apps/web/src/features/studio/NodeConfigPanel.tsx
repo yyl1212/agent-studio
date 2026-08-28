@@ -50,7 +50,7 @@ export function NodeConfigPanel({ titleId, node, draft, onApply, onApplyAndTest 
     {draft.preview && <section className="port-preview"><h3>端口变化预览</h3>
       {draft.preview.added.map((key) => <p key={`added-${key}`}>新增 {key}</p>)}
       {draft.preview.removed.map((key) => <p key={`removed-${key}`}>移除 {key}</p>)}
-      {draft.preview.invalidEdgeIds.length > 0 && <p className="form-error">{draft.preview.invalidEdgeIds.length} 条连线将失效</p>}
+      {draft.preview.invalidEdges.length > 0 && <p className="form-error">{draft.preview.invalidEdges.length} 条连线将失效</p>}
       {draft.preview.added.length === 0 && draft.preview.removed.length === 0 && <p>端口保持不变</p>}
     </section>}
   </div>

@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { APIError, api, type NodeDefinition, type Workflow } from '../../lib/api/client'
 import type { RunEvent } from '../../lib/api/ndjson'
-import { activeRunNodeID, connectionIssue, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, markInvalidEdges, StudioPage } from './StudioPage'
+import { activeRunNodeID, decorateRunNodes, graphAfterDelete, isPersistentEdgeChange, isPersistentNodeChange, StudioPage } from './StudioPage'
+import { connectionIssue, markInvalidEdges } from './connections'
 import type { StudioEdge, StudioNode } from './types'
 
 vi.mock('../../lib/api/client', async (importOriginal) => {

@@ -15,6 +15,7 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { APIError, api, type AgentPresentation, type NodeDefinition, type ResolvedPorts, type Workflow } from '../../lib/api/client'
 import { readNDJSON, type RunEvent } from '../../lib/api/ndjson'
 import { applyNodeConfig } from './configDraft'
+import { connectionIssue, validateConnection } from './connections'
 import { AgentPageSettingsDialog } from './AgentPageSettingsDialog'
 import { BoundaryRepairBanner } from './BoundaryRepairBanner'
 import { fromFlowGraph, portsFromDefinition } from './graphAdapter'
@@ -897,30 +898,6 @@ function defaultValue(schema: JSONSchema): unknown {
   if (schema.enum?.length) return schema.enum[0]
   if (schema.type === 'string') return ''
   return undefined
-}
-
-export function validateConnection(connection: Connection | StudioEdge, nodes: StudioNode[], edges: StudioEdge[]) {
-  return connectionIssue(connection, nodes, edges) === undefined
-}
-
-export function connectionIssue(connection: Connection | StudioEdge, nodes: StudioNode[], edges: StudioEdge[]) {
-  if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle) return '请连接有效的输入和输出端口'
-  if (connection.source === connection.target) return '节点不能连接到自身'
-  const source = nodes.find((node) => node.id === connection.source)
-  const target = nodes.find((node) => node.id === connection.target)
-  const output = source?.data.ports.outputs.find((port) => port.key === connection.sourceHandle)
-  const input = target?.data.ports.inputs.find((port) => port.key === connection.targetHandle)
-  if (!output || !input) return '端口不存在或已变化'
-  if (output.type !== 'any' && input.type !== 'any' && output.type !== input.type) return `端口类型不兼容：${output.type} 不能连接到 ${input.type}`
-  if (input.cardinality === 'one' && edges.some((edge) => edge.id !== ('id' in connection ? connection.id : undefined) && edge.target === connection.target && edge.targetHandle === connection.targetHandle)) return '目标端口只允许一条输入连线'
-  return undefined
-}
-
-export function markInvalidEdges(nodes: StudioNode[], edges: StudioEdge[]) {
-  return edges.map((edge) => {
-    const invalid = !validateConnection(edge, nodes, edges)
-    return { ...edge, data: { ...edge.data, invalid }, style: invalid ? { stroke: '#d92d20', strokeDasharray: '5 4' } : undefined }
-  })
 }
 
 export function activeRunNodeID(events: RunEvent[]) {

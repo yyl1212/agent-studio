@@ -11,7 +11,7 @@ const definition: NodeDefinition = { type: 'dynamic', version: '1', title: '动�
 const node: StudioNode = { id: 'node-a', type: 'studio', position: { x: 0, y: 0 }, data: { nodeType: 'dynamic', typeVersion: '1', config: { mode: 'old' }, definition, ports: { inputs: [], outputs: [] }, issues: [] } }
 const readyDraft: UseNodeConfigDraftResult = {
   nodeId: 'node-a', draft: { mode: 'new' }, normalized: { mode: 'new' }, dirty: true, status: 'ready',
-  preview: { ports: { inputs: [], outputs: [] }, added: [], removed: [], invalidEdgeIds: [] }, error: '',
+  preview: { ports: { inputs: [], outputs: [] }, added: [], removed: [], invalidEdges: [] }, error: '',
   setDraft: vi.fn(), reset: vi.fn(), retry: vi.fn(), markApplied: vi.fn(),
 }
 
@@ -29,7 +29,7 @@ it('节点配置打开后聚焦首个可编辑字段', async () => {
 
 it('展示端口变化并用快捷键应用已就绪草稿', async () => {
   const onApply = vi.fn()
-  const draft: UseNodeConfigDraftResult = { ...readyDraft, preview: { ports: { inputs: [], outputs: [] }, added: ['output:new'], removed: ['output:old'], invalidEdgeIds: ['edge-1'] } }
+  const draft: UseNodeConfigDraftResult = { ...readyDraft, preview: { ports: { inputs: [], outputs: [] }, added: ['output:new'], removed: ['output:old'], invalidEdges: [{ edgeId: 'edge-1', sourceNodeId: 'a', sourcePort: 'old', targetNodeId: 'b', targetPort: 'input' }] } }
   render(<NodeConfigPanel titleId="config-title" node={node} draft={draft} onApply={onApply} onApplyAndTest={vi.fn()} />)
   expect(screen.getByText('新增 output:new')).toBeInTheDocument()
   expect(screen.getByText('移除 output:old')).toBeInTheDocument()
