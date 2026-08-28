@@ -40,7 +40,7 @@ func postgresTableWriters(_ context.Context, transaction pgx.Tx) (map[TableName]
 			path, _ := tablePath(name)
 			return TableManifest{
 				Name: name, Path: path, Records: records, UncompressedBytes: observed.bytes,
-				Digest: hex.EncodeToString(observed.hash.Sum(nil)),
+				Digest: digestPrefix + hex.EncodeToString(observed.hash.Sum(nil)),
 			}, nil
 		}
 	}

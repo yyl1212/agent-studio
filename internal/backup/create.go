@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,8 +31,11 @@ func createWithHooks(ctx context.Context, pool *pgxpool.Pool, options CreateOpti
 	}
 	defer func() { _ = lease.Release(context.Background()) }()
 
-	current, err := database.CurrentVersion(ctx, pool)
+	current, err := lease.CurrentVersion(ctx)
 	if err != nil {
+		if errors.Is(err, database.ErrSchemaIncomplete) {
+			return Summary{}, Wrap(CodeSchemaNotCurrent, "source schema is not current", nil)
+		}
 		return Summary{}, Wrap(CodeCreateFailed, "read source migration version", err)
 	}
 	latest, err := database.LatestVersion()
@@ -41,8 +45,11 @@ func createWithHooks(ctx context.Context, pool *pgxpool.Pool, options CreateOpti
 	if current != latest {
 		return Summary{}, Wrap(CodeSchemaNotCurrent, "source schema is not current", nil)
 	}
+	if err := lease.ValidateCurrentSchema(ctx); err != nil {
+		return Summary{}, Wrap(CodeSchemaNotCurrent, "source schema is not current", nil)
+	}
 
-	transaction, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	transaction, err := lease.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return Summary{}, Wrap(CodeCreateFailed, "begin source snapshot", err)
 	}

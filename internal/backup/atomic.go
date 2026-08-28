@@ -1,12 +1,20 @@
 package backup
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 )
 
 func publishAtomic(output string, write func(*os.File) error) error {
+	return publishAtomicContext(context.Background(), output, write)
+}
+
+func publishAtomicContext(ctx context.Context, output string, write func(*os.File) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(output); err == nil {
 		return errors.New("backup output already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -30,10 +38,16 @@ func publishAtomic(output string, write func(*os.File) error) error {
 	if err := write(temporary); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := temporary.Sync(); err != nil {
 		return err
 	}
 	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := os.Link(name, output); err != nil {

@@ -26,7 +26,7 @@ func TestValidateTableRecordAcceptsAllCompatibilityRecords(t *testing.T) {
 		},
 		TableRuns: RunRecord{
 			ID: recordUUID2, WorkflowID: recordUUID1, Mode: "test", Status: "completed", Input: json.RawMessage(`{}`),
-			StartedAt: now, InputRedactedPaths: []string{},
+			DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)), StartedAt: now, InputRedactedPaths: []string{},
 		},
 		TableNodeRuns: NodeRunRecord{
 			ID: recordUUID2, RunID: recordUUID1, NodeID: "start", NodeType: "start", Status: "completed",
@@ -79,7 +79,7 @@ func TestRecordDecodersRejectInvalidUUIDTimeJSONAndArrays(t *testing.T) {
 	now := time.Now().UTC()
 	validRun := RunRecord{
 		ID: recordUUID1, WorkflowID: recordUUID2, Mode: "test", Status: "running", Input: json.RawMessage(`{}`),
-		StartedAt: now, InputRedactedPaths: []string{},
+		DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)), StartedAt: now, InputRedactedPaths: []string{},
 	}
 	for _, test := range []struct {
 		name   string
@@ -94,6 +94,42 @@ func TestRecordDecodersRejectInvalidUUIDTimeJSONAndArrays(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			record := validRun
+			test.mutate(&record)
+			raw, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeRunRecord(raw); CodeOf(err) != CodeArchiveInvalid {
+				t.Fatalf("code=%q err=%v", CodeOf(err), err)
+			}
+		})
+	}
+}
+
+func TestRunRecordDecoderEnforcesDatabaseRowConstraints(t *testing.T) {
+	valid := RunRecord{
+		ID: recordUUID1, WorkflowID: recordUUID2, Mode: "test", Status: "running", Input: json.RawMessage(`{}`),
+		DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)), StartedAt: time.Now().UTC(),
+		InputRedactedPaths: []string{},
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*RunRecord)
+	}{
+		{name: "test missing draft revision", mutate: func(record *RunRecord) { record.DraftRevision = nil }},
+		{name: "test has version", mutate: func(record *RunRecord) { record.WorkflowVersionID = pointer(recordUUID2) }},
+		{name: "published missing version", mutate: func(record *RunRecord) {
+			record.Mode = "published"
+			record.DraftRevision = nil
+			record.GraphSnapshot = nil
+		}},
+		{name: "published has snapshot", mutate: func(record *RunRecord) { record.Mode = "published"; record.WorkflowVersionID = pointer(recordUUID2) }},
+		{name: "debug missing source", mutate: func(record *RunRecord) { record.Mode = "debug"; record.DraftRevision = nil }},
+		{name: "retry pair", mutate: func(record *RunRecord) { record.RetryOfRunID = pointer(recordUUID2) }},
+		{name: "agent key on test", mutate: func(record *RunRecord) { record.AgentRequestKey = pointer(recordUUID2) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			record := valid
 			test.mutate(&record)
 			raw, err := json.Marshal(record)
 			if err != nil {

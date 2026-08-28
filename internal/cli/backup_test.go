@@ -88,6 +88,35 @@ func TestBackupInspectJSONOutput(t *testing.T) {
 	}
 }
 
+func TestBackupCommandMapsContextCancellationToStableCodes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		deps backupCommandDependencies
+		want string
+	}{
+		{name: "create", args: []string{"create", "--output", "snapshot.asbak"}, deps: backupCommandDependencies{
+			lookupEnv: func(string) (string, bool) { return "postgres://safe", true },
+			openPool:  func(context.Context, string) (*pgxpool.Pool, error) { return nil, nil }, closePool: func(*pgxpool.Pool) {},
+			create: func(context.Context, *pgxpool.Pool, backupdomain.CreateOptions) (backupdomain.Summary, error) {
+				return backupdomain.Summary{}, context.Canceled
+			},
+		}, want: "BACKUP_CREATE_FAILED: create backup\n"},
+		{name: "inspect", args: []string{"inspect", "snapshot.asbak"}, deps: backupCommandDependencies{
+			inspect: func(context.Context, string) (backupdomain.Summary, error) {
+				return backupdomain.Summary{}, context.Canceled
+			},
+		}, want: "BACKUP_ARCHIVE_INVALID: inspect backup\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			if code := backupCommandWithDependencies(context.Background(), test.args, io.Discard, &stderr, test.deps); code != 1 || stderr.String() != test.want {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
 func TestBackupCommandRejectsInvalidArguments(t *testing.T) {
 	for _, args := range [][]string{
 		nil, {"create"}, {"create", "--output"}, {"create", "--unknown", "x"},
@@ -103,7 +132,7 @@ func TestBackupCommandRejectsInvalidArguments(t *testing.T) {
 func backupSummaryFixture(path string) backupdomain.Summary {
 	return backupdomain.Summary{
 		Path: path, APIVersion: backupdomain.APIVersion, CreatedAt: time.Now().UTC(), RuntimeVersion: "0.5.0-test",
-		MigrationVersion: 6, DatasetDigest: strings.Repeat("a", 64), CompressedBytes: 4096,
+		MigrationVersion: 6, DatasetDigest: "sha256:" + strings.Repeat("a", 64), CompressedBytes: 4096,
 		Tables: []backupdomain.TableManifest{{Name: backupdomain.TableWorkflows, Records: 1}, {Name: backupdomain.TableRuns, Records: 2}},
 	}
 }

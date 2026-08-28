@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -97,6 +98,37 @@ func TestCreateUsesOneReadOnlyRepeatableReadSnapshot(t *testing.T) {
 	}
 }
 
+func TestCreateAbortsWhenMaintenanceLockSessionIsTerminated(t *testing.T) {
+	pool := openBackupPool(t)
+	output := filepath.Join(t.TempDir(), "terminated.asbak")
+	_, err := createWithHooks(context.Background(), pool, CreateOptions{Output: output, RuntimeVersion: "test"}, createHooks{
+		afterSnapshot: func() {
+			var backendPID int32
+			if err := pool.QueryRow(context.Background(), `SELECT l.pid FROM pg_locks l
+				JOIN pg_stat_activity activity ON activity.pid=l.pid
+				WHERE l.locktype='advisory' AND l.mode='ShareLock' AND l.objid=$1
+				AND activity.datname=current_database() AND l.granted LIMIT 1`, int64(918273645)).Scan(&backendPID); err != nil {
+				t.Fatal(err)
+			}
+			var terminated bool
+			if err := pool.QueryRow(context.Background(), "SELECT pg_terminate_backend($1)", backendPID).Scan(&terminated); err != nil || !terminated {
+				t.Fatalf("terminate backend=%t err=%v", terminated, err)
+			}
+		},
+	})
+	if CodeOf(err) != CodeCreateFailed {
+		t.Fatalf("code=%q err=%v", CodeOf(err), err)
+	}
+	if _, statErr := os.Stat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("output err=%v", statErr)
+	}
+	exclusive, lockErr := database.TryExclusive(context.Background(), pool)
+	if lockErr != nil {
+		t.Fatalf("exclusive lock after terminated create: %v", lockErr)
+	}
+	defer exclusive.Release(context.Background())
+}
+
 func TestCreateMaintenanceAndSchemaGuards(t *testing.T) {
 	t.Run("shared runtime lease permits create", func(t *testing.T) {
 		pool := openBackupPool(t)
@@ -130,6 +162,28 @@ func TestCreateMaintenanceAndSchemaGuards(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := Create(context.Background(), pool, CreateOptions{Output: filepath.Join(t.TempDir(), "old.asbak"), RuntimeVersion: "test"})
+		if CodeOf(err) != CodeSchemaNotCurrent {
+			t.Fatalf("code=%q err=%v", CodeOf(err), err)
+		}
+	})
+
+	t.Run("migration gap rejects create", func(t *testing.T) {
+		pool := openBackupPool(t)
+		if _, err := pool.Exec(context.Background(), "DELETE FROM schema_migrations WHERE version=5"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Create(context.Background(), pool, CreateOptions{Output: filepath.Join(t.TempDir(), "gap.asbak"), RuntimeVersion: "test"})
+		if CodeOf(err) != CodeSchemaNotCurrent {
+			t.Fatalf("code=%q err=%v", CodeOf(err), err)
+		}
+	})
+
+	t.Run("damaged schema rejects create", func(t *testing.T) {
+		pool := openBackupPool(t)
+		if _, err := pool.Exec(context.Background(), "ALTER TABLE runs DROP COLUMN agent_request_key CASCADE"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Create(context.Background(), pool, CreateOptions{Output: filepath.Join(t.TempDir(), "damaged.asbak"), RuntimeVersion: "test"})
 		if CodeOf(err) != CodeSchemaNotCurrent {
 			t.Fatalf("code=%q err=%v", CodeOf(err), err)
 		}

@@ -75,6 +75,20 @@ func TestWriteArchiveIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestDatasetDigestUsesFixedTableOrder(t *testing.T) {
+	tables := make([]TableManifest, 0, len(TableOrder))
+	var canonical strings.Builder
+	for index, name := range TableOrder {
+		path, _ := tablePath(name)
+		digestValue := digestPrefix + strings.Repeat(string(rune('a'+index)), 64)
+		tables = append(tables, TableManifest{Name: name, Path: path, Digest: digestValue})
+		canonical.WriteString(checksumLine(digestValue, path))
+	}
+	if got, want := datasetDigest(tables), digestBytes([]byte(canonical.String())); got != want {
+		t.Fatalf("dataset digest=%q want=%q", got, want)
+	}
+}
+
 func TestWriteArchiveRejectsWriterMismatchAndInvalidJSONL(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -112,6 +126,26 @@ func TestWriteArchiveHonorsContextCancellation(t *testing.T) {
 	_, err := WriteArchive(ctx, filepath.Join(t.TempDir(), "cancelled.asbak"), manifestFixture(time.Now().UTC()), tableWritersFixture([]byte("{}\n")))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestWriteArchiveCancellationAfterLastTableDoesNotPublish(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	writers := tableWritersFixture([]byte("{}\n"))
+	last := TableWorkflowDraftCheckpoints
+	original := writers[last]
+	writers[last] = func(ctx context.Context, writer io.Writer) (TableManifest, error) {
+		manifest, err := original(ctx, writer)
+		cancel()
+		return manifest, err
+	}
+	output := filepath.Join(t.TempDir(), "cancelled.asbak")
+	_, err := WriteArchive(ctx, output, manifestFixture(time.Now().UTC()), writers)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, statErr := os.Stat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("output err=%v", statErr)
 	}
 }
 
@@ -162,6 +196,23 @@ func TestOpenArchiveRejectsSymlinkAndNonRegularInput(t *testing.T) {
 	}
 }
 
+func TestValidateOpenedArchiveRejectsPathReplacement(t *testing.T) {
+	directory := t.TempDir()
+	first := filepath.Join(directory, "first")
+	second := filepath.Join(directory, "second")
+	if err := os.WriteFile(first, []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selected, _ := os.Lstat(first)
+	opened, _ := os.Stat(second)
+	if err := validateOpenedArchive(selected, opened); CodeOf(err) != CodeArchiveInvalid {
+		t.Fatalf("code=%q err=%v", CodeOf(err), err)
+	}
+}
+
 func TestValidateZipEntriesRejectsMissingDuplicateExtraAndSymlink(t *testing.T) {
 	valid := zipEntriesFixture()
 	for _, test := range []struct {
@@ -183,10 +234,10 @@ func TestValidateZipEntriesRejectsMissingDuplicateExtraAndSymlink(t *testing.T) 
 
 func TestDecodeManifestRejectsUnknownFieldsAndInvalidDigest(t *testing.T) {
 	valid := manifestFixture(time.Now().UTC())
-	valid.DatasetDigest = strings.Repeat("0", 64)
+	valid.DatasetDigest = digestPrefix + strings.Repeat("0", 64)
 	for _, name := range TableOrder {
 		path, _ := tablePath(name)
-		valid.Tables = append(valid.Tables, TableManifest{Name: name, Path: path, Digest: strings.Repeat("0", 64)})
+		valid.Tables = append(valid.Tables, TableManifest{Name: name, Path: path, Digest: digestPrefix + strings.Repeat("0", 64)})
 	}
 	body, err := json.Marshal(valid)
 	if err != nil {
@@ -269,6 +320,15 @@ func TestRecordLimitAcceptsBoundaryAndRejectsOverflow(t *testing.T) {
 	}
 }
 
+func TestVerifyJSONLRejectsActualBytesAtDeclaredBoundary(t *testing.T) {
+	declared := []byte("{}\n")
+	actual := []byte("{}\n{}\n")
+	err := verifyJSONL(context.Background(), bytes.NewReader(actual), uint64(len(declared)), 1, digest(declared), nil)
+	if CodeOf(err) != CodeChecksumMismatch {
+		t.Fatalf("code=%q err=%v", CodeOf(err), err)
+	}
+}
+
 func FuzzOpenArchive(f *testing.F) {
 	f.Add([]byte("not a zip"))
 	f.Add([]byte{'P', 'K', 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
@@ -316,7 +376,7 @@ func tableWritersFixture(body []byte) map[TableName]TableWriter {
 
 func digest(body []byte) string {
 	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
+	return digestPrefix + hex.EncodeToString(sum[:])
 }
 
 type zipFixtureEntry struct {

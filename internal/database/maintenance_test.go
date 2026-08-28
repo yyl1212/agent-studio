@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestMaintenanceLeaseCompatibility(t *testing.T) {
@@ -178,6 +179,33 @@ func TestPrepareRuntimeUsesSharedLeaseForCurrentSchema(t *testing.T) {
 	if _, err := TryExclusive(context.Background(), pool); !errors.Is(err, ErrMaintenanceBusy) {
 		t.Fatalf("TryExclusive() error = %v; want ErrMaintenanceBusy", err)
 	}
+}
+
+func TestPrepareRuntimeSignalsLostMaintenanceConnection(t *testing.T) {
+	pool := openIsolatedPool(t)
+	if err := Migrate(context.Background(), pool); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := PrepareRuntime(context.Background(), pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.conn.Conn().Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-lease.Lost():
+		if err == nil {
+			t.Fatal("lost error is nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("maintenance connection loss was not signaled")
+	}
+	exclusive, err := TryExclusive(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("exclusive lock after loss: %v", err)
+	}
+	defer exclusive.Release(context.Background())
 }
 
 func TestPrepareRuntimeMigratesOutdatedSchemaBeforeDowngrade(t *testing.T) {

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,9 +29,12 @@ const (
 )
 
 type MaintenanceLease struct {
-	conn     *pgxpool.Conn
-	mode     lockMode
-	released atomic.Bool
+	conn          *pgxpool.Conn
+	mode          lockMode
+	released      atomic.Bool
+	lost          chan error
+	monitorCancel context.CancelFunc
+	monitorDone   chan struct{}
 }
 
 func TryShared(ctx context.Context, pool *pgxpool.Pool) (*MaintenanceLease, error) {
@@ -58,7 +63,7 @@ func tryMaintenanceLock(ctx context.Context, pool *pgxpool.Pool, mode lockMode) 
 		conn.Release()
 		return nil, ErrMaintenanceBusy
 	}
-	return &MaintenanceLease{conn: conn, mode: mode}, nil
+	return &MaintenanceLease{conn: conn, mode: mode, lost: make(chan error, 1)}, nil
 }
 
 func PrepareRuntime(ctx context.Context, pool *pgxpool.Pool) (*MaintenanceLease, error) {
@@ -83,6 +88,11 @@ func PrepareRuntime(ctx context.Context, pool *pgxpool.Pool) (*MaintenanceLease,
 			_ = lease.Release(context.Background())
 			return nil, errors.New("database migration version changed during startup")
 		}
+		if err := ValidateCurrentSchema(ctx, lease.conn); err != nil {
+			_ = lease.Release(context.Background())
+			return nil, err
+		}
+		lease.startMonitor()
 		return lease, nil
 	default:
 		lease, err := TryExclusive(ctx, pool)
@@ -108,8 +118,83 @@ func PrepareRuntime(ctx context.Context, pool *pgxpool.Pool) (*MaintenanceLease,
 			_ = lease.Release(context.Background())
 			return nil, err
 		}
+		if err := ValidateCurrentSchema(ctx, lease.conn); err != nil {
+			_ = lease.Release(context.Background())
+			return nil, err
+		}
+		lease.startMonitor()
 		return lease, nil
 	}
+}
+
+func (lease *MaintenanceLease) Lost() <-chan error { return lease.lost }
+
+func (lease *MaintenanceLease) startMonitor() {
+	monitorContext, cancel := context.WithCancel(context.Background())
+	lease.monitorCancel = cancel
+	lease.monitorDone = make(chan struct{})
+	cleanupDone := lease.conn.Conn().PgConn().CleanupDone()
+	go func() {
+		defer close(lease.monitorDone)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-monitorContext.Done():
+				return
+			case <-cleanupDone:
+				lease.reportLost(errors.New("database maintenance connection closed"))
+				return
+			case <-ticker.C:
+				pingContext, cancelPing := context.WithTimeout(context.Background(), time.Second)
+				err := lease.conn.Conn().Ping(pingContext)
+				cancelPing()
+				if err != nil {
+					if monitorContext.Err() == nil {
+						lease.reportLost(err)
+					}
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (lease *MaintenanceLease) reportLost(cause error) {
+	if !lease.released.CompareAndSwap(false, true) {
+		return
+	}
+	discardMaintenanceConnection(lease.conn)
+	lease.lost <- fmt.Errorf("database maintenance lease lost: %w", cause)
+}
+
+func (lease *MaintenanceLease) stopMonitor() {
+	if lease.monitorCancel == nil {
+		return
+	}
+	lease.monitorCancel()
+	<-lease.monitorDone
+}
+
+func (lease *MaintenanceLease) CurrentVersion(ctx context.Context) (int64, error) {
+	if lease.released.Load() {
+		return 0, errMaintenanceLeaseReleased
+	}
+	return CurrentVersion(ctx, lease.conn)
+}
+
+func (lease *MaintenanceLease) ValidateCurrentSchema(ctx context.Context) error {
+	if lease.released.Load() {
+		return errMaintenanceLeaseReleased
+	}
+	return ValidateCurrentSchema(ctx, lease.conn)
+}
+
+func (lease *MaintenanceLease) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	if lease.released.Load() {
+		return nil, errMaintenanceLeaseReleased
+	}
+	return lease.conn.BeginTx(ctx, options)
 }
 
 func (lease *MaintenanceLease) Migrate(ctx context.Context) error {
@@ -153,8 +238,10 @@ func (lease *MaintenanceLease) Downgrade(ctx context.Context) error {
 
 func (lease *MaintenanceLease) Release(ctx context.Context) error {
 	if lease.released.Swap(true) {
+		lease.stopMonitor()
 		return nil
 	}
+	lease.stopMonitor()
 	query := "SELECT pg_advisory_unlock_shared($1)"
 	if lease.mode == lockModeExclusive {
 		query = "SELECT pg_advisory_unlock($1)"

@@ -58,7 +58,7 @@ func validTypedRecordBodies(t *testing.T) map[TableName][]byte {
 		},
 		TableRuns: RunRecord{
 			ID: recordUUID2, WorkflowID: recordUUID1, Mode: "test", Status: "running", Input: json.RawMessage(`{}`),
-			StartedAt: now, InputRedactedPaths: []string{},
+			DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)), StartedAt: now, InputRedactedPaths: []string{},
 		},
 		TableNodeRuns: NodeRunRecord{
 			ID: recordUUID2, RunID: recordUUID1, NodeID: "start", NodeType: "start", Status: "running",

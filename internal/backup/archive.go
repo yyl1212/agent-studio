@@ -42,7 +42,7 @@ func WriteArchive(ctx context.Context, output string, base Manifest, writers map
 	}
 
 	var result Manifest
-	err := publishAtomic(output, func(file *os.File) error {
+	err := publishAtomicContext(ctx, output, func(file *os.File) error {
 		zipWriter := zip.NewWriter(file)
 		closed := false
 		defer func() {
@@ -92,9 +92,12 @@ func WriteArchive(ctx context.Context, output string, base Manifest, writers map
 			total += actual.UncompressedBytes
 			result.Tables = append(result.Tables, actual)
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
 		dataLines := checksumLines(result.Tables)
-		result.DatasetDigest = digestBytes([]byte(strings.Join(dataLines, "")))
+		result.DatasetDigest = datasetDigest(result.Tables)
 		if err := validateManifest(result); err != nil {
 			return err
 		}
@@ -110,6 +113,9 @@ func WriteArchive(ctx context.Context, output string, base Manifest, writers map
 			return err
 		}
 		if _, err := manifestPart.Write(manifestBody); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 
@@ -134,6 +140,9 @@ func WriteArchive(ctx context.Context, output string, base Manifest, writers map
 			return err
 		}
 		closed = true
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
@@ -207,7 +216,9 @@ func (writer *observingWriter) finish() error {
 	return nil
 }
 
-func (writer *observingWriter) digest() string { return hex.EncodeToString(writer.hash.Sum(nil)) }
+func (writer *observingWriter) digest() string {
+	return digestPrefix + hex.EncodeToString(writer.hash.Sum(nil))
+}
 
 type Archive struct {
 	file     *os.File
@@ -238,10 +249,17 @@ func OpenArchive(ctx context.Context, path string) (*Archive, error) {
 			_ = file.Close()
 		}
 	}()
-	if err := preflightZIPDirectory(file, info.Size()); err != nil {
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, Wrap(CodeArchiveInvalid, "inspect opened backup archive", err)
+	}
+	if err := validateOpenedArchive(info, openedInfo); err != nil {
 		return nil, err
 	}
-	reader, err := zip.NewReader(file, info.Size())
+	if err := preflightZIPDirectory(file, openedInfo.Size()); err != nil {
+		return nil, err
+	}
+	reader, err := zip.NewReader(file, openedInfo.Size())
 	if err != nil {
 		return nil, Wrap(CodeArchiveInvalid, "parse backup archive", err)
 	}
@@ -283,10 +301,17 @@ func OpenArchive(ctx context.Context, path string) (*Archive, error) {
 	}
 	archive := &Archive{
 		file: file, reader: reader, manifest: manifest, files: files,
-		summary: summaryFromManifest(path, info.Size(), manifest),
+		summary: summaryFromManifest(path, openedInfo.Size(), manifest),
 	}
 	closeOnError = false
 	return archive, nil
+}
+
+func validateOpenedArchive(selected, opened os.FileInfo) error {
+	if !opened.Mode().IsRegular() || !os.SameFile(selected, opened) {
+		return Wrap(CodeArchiveInvalid, "validate opened backup archive", nil)
+	}
+	return nil
 }
 
 func (archive *Archive) Summary() Summary {
@@ -360,7 +385,7 @@ func (reader *verifiedTableReadCloser) Read(body []byte) (int, error) {
 		}
 	}
 	if err == io.EOF {
-		if reader.bytes != reader.expectedBytes || hex.EncodeToString(reader.hash.Sum(nil)) != reader.expectedDigest {
+		if reader.bytes != reader.expectedBytes || digestPrefix+hex.EncodeToString(reader.hash.Sum(nil)) != reader.expectedDigest {
 			return count, Wrap(CodeChecksumMismatch, "verify backup table content", nil)
 		}
 		reader.verified = true
@@ -383,8 +408,8 @@ func (reader *verifiedTableReadCloser) Close() error {
 
 func verifyJSONL(ctx context.Context, source io.Reader, expectedBytes, expectedRecords uint64, expectedDigest string, visit func(json.RawMessage) error) error {
 	hasher := sha256.New()
-	counting := &countingReader{source: io.TeeReader(source, hasher)}
-	reader := bufio.NewReaderSize(counting, 64<<10)
+	counting := &countingReader{source: source, limit: expectedBytes}
+	reader := bufio.NewReaderSize(io.TeeReader(counting, hasher), 64<<10)
 	var records uint64
 	for {
 		if err := ctx.Err(); err != nil {
@@ -417,7 +442,7 @@ func verifyJSONL(ctx context.Context, source io.Reader, expectedBytes, expectedR
 	if counting.bytes != expectedBytes || records != expectedRecords {
 		return Wrap(CodeArchiveInvalid, "validate backup table metadata", nil)
 	}
-	if hex.EncodeToString(hasher.Sum(nil)) != expectedDigest {
+	if digestPrefix+hex.EncodeToString(hasher.Sum(nil)) != expectedDigest {
 		return Wrap(CodeChecksumMismatch, "validate backup table digest", nil)
 	}
 	return nil
@@ -426,11 +451,22 @@ func verifyJSONL(ctx context.Context, source io.Reader, expectedBytes, expectedR
 type countingReader struct {
 	source io.Reader
 	bytes  uint64
+	limit  uint64
 }
 
 func (reader *countingReader) Read(body []byte) (int, error) {
+	if reader.bytes > reader.limit {
+		return 0, Wrap(CodeChecksumMismatch, "validate backup table size", nil)
+	}
+	remaining := reader.limit - reader.bytes
+	if uint64(len(body)) > remaining+1 {
+		body = body[:remaining+1]
+	}
 	count, err := reader.source.Read(body)
 	reader.bytes += uint64(count)
+	if reader.bytes > reader.limit {
+		return count, Wrap(CodeChecksumMismatch, "validate backup table size", nil)
+	}
 	return count, err
 }
 
@@ -450,6 +486,9 @@ func readBoundedLine(reader *bufio.Reader) ([]byte, bool, error) {
 		case errors.Is(err, io.EOF):
 			return line, true, nil
 		default:
+			if CodeOf(err) != "" {
+				return nil, false, err
+			}
 			return nil, false, Wrap(CodeArchiveInvalid, "read backup record", err)
 		}
 	}
@@ -476,9 +515,9 @@ func validateBaseManifest(manifest Manifest) error {
 	copy.Tables = make([]TableManifest, len(TableOrder))
 	for index, name := range TableOrder {
 		path, _ := tablePath(name)
-		copy.Tables[index] = TableManifest{Name: name, Path: path, Digest: strings.Repeat("0", 64)}
+		copy.Tables[index] = TableManifest{Name: name, Path: path, Digest: digestPrefix + strings.Repeat("0", 64)}
 	}
-	copy.DatasetDigest = strings.Repeat("0", 64)
+	copy.DatasetDigest = digestPrefix + strings.Repeat("0", 64)
 	return validateManifest(copy)
 }
 
@@ -547,7 +586,7 @@ func validateChecksums(manifest Manifest, manifestBody, body []byte) error {
 	actual := make(map[string]string, len(lines))
 	previous := ""
 	for _, line := range lines {
-		if len(line) < 67 || line[64:66] != "  " || !canonicalDigest(line[:64]) {
+		if len(line) < 67 || line[64:66] != "  " || !canonicalDigestHex(line[:64]) {
 			return Wrap(CodeArchiveInvalid, "parse backup checksum", nil)
 		}
 		path := line[66:]
@@ -560,9 +599,9 @@ func validateChecksums(manifest Manifest, manifestBody, body []byte) error {
 		}
 		actual[path] = line[:64]
 	}
-	expected := map[string]string{manifestPath: digestBytes(manifestBody)}
+	expected := map[string]string{manifestPath: digestHex(manifestBody)}
 	for _, table := range manifest.Tables {
-		expected[table.Path] = table.Digest
+		expected[table.Path] = strings.TrimPrefix(table.Digest, digestPrefix)
 	}
 	if len(actual) != len(expected) {
 		return Wrap(CodeArchiveInvalid, "validate backup checksum paths", nil)
@@ -572,7 +611,7 @@ func validateChecksums(manifest Manifest, manifestBody, body []byte) error {
 			return Wrap(CodeChecksumMismatch, "validate backup checksum", nil)
 		}
 	}
-	if got := digestBytes([]byte(strings.Join(checksumLines(manifest.Tables), ""))); got != manifest.DatasetDigest {
+	if got := datasetDigest(manifest.Tables); got != manifest.DatasetDigest {
 		return Wrap(CodeChecksumMismatch, "validate backup dataset digest", nil)
 	}
 	return nil
@@ -587,7 +626,17 @@ func checksumLines(tables []TableManifest) []string {
 	return lines
 }
 
-func checksumLine(digest, path string) string { return digest + "  " + path + "\n" }
+func datasetDigest(tables []TableManifest) string {
+	var canonical strings.Builder
+	for _, table := range tables {
+		canonical.WriteString(checksumLine(table.Digest, table.Path))
+	}
+	return digestBytes([]byte(canonical.String()))
+}
+
+func checksumLine(digest, path string) string {
+	return strings.TrimPrefix(digest, digestPrefix) + "  " + path + "\n"
+}
 func checksumPath(line string) string {
 	if len(line) < 66 {
 		return ""
@@ -596,6 +645,10 @@ func checksumPath(line string) string {
 }
 
 func canonicalDigest(value string) bool {
+	return strings.HasPrefix(value, digestPrefix) && canonicalDigestHex(strings.TrimPrefix(value, digestPrefix))
+}
+
+func canonicalDigestHex(value string) bool {
 	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
 		return false
 	}
@@ -604,6 +657,10 @@ func canonicalDigest(value string) bool {
 }
 
 func digestBytes(body []byte) string {
+	return digestPrefix + digestHex(body)
+}
+
+func digestHex(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
 }

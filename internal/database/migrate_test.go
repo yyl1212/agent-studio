@@ -41,6 +41,37 @@ func TestMigrationVersionsAndEmptyDatabase(t *testing.T) {
 	}
 }
 
+func TestCurrentVersionRejectsMigrationGap(t *testing.T) {
+	pool := openIsolatedPool(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "DELETE FROM schema_migrations WHERE version=5"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CurrentVersion(ctx, pool); !errors.Is(err, ErrSchemaIncomplete) {
+		t.Fatalf("CurrentVersion() error=%v; want ErrSchemaIncomplete", err)
+	}
+}
+
+func TestValidateCurrentSchemaChecksRequiredColumns(t *testing.T) {
+	pool := openIsolatedPool(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCurrentSchema(ctx, pool); err != nil {
+		t.Fatalf("valid schema error=%v", err)
+	}
+	if _, err := pool.Exec(ctx, "ALTER TABLE runs DROP COLUMN agent_request_key CASCADE"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCurrentSchema(ctx, pool); !errors.Is(err, ErrSchemaIncomplete) {
+		t.Fatalf("damaged schema error=%v; want ErrSchemaIncomplete", err)
+	}
+}
+
 func TestMigrateUpgradesPreviousSchemaWithVersionGovernance(t *testing.T) {
 	pool := openIsolatedPool(t)
 	ctx := context.Background()

@@ -46,7 +46,7 @@ func backupCommandWithDependencies(ctx context.Context, args []string, stdout, s
 			Output: args[2], RuntimeVersion: dependencies.runtimeVersion(),
 		})
 		if err != nil {
-			_, _ = fmt.Fprintln(stderr, err)
+			writeBackupError(stderr, err, backupdomain.CodeCreateFailed, "create backup")
 			return 1
 		}
 		if err := writeBackupSummary(stdout, summary); err != nil {
@@ -71,7 +71,7 @@ func backupCommandWithDependencies(ctx context.Context, args []string, stdout, s
 		}
 		summary, err := dependencies.inspect(ctx, path)
 		if err != nil {
-			_, _ = fmt.Fprintln(stderr, err)
+			writeBackupError(stderr, err, backupdomain.CodeArchiveInvalid, "inspect backup")
 			return 1
 		}
 		if jsonOutput {
@@ -90,6 +90,13 @@ func backupCommandWithDependencies(ctx context.Context, args []string, stdout, s
 
 	_, _ = io.WriteString(stderr, "backup usage: backup create --output <path> | backup inspect [--json] <path>\n")
 	return 2
+}
+
+func writeBackupError(writer io.Writer, err error, fallback backupdomain.Code, operation string) {
+	if backupdomain.CodeOf(err) == "" {
+		err = backupdomain.Wrap(fallback, operation, err)
+	}
+	_, _ = fmt.Fprintln(writer, err)
 }
 
 func defaultBackupCommandDependencies(dependencies backupCommandDependencies) backupCommandDependencies {
@@ -123,7 +130,7 @@ func writeBackupSummary(writer io.Writer, summary backupdomain.Summary) error {
 	for _, table := range summary.Tables {
 		records += table.Records
 	}
-	_, err := fmt.Fprintf(writer, "backup: %s\nformat: %s\nruntime: %s\nmigration: %d\nrecords: %d\ncompressed: %d\nchecksum: sha256:%s\n",
+	_, err := fmt.Fprintf(writer, "backup: %s\nformat: %s\nruntime: %s\nmigration: %d\nrecords: %d\ncompressed: %d\nchecksum: %s\n",
 		strconv.Quote(summary.Path), summary.APIVersion, summary.RuntimeVersion, summary.MigrationVersion,
 		records, summary.CompressedBytes, summary.DatasetDigest)
 	return err

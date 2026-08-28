@@ -155,14 +155,7 @@ func run(logger *slog.Logger) error {
 
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	var serveErr error
-	select {
-	case err := <-serveErrors:
-		if !errors.Is(err, http.ErrServerClosed) {
-			serveErr = fmt.Errorf("serve HTTP: %w", err)
-		}
-	case <-signalContext.Done():
-	}
+	serveErr := waitForRuntimeStop(serveErrors, signalContext.Done(), maintenance.Lost())
 
 	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
@@ -202,12 +195,27 @@ type storeCloser interface {
 
 type maintenanceReleaser interface {
 	Release(context.Context) error
+	Lost() <-chan error
 }
 
 type telemetryShutdownContextFactory func() (context.Context, context.CancelFunc)
 
 type telemetryRuntimeFactory func(context.Context, observability.Options, *slog.Logger) (telemetryRuntime, error)
 type postgresStoreOpener func(context.Context, string) (*postgres.Store, error)
+
+func waitForRuntimeStop(serveErrors <-chan error, signalDone <-chan struct{}, maintenanceLost <-chan error) error {
+	select {
+	case err := <-serveErrors:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve HTTP: %w", err)
+		}
+		return nil
+	case <-signalDone:
+		return nil
+	case <-maintenanceLost:
+		return errors.New("database maintenance lease lost")
+	}
+}
 
 func defaultTelemetryShutdownContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)

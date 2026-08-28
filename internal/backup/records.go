@@ -164,10 +164,28 @@ func decodeRunRecord(raw json.RawMessage) (RunRecord, error) {
 		!oneOf(record.Mode, "test", "published", "debug") || !oneOf(record.Status, "running", "cancelling", "completed", "failed", "cancelled") ||
 		!jsonObject(record.Input) || (record.GraphSnapshot != nil && !jsonObject(*record.GraphSnapshot)) ||
 		(record.Error != nil && !jsonObject(*record.Error)) || record.InputRedactedPaths == nil || !validUTC(record.StartedAt) ||
-		!validOptionalUTC(record.EndedAt) || !validOptionalUTC(record.CancelRequestedAt) || !validOptionalUTC(record.HeartbeatAt) {
+		!validOptionalUTC(record.EndedAt) || !validOptionalUTC(record.CancelRequestedAt) || !validOptionalUTC(record.HeartbeatAt) ||
+		!validRunSourceFields(record) || (record.RetryOfRunID == nil) != (record.RetryKey == nil) ||
+		(record.AgentRequestKey != nil && record.Mode != "published") {
 		return RunRecord{}, invalidRecord()
 	}
 	return record, nil
+}
+
+func validRunSourceFields(record RunRecord) bool {
+	switch record.Mode {
+	case "published":
+		return record.WorkflowVersionID != nil && record.DraftRevision == nil && record.GraphSnapshot == nil &&
+			record.SourceRunID == nil && record.SourceNodeID == nil
+	case "test":
+		return record.WorkflowVersionID == nil && record.DraftRevision != nil && record.GraphSnapshot != nil &&
+			record.SourceRunID == nil && record.SourceNodeID == nil
+	case "debug":
+		return record.WorkflowVersionID == nil && record.DraftRevision == nil && record.GraphSnapshot != nil &&
+			record.SourceRunID != nil && record.SourceNodeID != nil && *record.SourceNodeID != ""
+	default:
+		return false
+	}
 }
 
 func decodeNodeRunRecord(raw json.RawMessage) (NodeRunRecord, error) {

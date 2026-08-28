@@ -74,11 +74,23 @@ func (store recordingStoreCloser) Close() { *store.events = append(*store.events
 type recordingMaintenanceLease struct {
 	events     *[]string
 	releaseErr error
+	lost       <-chan error
 }
 
 func (lease recordingMaintenanceLease) Release(context.Context) error {
 	*lease.events = append(*lease.events, "maintenance-release")
 	return lease.releaseErr
+}
+
+func (lease recordingMaintenanceLease) Lost() <-chan error { return lease.lost }
+
+func TestWaitForRuntimeStopFailsSafelyWhenMaintenanceLeaseIsLost(t *testing.T) {
+	lost := make(chan error, 1)
+	lost <- errors.New("postgres://secret maintenance connection lost")
+	err := waitForRuntimeStop(make(chan error), make(chan struct{}), lost)
+	if err == nil || err.Error() != "database maintenance lease lost" || strings.Contains(err.Error(), "postgres://") {
+		t.Fatalf("error=%v", err)
+	}
 }
 
 func TestShutdownRuntimeCancelsRunsBeforeHTTPAndStopsLoopLast(t *testing.T) {

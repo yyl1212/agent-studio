@@ -7,6 +7,7 @@ import (
 
 const (
 	APIVersion                      = "agent-studio.dev/backup/v1alpha1"
+	digestPrefix                    = "sha256:"
 	MaxManifestBytes                = 1 << 20
 	MaxChecksumsBytes               = 1 << 20
 	MaxCentralDirectoryBytes        = 1 << 20
