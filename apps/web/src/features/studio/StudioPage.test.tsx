@@ -69,6 +69,12 @@ const renderStudio = () =>
     </MemoryRouter>,
   )
 
+function confirmPendingPlacement() {
+  const pane = document.querySelector<HTMLElement>('.react-flow__pane')
+  if (!pane) throw new Error('找不到画布放置区域')
+  fireEvent.click(pane)
+}
+
 const rawDefinitions = [
   { type: 'start', version: '1', title: '开始', description: '', category: '流程', configSchema: { type: 'object' }, inputs: [], outputs: [] },
   { type: 'end', version: '1', title: '结束', description: '', category: '流程', configSchema: { type: 'object' }, inputs: [], outputs: [] },
@@ -239,6 +245,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
     await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用并试运行' })).toBeEnabled())
 
@@ -451,6 +458,7 @@ describe('StudioPage', () => {
     expect(await screen.findByText('演示助手')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
     await vi.waitFor(() => expect(api.resolveNodeType).toHaveBeenCalledWith('template', '1', expect.objectContaining({ template: '回答：{{topic}}' }), expect.any(AbortSignal)))
@@ -467,6 +475,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
 
     await vi.waitFor(() => {
       const saved = vi.mocked(api.saveWorkflow).mock.calls.at(-1)?.[1]
@@ -481,6 +490,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
 
     expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
@@ -526,6 +536,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
 
     expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeInTheDocument()
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
@@ -591,6 +602,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     const retry = await screen.findByRole('button', { name: '重试保存' }, { timeout: 2500 })
     expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
@@ -606,6 +618,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalled(), { timeout: 2000 })
     await new Promise((resolve) => setTimeout(resolve, 900))
     vi.mocked(api.saveWorkflow).mockClear()
@@ -646,6 +659,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '未应用配置' } })
     await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
     await userEvent.click(screen.getByRole('button', { name: 'Agent 页面设置' }))
@@ -663,6 +677,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '等待保存' } })
     await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
     await userEvent.click(screen.getByRole('button', { name: '版本历史' }))
@@ -706,6 +721,7 @@ describe('StudioPage', () => {
 	await vi.waitFor(() => expect(screen.getByText('更多操作')).toHaveFocus())
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledWith('w1', expect.objectContaining({ draftRevision: 2 })), { timeout: 2000 })
   })
 
@@ -728,6 +744,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     fireEvent.change(screen.getByLabelText('模板'), { target: { value: '回答：{{topic}}' } })
     await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
 
@@ -764,6 +781,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     await userEvent.click(screen.getByRole('button', { name: '发布' }))
     await userEvent.click(screen.getByRole('button', { name: '确认发布' }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalled())
@@ -778,6 +796,7 @@ describe('StudioPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^Retriever/ }))
+    confirmPendingPlacement()
     await userEvent.click(screen.getByRole('button', { name: '添加一项' }))
     await userEvent.type(screen.getByLabelText('文档标识'), 'doc-1')
     await userEvent.type(screen.getByLabelText('文档内容'), 'Agent Studio')
@@ -789,6 +808,7 @@ describe('StudioPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^Webhook/ }))
+    confirmPendingPlacement()
     await userEvent.type(screen.getByLabelText('相对路径'), 'hooks/run')
     await userEvent.click(screen.getByText('可选配置'))
     await userEvent.clear(screen.getByLabelText('超时毫秒'))
@@ -830,6 +850,7 @@ describe('StudioPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^LLM · 结构化输出/ }))
+    confirmPendingPlacement()
     await userEvent.click(screen.getByText('可选配置'))
     await userEvent.selectOptions(screen.getByLabelText('输出模式'), 'structured')
     await userEvent.click(screen.getByRole('button', { name: '添加一项' }))
@@ -940,6 +961,7 @@ describe('StudioPage', () => {
     await screen.findByText('演示助手')
     await userEvent.click(screen.getByRole('button', { name: '添加节点' }))
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
+    confirmPendingPlacement()
     await userEvent.click(screen.getByRole('button', { name: '导出模板' }))
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalled())
     expect(api.exportWorkflowTemplate).not.toHaveBeenCalled()
