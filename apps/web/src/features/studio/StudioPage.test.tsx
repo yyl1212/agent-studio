@@ -725,6 +725,20 @@ describe('StudioPage', () => {
     expect(api.saveWorkflow).toHaveBeenCalledTimes(2)
   })
 
+  it('配置保存冲突时保留配置面板且不执行旧继续意图', async () => {
+    renderConnectedStudio(new APIError(409, 'REVISION_CONFLICT', '草稿冲突'))
+    fireEvent.click(await screen.findByTestId('node-template'))
+    fireEvent.change(screen.getByLabelText('模板'), { target: { value: '冲突版：{{topic}}' } })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '应用配置' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: '测试运行' }))
+    await userEvent.click(screen.getByRole('button', { name: '应用并继续' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('草稿冲突')
+    expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '刷新工作流' })).toBeVisible()
+  })
+
   it('破坏性应用并试运行只应用配置且提示先修复连线', async () => {
     const runDraft = vi.spyOn(api, 'runDraft')
     renderConnectedStudio()
