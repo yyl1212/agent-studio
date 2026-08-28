@@ -4,6 +4,12 @@ export const NODE_DEFINITION_MIME = 'application/x-agent-studio-node'
 export const RECENT_NODE_STORAGE_KEY = 'agent-studio.node-library.recent.v1'
 export const MAX_RECENT_NODES = 6
 
+export type PortDataType = NodeDefinition['inputs'][number]['type']
+
+export interface NodeLibraryCompatibility {
+  sourceType: PortDataType
+}
+
 export type NodeLibraryScope =
   | { kind: 'all' }
   | { kind: 'recent' }
@@ -30,19 +36,40 @@ interface ViewOptions {
   query: string
   scope: NodeLibraryScope
   recentNodeKeys: string[]
+  compatibility?: NodeLibraryCompatibility
 }
 
 export function nodeDefinitionKey(definition: Pick<NodeDefinition, 'type' | 'version'>) {
   return `${definition.type}@${definition.version}`
 }
 
+export function isAddableDefinition(definition: NodeDefinition) {
+  return definition.type !== 'start' && definition.type !== 'end'
+}
+
+export function compatibleInputPorts(
+  definition: NodeDefinition,
+  sourceType: PortDataType,
+) {
+  return definition.inputs.filter(
+    (input) =>
+      sourceType === 'any' ||
+      input.type === 'any' ||
+      input.type === sourceType,
+  )
+}
+
 export function buildNodeLibraryView(
   definitions: NodeDefinition[],
   options: ViewOptions,
 ): NodeLibraryView {
-  const addable = definitions.filter(
-    (definition) => definition.type !== 'start' && definition.type !== 'end',
-  )
+  const addable = definitions
+    .filter(isAddableDefinition)
+    .filter(
+      (definition) =>
+        !options.compatibility ||
+        compatibleInputPorts(definition, options.compatibility.sourceType).length > 0,
+    )
   const categories = [...new Set(addable.map((definition) => definition.category))]
   const byKey = new Map(
     addable.map((definition) => [nodeDefinitionKey(definition), definition]),
@@ -58,6 +85,7 @@ export function buildNodeLibraryView(
         definition.title,
         definition.description,
         definition.type,
+        definition.category,
         definition.package.name,
         definition.package.displayName,
       ]
