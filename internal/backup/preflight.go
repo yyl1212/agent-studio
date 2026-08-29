@@ -1,0 +1,158 @@
+package backup
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yyl1212/agent-studio/internal/database"
+)
+
+// RestorePlan describes the checks a restore would perform without changing the target.
+type RestorePlan struct {
+	Archive                Summary `json:"archive"`
+	TargetMigrationVersion int64   `json:"targetMigrationVersion"`
+	LatestMigrationVersion int64   `json:"latestMigrationVersion"`
+	PendingMigrations      []int64 `json:"pendingMigrations"`
+	TargetEmpty            bool    `json:"targetEmpty"`
+}
+
+type importerKey struct {
+	APIVersion       string
+	MigrationVersion int64
+}
+
+// importer marks an explicitly supported archive representation. Import execution is
+// deliberately owned by the restore operation, not by the dry-run preflight.
+type importer func()
+
+func importV1Alpha1Migration6() {}
+
+var importers = map[importerKey]importer{
+	{APIVersion: APIVersion, MigrationVersion: 6}: importV1Alpha1Migration6,
+}
+
+// DryRun validates an archive and its restore prerequisites without changing the target.
+func DryRun(ctx context.Context, pool *pgxpool.Pool, path string) (RestorePlan, error) {
+	archive, err := OpenArchive(ctx, path)
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	defer archive.Close()
+
+	lease, err := database.TryExclusive(ctx, pool)
+	if errors.Is(err, database.ErrMaintenanceBusy) {
+		return RestorePlan{}, Wrap(CodeAPIRunning, "target is in use", err)
+	}
+	if err != nil {
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "acquire maintenance lease", err)
+	}
+	defer lease.Release(context.Background())
+
+	return preflightWithLease(ctx, pool, archive)
+}
+
+// preflightWithLease validates a verified archive while the caller holds the target's
+// exclusive maintenance lease. It never opens the archive, runs migrations, or commits.
+func preflightWithLease(ctx context.Context, pool *pgxpool.Pool, archive *Archive) (RestorePlan, error) {
+	if err := ctx.Err(); err != nil {
+		return RestorePlan{}, err
+	}
+	if archive == nil {
+		return RestorePlan{}, Wrap(CodeArchiveInvalid, "validate opened backup archive", nil)
+	}
+
+	latest, err := database.LatestVersion()
+	if err != nil {
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "read runtime migration version", err)
+	}
+	if archive.manifest.APIVersion != APIVersion {
+		return RestorePlan{}, Wrap(CodeFormatUnsupported, "validate backup api version", nil)
+	}
+	if archive.manifest.DatabaseMigrationVersion > latest {
+		return RestorePlan{}, Wrap(CodeRuntimeTooOld, "backup migration is newer than runtime", nil)
+	}
+	if archive.manifest.DatabaseMigrationVersion < 1 {
+		return RestorePlan{}, Wrap(CodeArchiveInvalid, "validate backup migration version", nil)
+	}
+
+	targetVersion, err := database.CurrentVersion(ctx, pool)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return RestorePlan{}, err
+		}
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "read target migration version", err)
+	}
+	if targetVersion > latest {
+		return RestorePlan{}, Wrap(CodeRuntimeTooOld, "target migration is newer than runtime", nil)
+	}
+	if _, ok := importers[importerKey{
+		APIVersion: archive.manifest.APIVersion, MigrationVersion: archive.manifest.DatabaseMigrationVersion,
+	}]; !ok {
+		return RestorePlan{}, Wrap(CodeFormatUnsupported, "backup migration is not supported", nil)
+	}
+
+	targetEmpty, err := targetIsEmpty(ctx, pool)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return RestorePlan{}, err
+		}
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "check target contents", err)
+	}
+	if !targetEmpty {
+		return RestorePlan{}, Wrap(CodeTargetNotEmpty, "target contains backup data", nil)
+	}
+
+	transaction, err := pool.Begin(ctx)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return RestorePlan{}, err
+		}
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "begin backup reference validation", err)
+	}
+	defer transaction.Rollback(context.Background())
+	if _, err := stageReferences(ctx, transaction, archive); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || CodeOf(err) != "" {
+			return RestorePlan{}, err
+		}
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "validate backup references", err)
+	}
+
+	return RestorePlan{
+		Archive:                archive.Summary(),
+		TargetMigrationVersion: targetVersion,
+		LatestMigrationVersion: latest,
+		PendingMigrations:      pendingMigrations(targetVersion, latest),
+		TargetEmpty:            true,
+	}, nil
+}
+
+func targetIsEmpty(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	for _, name := range TableOrder {
+		var relation *string
+		if err := pool.QueryRow(ctx, `SELECT to_regclass($1)::text`, string(name)).Scan(&relation); err != nil {
+			return false, err
+		}
+		if relation == nil {
+			continue
+		}
+		var exists bool
+		query := "SELECT EXISTS(SELECT 1 FROM " + pgx.Identifier{string(name)}.Sanitize() + " LIMIT 1)"
+		if err := pool.QueryRow(ctx, query).Scan(&exists); err != nil {
+			return false, err
+		}
+		if exists {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func pendingMigrations(targetVersion, latestVersion int64) []int64 {
+	pending := make([]int64, 0, latestVersion-targetVersion)
+	for version := targetVersion + 1; version <= latestVersion; version++ {
+		pending = append(pending, version)
+	}
+	return pending
+}
