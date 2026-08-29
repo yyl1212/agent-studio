@@ -12,9 +12,10 @@ import (
 	"github.com/yyl1212/agent-studio/internal/scaffold"
 )
 
-const helpText = "doctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"
+const helpText = "backup create\nbackup inspect\ndoctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"
 
 type appDependencies struct {
+	backup          func(context.Context, []string, io.Writer, io.Writer) int
 	workingDir      func() (string, error)
 	buildInfo       func() buildinfo.Info
 	diagnose        func(context.Context, string) []CheckResult
@@ -29,6 +30,7 @@ type appDependencies struct {
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return run(ctx, args, stdout, stderr, appDependencies{
+		backup:     backupCommand,
 		workingDir: os.Getwd,
 		buildInfo:  buildinfo.Current,
 		diagnose: func(ctx context.Context, root string) []CheckResult {
@@ -59,6 +61,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 	}
 
 	switch args[0] {
+	case "backup":
+		return dependencies.backup(ctx, args[1:], stdout, stderr)
 	case "version":
 		if len(args) != 1 {
 			_, _ = io.WriteString(stderr, "version takes no arguments\n")

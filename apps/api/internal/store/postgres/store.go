@@ -3,11 +3,11 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/internal/database"
 )
 
 var (
@@ -21,23 +21,19 @@ type Store struct {
 }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
-	config, err := pgxpool.ParseConfig(databaseURL)
+	pool, err := database.OpenPool(ctx, databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse database URL: %w", err)
-	}
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
+		return nil, err
 	}
 	return &Store{pool: pool, poolStatsSource: pgxPoolStatsSource{pool: pool}}, nil
 }
 
 func (store *Store) Close() {
 	store.pool.Close()
+}
+
+func (store *Store) PrepareRuntime(ctx context.Context) (*database.MaintenanceLease, error) {
+	return database.PrepareRuntime(ctx, store.pool)
 }
 
 func mapNotFound(err error) error {
