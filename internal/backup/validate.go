@@ -3,10 +3,13 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -92,15 +95,35 @@ func copyReferenceTable(ctx context.Context, tx pgx.Tx, archive *Archive, table 
 	if target == "" {
 		return 0, Wrap(CodeArchiveInvalid, "select backup reference table", nil)
 	}
-	source := newReferenceCopySource(ctx, archive, table)
-	count, err := tx.CopyFrom(ctx, pgx.Identifier{target}, columns, source)
+	copyContext, cancel := context.WithCancel(ctx)
+	source := newReferenceCopySource(copyContext, archive, table)
+	count, err := tx.CopyFrom(copyContext, pgx.Identifier{target}, columns, source)
+	cancel()
+	source.wait()
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	if CodeOf(source.producerErr) != "" {
+		return 0, source.producerErr
+	}
 	if err != nil {
 		if CodeOf(err) != "" {
 			return 0, err
 		}
-		return 0, Wrap(CodeReferenceInvalid, "stage backup references", nil)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return 0, err
+		}
+		if referenceConstraintError(err) {
+			return 0, Wrap(CodeReferenceInvalid, "stage backup references", nil)
+		}
+		return 0, Wrap(CodeRestoreFailed, "stage backup references", nil)
 	}
 	return uint64(count), nil
+}
+
+func referenceConstraintError(err error) bool {
+	var databaseError *pgconn.PgError
+	return errors.As(err, &databaseError) && strings.HasPrefix(databaseError.Code, "23")
 }
 
 func referenceCopyTarget(table TableName) (string, []string) {
@@ -123,13 +146,15 @@ func referenceCopyTarget(table TableName) (string, []string) {
 }
 
 type referenceCopySource struct {
-	ctx     context.Context
-	items   chan referenceCopyItem
-	values  []any
-	err     error
-	started bool
-	archive *Archive
-	table   TableName
+	ctx         context.Context
+	items       chan referenceCopyItem
+	values      []any
+	err         error
+	producerErr error
+	started     bool
+	done        chan struct{}
+	archive     *Archive
+	table       TableName
 }
 
 type referenceCopyItem struct {
@@ -139,7 +164,7 @@ type referenceCopyItem struct {
 }
 
 func newReferenceCopySource(ctx context.Context, archive *Archive, table TableName) *referenceCopySource {
-	return &referenceCopySource{ctx: ctx, archive: archive, table: table, items: make(chan referenceCopyItem)}
+	return &referenceCopySource{ctx: ctx, archive: archive, table: table, items: make(chan referenceCopyItem), done: make(chan struct{})}
 }
 
 func (source *referenceCopySource) Next() bool {
@@ -169,7 +194,14 @@ func (source *referenceCopySource) Values() ([]any, error) { return source.value
 
 func (source *referenceCopySource) Err() error { return source.err }
 
+func (source *referenceCopySource) wait() {
+	if source.started {
+		<-source.done
+	}
+}
+
 func (source *referenceCopySource) stream() {
+	defer close(source.done)
 	var ordinal int64
 	err := source.archive.ReadTable(source.ctx, source.table, func(raw json.RawMessage) error {
 		if ordinal == math.MaxInt64 {
@@ -187,6 +219,7 @@ func (source *referenceCopySource) stream() {
 			return source.ctx.Err()
 		}
 	})
+	source.producerErr = err
 	select {
 	case source.items <- referenceCopyItem{err: err, done: true}:
 	case <-source.ctx.Done():
@@ -211,6 +244,9 @@ func referenceValues(table TableName, ordinal int64, raw json.RawMessage) ([]any
 		record, err := decodeRunRecord(raw)
 		if err != nil {
 			return nil, err
+		}
+		if !validRunLocalSemantics(record) {
+			return nil, Wrap(CodeReferenceInvalid, "validate backup run semantics", nil)
 		}
 		return []any{ordinal, referenceUUID(record.ID), referenceUUID(record.WorkflowID), optionalReferenceUUID(record.WorkflowVersionID), optionalReferenceUUID(record.SourceRunID), optionalReferenceUUID(record.RetryOfRunID)}, nil
 	case TableNodeRuns:

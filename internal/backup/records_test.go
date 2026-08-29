@@ -106,7 +106,7 @@ func TestRecordDecodersRejectInvalidUUIDTimeJSONAndArrays(t *testing.T) {
 	}
 }
 
-func TestRunRecordDecoderEnforcesDatabaseRowConstraints(t *testing.T) {
+func TestRunRecordDecoderAcceptsLocalRelationshipSemanticCases(t *testing.T) {
 	valid := RunRecord{
 		ID: recordUUID1, WorkflowID: recordUUID2, Mode: "test", Status: "running", Input: json.RawMessage(`{}`),
 		DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)), StartedAt: time.Now().UTC(),
@@ -135,8 +135,8 @@ func TestRunRecordDecoderEnforcesDatabaseRowConstraints(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := decodeRunRecord(raw); CodeOf(err) != CodeArchiveInvalid {
-				t.Fatalf("code=%q err=%v", CodeOf(err), err)
+			if _, err := decodeRunRecord(raw); err != nil {
+				t.Fatalf("err=%v", err)
 			}
 		})
 	}

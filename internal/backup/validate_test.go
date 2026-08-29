@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -67,6 +69,94 @@ func TestStageReferencesRejectsInvalidRelationships(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStageReferencesRejectsRunLocalSemantics(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*referenceFixtureData)
+	}{
+		{"published source fields", invalidPublishedReferenceSourceFields},
+		{"test workflow version", invalidTestReferenceWorkflowVersion},
+		{"debug missing source", invalidDebugReferenceSource},
+		{"unpaired retry fields", invalidReferenceRetryPair},
+		{"agent key outside published mode", invalidReferenceAgentRequestKey},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := openReferenceFixtureArchive(t, test.mutate)
+			defer archive.Close()
+			if _, err := Inspect(context.Background(), archive.Summary().Path); err != nil {
+				t.Fatalf("inspect err=%v", err)
+			}
+			_, err := stageReferences(context.Background(), beginReferenceRollbackTransaction(t), archive)
+			if CodeOf(err) != CodeReferenceInvalid {
+				t.Fatalf("code=%q err=%v", CodeOf(err), err)
+			}
+		})
+	}
+}
+
+func TestCopyReferenceTablePreservesCancellationMapsFailuresAndStopsProducer(t *testing.T) {
+	tests := []struct {
+		name   string
+		ctx    func() (context.Context, func())
+		result error
+		want   Code
+		isCtx  bool
+	}{
+		{
+			name: "cancellation", ctx: func() (context.Context, func()) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			}, result: context.Canceled, isCtx: true,
+		},
+		{name: "runtime failure", ctx: normalReferenceContext, result: errors.New("sensitive postgres failure"), want: CodeRestoreFailed},
+		{name: "constraint failure", ctx: normalReferenceContext, result: &pgconn.PgError{Code: "23505"}, want: CodeReferenceInvalid},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := openReferenceFixtureArchive(t, nil)
+			defer archive.Close()
+			ctx, cancel := test.ctx()
+			defer cancel()
+			transaction := &copyFromStubTx{result: test.result}
+			_, err := copyReferenceTable(ctx, transaction, archive, TableWorkflows)
+			if test.isCtx {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("err=%v", err)
+				}
+			} else if CodeOf(err) != test.want {
+				t.Fatalf("code=%q err=%v", CodeOf(err), err)
+			}
+			if strings.Contains(err.Error(), "sensitive postgres failure") {
+				t.Fatalf("unsafe error=%v", err)
+			}
+			if transaction.source == nil {
+				t.Fatal("copy source was not used")
+			}
+			select {
+			case <-transaction.source.done:
+			default:
+				t.Fatal("producer did not stop after CopyFrom returned")
+			}
+		})
+	}
+}
+
+func normalReferenceContext() (context.Context, func()) { return context.Background(), func() {} }
+
+type copyFromStubTx struct {
+	pgx.Tx
+	result error
+	source *referenceCopySource
+}
+
+func (transaction *copyFromStubTx) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, source pgx.CopyFromSource) (int64, error) {
+	transaction.source = source.(*referenceCopySource)
+	transaction.source.Next()
+	return 0, transaction.result
 }
 
 func TestStrictRecordDecodersRejectArchiveOnlyInvalidValues(t *testing.T) {
@@ -255,4 +345,29 @@ func removeReferenceEventParent(data *referenceFixtureData) {
 
 func crossReferenceWorkflowCheckpointVersion(data *referenceFixtureData) {
 	data.checkpoints[0].RestoredFromVersionID = validateVersionTwo
+}
+
+func invalidPublishedReferenceSourceFields(data *referenceFixtureData) {
+	data.runs[0].SourceRunID = pointer(validateRunTwo)
+	data.runs[0].SourceNodeID = pointer("start")
+}
+
+func invalidTestReferenceWorkflowVersion(data *referenceFixtureData) {
+	data.runs[1].Mode = "test"
+	data.runs[1].WorkflowVersionID = pointer(validateVersionOne)
+	data.runs[1].DraftRevision = pointer(int64(1))
+	data.runs[1].SourceRunID = nil
+	data.runs[1].SourceNodeID = nil
+}
+
+func invalidDebugReferenceSource(data *referenceFixtureData) {
+	data.runs[1].SourceRunID = nil
+}
+
+func invalidReferenceRetryPair(data *referenceFixtureData) {
+	data.runs[2].RetryKey = nil
+}
+
+func invalidReferenceAgentRequestKey(data *referenceFixtureData) {
+	data.runs[1].AgentRequestKey = pointer(validateRetryKey)
 }

@@ -164,12 +164,16 @@ func decodeRunRecord(raw json.RawMessage) (RunRecord, error) {
 		!oneOf(record.Mode, "test", "published", "debug") || !oneOf(record.Status, "running", "cancelling", "completed", "failed", "cancelled") ||
 		!jsonObject(record.Input) || (record.GraphSnapshot != nil && !jsonObject(*record.GraphSnapshot)) ||
 		(record.Error != nil && !jsonObject(*record.Error)) || record.InputRedactedPaths == nil || !validUTC(record.StartedAt) ||
-		!validOptionalUTC(record.EndedAt) || !validOptionalUTC(record.CancelRequestedAt) || !validOptionalUTC(record.HeartbeatAt) ||
-		!validRunSourceFields(record) || (record.RetryOfRunID == nil) != (record.RetryKey == nil) ||
-		(record.AgentRequestKey != nil && record.Mode != "published") {
+		!validOptionalUTC(record.EndedAt) || !validOptionalUTC(record.CancelRequestedAt) || !validOptionalUTC(record.HeartbeatAt) {
 		return RunRecord{}, invalidRecord()
 	}
 	return record, nil
+}
+
+func validRunLocalSemantics(record RunRecord) bool {
+	return validRunSourceFields(record) &&
+		(record.RetryOfRunID == nil) == (record.RetryKey == nil) &&
+		(record.AgentRequestKey == nil || record.Mode == "published")
 }
 
 func validRunSourceFields(record RunRecord) bool {
