@@ -69,11 +69,84 @@ ruby -ryaml -e '
   end
 ' "$workflow_path"
 
+scope_probe=$(mktemp)
+trap 'rm -f "$scope_probe"' EXIT HUP INT TERM
+cat >"$scope_probe" <<'EOF'
+.PHONY: non-database-scope-probe
+
+non-database-scope-probe:
+	@if [ "$${EXPECTED_URL_STATE:-literal}" = unset ]; then \
+		test -z "$${TEST_DATABASE_URL+x}"; \
+	else \
+		test "$$TEST_DATABASE_URL" = "$$EXPECTED_TEST_DATABASE_URL"; \
+	fi
+
+db-up:
+	@:
+
+backup-create:
+	@test "$$TEST_DATABASE_URL" = "$$EXPECTED_TEST_DATABASE_URL"
+EOF
+
+assert_literal_is_not_evaluated() {
+  source=$1
+  mode=$2
+  target=$3
+  literal=$4
+  dry_run=
+  [ "$mode" != dry-run ] || dry_run=-n
+  expected_state=literal
+  if [ "$source" = command-line ] && [ "$mode" = actual ] && [ "$target" = non-database-scope-probe ]; then
+    expected_state=unset
+  fi
+  set +e
+  if [ "$source" = environment ]; then
+    output=$(TEST_DATABASE_URL="$literal" EXPECTED_TEST_DATABASE_URL="$literal" EXPECTED_URL_STATE="$expected_state" \
+      make --no-print-directory -f Makefile -f "$scope_probe" $dry_run "$target" 2>&1)
+  else
+    output=$(env -u TEST_DATABASE_URL EXPECTED_TEST_DATABASE_URL="$literal" EXPECTED_URL_STATE="$expected_state" \
+      make --no-print-directory -f Makefile -f "$scope_probe" $dry_run "$target" \
+      "TEST_DATABASE_URL=$literal" 2>&1)
+  fi
+  status=$?
+  set -e
+  if [ "$status" -ne 0 ]; then
+    printf 'Make evaluated or changed a literal TEST_DATABASE_URL (%s, %s, %s)\n' \
+      "$source" "$mode" "$target" >&2
+    return 1
+  fi
+  case "$output" in
+    *SHOULD_NOT_EXPAND*|*SENTINEL*)
+      printf 'Make evaluated a literal TEST_DATABASE_URL (%s, %s, %s)\n' \
+        "$source" "$mode" "$target" >&2
+      return 1
+      ;;
+  esac
+}
+
+env -u TEST_DATABASE_URL EXPECTED_URL_STATE=unset \
+  make --no-print-directory -f Makefile -f "$scope_probe" non-database-scope-probe >/dev/null 2>&1
+
+error_literal='$(error SHOULD_NOT_EXPAND)'
+info_literal='$(info SENTINEL)'
+for source in environment command-line; do
+  for literal in "$error_literal" "$info_literal"; do
+    assert_literal_is_not_evaluated "$source" dry-run non-database-scope-probe "$literal"
+    assert_literal_is_not_evaluated "$source" actual non-database-scope-probe "$literal"
+    assert_literal_is_not_evaluated "$source" actual backup-create "$literal"
+  done
+done
+rm -f "$scope_probe"
+
 ruby -e '
   makefile = File.read(ARGV.fetch(0))
   global_database_exports = makefile.lines.select { |line| line.strip == "export TEST_DATABASE_URL" }
   raise "TEST_DATABASE_URL must not be exported globally" unless global_database_exports.empty?
-  expected_database_export = "test-api-integration verify backup-create backup-restore-dry-run backup-restore test-backup-e2e: export TEST_DATABASE_URL := $(TEST_DATABASE_URL)"
+  normalization = "override TEST_DATABASE_URL := $(value TEST_DATABASE_URL)"
+  raise "TEST_DATABASE_URL input must be normalized without evaluation" unless makefile.lines.map(&:strip).include?(normalization)
+  direct_expansion = /:\s*export\s+TEST_DATABASE_URL\s*:=\s*\$\(TEST_DATABASE_URL\)/
+  raise "target-specific export must not directly expand TEST_DATABASE_URL" if makefile.match?(direct_expansion)
+  expected_database_export = "test-api-integration verify backup-create backup-restore-dry-run backup-restore test-backup-e2e: export TEST_DATABASE_URL := $(value TEST_DATABASE_URL)"
   raise "database targets must export their scoped URL" unless makefile.lines.map(&:strip).include?(expected_database_export)
   expected = {
     "verify" => "@TEST_DATABASE_URL=\"$$TEST_DATABASE_URL\" CGO_ENABLED=0 go test -p 1 ./... -count=1",

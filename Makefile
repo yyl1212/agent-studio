@@ -1,6 +1,7 @@
 .PHONY: db-up db-down observability-up observability-down observability-check observability-verify dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e backup-create backup-inspect backup-restore-dry-run backup-restore test-backup-e2e verify-backup-docs verify-backup-fixture release-tools release-check release-snapshot release-preflight verify-workflows verify-release
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
+override TEST_DATABASE_URL := $(value TEST_DATABASE_URL)
 EXTERNAL_DB ?= 0
 RELEASE_TOOLS_DIR ?= $(CURDIR)/.release-tools/bin
 GORELEASER ?= $(RELEASE_TOOLS_DIR)/goreleaser
@@ -11,7 +12,7 @@ export OUTPUT
 export BACKUP
 export CONFIRM
 
-test-api-integration verify backup-create backup-restore-dry-run backup-restore test-backup-e2e: export TEST_DATABASE_URL := $(TEST_DATABASE_URL)
+test-api-integration verify backup-create backup-restore-dry-run backup-restore test-backup-e2e: export TEST_DATABASE_URL := $(value TEST_DATABASE_URL)
 
 db-up:
 	docker compose up -d --wait db

@@ -65,10 +65,6 @@ case "${EXPECTED_MODE:-}" in
     [ "$4" = "restore" ] && [ "$5" = "--confirm-empty-instance" ] && [ "$6" = "$EXPECTED_PATH" ]
     [ "$DATABASE_URL" = "$EXPECTED_DATABASE_URL" ]
     ;;
-  no-database-url)
-    [ -z "${TEST_DATABASE_URL+x}" ]
-    exec "$REAL_GO" "$@"
-    ;;
   must-not-run)
     exit 97
     ;;
@@ -198,18 +194,3 @@ assert_dry_run_safe backup-restore "BACKUP=$backup_path" CONFIRM=empty-instance
 assert_dry_run_safe test-api-integration
 assert_dry_run_safe verify
 assert_dry_run_safe test-backup-e2e EXTERNAL_DB=1
-
-non_db_failures=0
-real_go=$(command -v go)
-for target in verify-backup-fixture verify-go-quick; do
-  if ! env -u TEST_DATABASE_URL \
-    PATH="$test_root/bin:$PATH" \
-    CGO_ENABLED=0 \
-    REAL_GO="$real_go" \
-    EXPECTED_MODE=no-database-url \
-    make --no-print-directory "$target" >/dev/null 2>&1; then
-    printf 'non-database Make target received TEST_DATABASE_URL: %s\n' "$target" >&2
-    non_db_failures=1
-  fi
-done
-exit "$non_db_failures"
