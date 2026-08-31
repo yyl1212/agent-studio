@@ -19,8 +19,8 @@ func TestRunTopLevelCommands(t *testing.T) {
 		wantOut  string
 		wantErr  string
 	}{
-		{name: "empty shows help", wantCode: 0, wantOut: "backup create\nbackup inspect\ndoctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"},
-		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "backup create\nbackup inspect\ndoctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"},
+		{name: "empty shows help", wantCode: 0, wantOut: "backup create\nbackup inspect\nbackup restore\ndoctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"},
+		{name: "help", args: []string{"help"}, wantCode: 0, wantOut: "backup create\nbackup inspect\nbackup restore\ndoctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"},
 		{name: "unknown", args: []string{"missing"}, wantCode: 2, wantErr: "unknown command \"missing\"\n"},
 		{name: "missing node subcommand", args: []string{"node"}, wantCode: 2, wantErr: "node requires index, info, init, inspect, package, search, or test\n"},
 		{name: "unknown node subcommand", args: []string{"node", "missing"}, wantCode: 2, wantErr: "unknown node command \"missing\"\n"},

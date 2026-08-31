@@ -12,7 +12,7 @@ import (
 	"github.com/yyl1212/agent-studio/internal/scaffold"
 )
 
-const helpText = "backup create\nbackup inspect\ndoctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"
+const helpText = "backup create\nbackup inspect\nbackup restore\ndoctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"
 
 type appDependencies struct {
 	backup          func(context.Context, []string, io.Writer, io.Writer) int

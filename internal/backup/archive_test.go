@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -325,6 +326,38 @@ func TestVerifyJSONLRejectsActualBytesAtDeclaredBoundary(t *testing.T) {
 	actual := []byte("{}\n{}\n")
 	err := verifyJSONL(context.Background(), bytes.NewReader(actual), uint64(len(declared)), 1, digest(declared), nil)
 	if CodeOf(err) != CodeChecksumMismatch {
+		t.Fatalf("code=%q err=%v", CodeOf(err), err)
+	}
+}
+
+func TestOpenArchiveRejectsManifestRecordCountMismatch(t *testing.T) {
+	body := []byte("{}\n")
+	tables := make([]TableManifest, 0, len(TableOrder))
+	entries := make([]zipFixtureEntry, 0, archiveEntries)
+	for _, name := range TableOrder {
+		path, _ := tablePath(name)
+		records := uint64(1)
+		if name == TableWorkflows {
+			records = 2
+		}
+		tables = append(tables, TableManifest{Name: name, Path: path, Records: records, UncompressedBytes: uint64(len(body)), Digest: digest(body)})
+		entries = append(entries, zipFixtureEntry{name: path, body: body, mode: 0o600})
+	}
+	manifest := manifestFixture(time.Now().UTC())
+	manifest.Tables = tables
+	manifest.DatasetDigest = datasetDigest(tables)
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksumLines := append([]string{checksumLine(digest(manifestBody), manifestPath)}, checksumLines(tables)...)
+	sort.Slice(checksumLines, func(i, j int) bool { return checksumPath(checksumLines[i]) < checksumPath(checksumLines[j]) })
+	checksumBody := []byte(strings.Join(checksumLines, ""))
+	entries = append(entries,
+		zipFixtureEntry{name: manifestPath, body: manifestBody, mode: 0o600},
+		zipFixtureEntry{name: checksumsPath, body: checksumBody, mode: 0o600},
+	)
+	if _, err := OpenArchive(context.Background(), writeZipFixture(t, entries)); CodeOf(err) != CodeArchiveInvalid {
 		t.Fatalf("code=%q err=%v", CodeOf(err), err)
 	}
 }
