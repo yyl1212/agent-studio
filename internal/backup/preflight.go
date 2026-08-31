@@ -23,11 +23,8 @@ type importerKey struct {
 	MigrationVersion int64
 }
 
-// importer marks an explicitly supported archive representation. Import execution is
-// deliberately owned by the restore operation, not by the dry-run preflight.
-type importer func()
-
-func importV1Alpha1Migration6() {}
+// importer restores one explicitly supported archive representation.
+type importer func(context.Context, *database.MaintenanceLease, *Archive, RestorePlan, restoreHooks) (RestoreResult, error)
 
 var importers = map[importerKey]importer{
 	{APIVersion: APIVersion, MigrationVersion: 6}: importV1Alpha1Migration6,
