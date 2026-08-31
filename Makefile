@@ -41,7 +41,7 @@ test-api-integration: db-up
 	TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test ./apps/api/internal/store/postgres -count=1 -v
 
 verify: db-up check-generated
-	TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test ./... -count=1
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test -p 1 ./... -count=1
 	CGO_ENABLED=0 go vet ./...
 	corepack pnpm@10.34.5 --filter @agent-studio/web generate:api
 	git diff --exit-code -- apps/web/src/lib/api/generated.ts
@@ -50,7 +50,7 @@ verify: db-up check-generated
 	corepack pnpm@10.34.5 build
 
 verify-go-quick: check-generated verify-backup-docs verify-backup-fixture
-	CGO_ENABLED=0 go test ./... -count=1
+	CGO_ENABLED=0 go test -p 1 ./... -count=1
 	CGO_ENABLED=0 go vet ./...
 	sh scripts/check-version_test.sh
 	sh scripts/check-release-artifacts_test.sh

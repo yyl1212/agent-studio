@@ -58,6 +58,27 @@ ruby -ryaml -e '
   end
 ' "$workflow_path"
 
+ruby -e '
+  makefile = File.read(ARGV.fetch(0))
+  expected = {
+    "verify" => "TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test -p 1 ./... -count=1",
+    "verify-go-quick" => "CGO_ENABLED=0 go test -p 1 ./... -count=1"
+  }
+  failures = []
+  expected.each do |target, command|
+    match = makefile.match(/^#{Regexp.escape(target)}:[^\n]*\n((?:\t[^\n]*\n)+)/)
+    unless match
+      failures << "missing Make target #{target}"
+      next
+    end
+    go_tests = match[1].lines.map(&:strip).select do |line|
+      line.include?("go test") && line.include?("./...")
+    end
+    failures << "#{target} must run exactly #{command.inspect}, got #{go_tests.inspect}" unless go_tests == [command]
+  end
+  raise failures.join("\n") unless failures.empty?
+' Makefile
+
 if [ "${BACKUP_WORKFLOW_MUTATION_CHILD:-0}" = "1" ]; then
   exit 0
 fi
