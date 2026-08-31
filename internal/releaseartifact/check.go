@@ -225,9 +225,13 @@ func VerifyTarget(config Config) error {
 	if err != nil {
 		return fmt.Errorf("run CLI help: %w", err)
 	}
-	for _, line := range []string{"backup create\n", "backup inspect\n", "backup restore\n"} {
-		if !strings.Contains(help, line) {
-			return fmt.Errorf("missing backup command %q", strings.TrimSpace(line))
+	helpLines := make(map[string]struct{})
+	for _, line := range strings.Split(help, "\n") {
+		helpLines[line] = struct{}{}
+	}
+	for _, command := range []string{"backup create", "backup inspect", "backup restore"} {
+		if _, ok := helpLines[command]; !ok {
+			return fmt.Errorf("missing backup command %q", command)
 		}
 	}
 	return nil
@@ -287,7 +291,7 @@ func runCLICommand(cliPath string, args []string, timeout time.Duration, outputL
 	command.Stderr = output
 	err := command.Run()
 	content := output.String()
-	if err := classifyVersionCommandError(err, ctx.Err(), output.Exceeded(), content); err != nil {
+	if err := classifyCLICommandError(strings.Join(args, " "), err, ctx.Err(), output.Exceeded(), content); err != nil {
 		return content, err
 	}
 	return content, nil
@@ -298,14 +302,18 @@ func runVersionCommand(cliPath string, timeout time.Duration, outputLimit int) (
 }
 
 func classifyVersionCommandError(runErr, contextErr error, outputExceeded bool, content string) error {
+	return classifyCLICommandError("version", runErr, contextErr, outputExceeded, content)
+}
+
+func classifyCLICommandError(commandName string, runErr, contextErr error, outputExceeded bool, content string) error {
 	if outputExceeded {
-		return errors.New("agent-studio version output exceeds size limit")
+		return fmt.Errorf("agent-studio %s output exceeds size limit", commandName)
 	}
 	if errors.Is(contextErr, context.DeadlineExceeded) {
-		return errors.New("agent-studio version timed out")
+		return fmt.Errorf("agent-studio %s timed out", commandName)
 	}
 	if runErr != nil {
-		return fmt.Errorf("execute agent-studio version: %w: %s", runErr, strings.TrimSpace(content))
+		return fmt.Errorf("execute agent-studio %s: %w: %s", commandName, runErr, strings.TrimSpace(content))
 	}
 	return nil
 }
