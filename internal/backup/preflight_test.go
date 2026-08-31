@@ -53,18 +53,46 @@ func TestDryRunUsesExclusiveLeaseSessionWithSingleConnection(t *testing.T) {
 
 func TestDryRunFailsWhenExclusiveLeaseConnectionIsTerminated(t *testing.T) {
 	pool := openUnmigratedTarget(t)
-	archivePath := slowReferenceArchivePath(t, 50000)
+	archivePath := referenceArchivePath(t, 6)
+	leaseBackend := make(chan int32, 1)
+	hookFailure := make(chan error, 1)
+	continuePreflight := make(chan struct{})
+	defer func() {
+		select {
+		case <-continuePreflight:
+		default:
+			close(continuePreflight)
+		}
+	}()
 	result := make(chan error, 1)
 	go func() {
-		_, err := DryRun(context.Background(), pool, archivePath)
+		_, err := dryRunWithHooks(context.Background(), pool, archivePath, dryRunHooks{
+			afterLeaseTransaction: func(ctx context.Context, transaction pgx.Tx) {
+				var backendPID int32
+				if err := transaction.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&backendPID); err != nil {
+					hookFailure <- err
+					return
+				}
+				leaseBackend <- backendPID
+				<-continuePreflight
+			},
+		})
 		result <- err
 	}()
 
-	backendPID := waitForExclusiveMaintenanceBackend(t, pool)
+	var backendPID int32
+	select {
+	case backendPID = <-leaseBackend:
+	case err := <-hookFailure:
+		t.Fatal(err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("dry-run did not expose its lease transaction")
+	}
 	var terminated bool
 	if err := pool.QueryRow(context.Background(), `SELECT pg_terminate_backend($1)`, backendPID).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate backend=%t err=%v", terminated, err)
 	}
+	close(continuePreflight)
 	select {
 	case err := <-result:
 		if CodeOf(err) != CodeRestoreFailed {
@@ -242,43 +270,6 @@ func openUnmigratedTargetWithMaxConns(t *testing.T, maxConns int32) *pgxpool.Poo
 		backupDatabaseMutex.Unlock()
 	})
 	return pool
-}
-
-func slowReferenceArchivePath(t *testing.T, extraWorkflows int) string {
-	t.Helper()
-	data := newReferenceFixtureData()
-	for index := 0; index < extraWorkflows; index++ {
-		id := fmt.Sprintf("00000000-0000-0000-0000-%012d", 1000+index)
-		data.workflows = append(data.workflows, WorkflowRecord{
-			ID: id, Name: id, Slug: "workflow-" + id, Description: "", DraftGraph: json.RawMessage(`{}`),
-			DraftRevision: 1, CreatedAt: time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC),
-			UpdatedAt: time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC), AgentPresentation: json.RawMessage(`{}`),
-		})
-	}
-	path := filepath.Join(t.TempDir(), "slow-references.asbak")
-	if _, err := WriteArchive(context.Background(), path, manifestFixture(time.Now().UTC()), referenceFixtureWriters(t, data)); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func waitForExclusiveMaintenanceBackend(t *testing.T, pool *pgxpool.Pool) int32 {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		var backendPID *int32
-		err := pool.QueryRow(context.Background(), `SELECT pid
-			FROM pg_locks
-			WHERE locktype='advisory' AND mode='ExclusiveLock' AND granted
-			ORDER BY pid
-			LIMIT 1`).Scan(&backendPID)
-		if err == nil && backendPID != nil {
-			return *backendPID
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("exclusive maintenance lease was not acquired")
-	return 0
 }
 
 func referenceArchivePath(t *testing.T, migrationVersion int64) string {

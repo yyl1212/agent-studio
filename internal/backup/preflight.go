@@ -33,8 +33,16 @@ var importers = map[importerKey]importer{
 	{APIVersion: APIVersion, MigrationVersion: 6}: importV1Alpha1Migration6,
 }
 
+type dryRunHooks struct {
+	afterLeaseTransaction func(context.Context, pgx.Tx)
+}
+
 // DryRun validates an archive and its restore prerequisites without changing the target.
 func DryRun(ctx context.Context, pool *pgxpool.Pool, path string) (RestorePlan, error) {
+	return dryRunWithHooks(ctx, pool, path, dryRunHooks{})
+}
+
+func dryRunWithHooks(ctx context.Context, pool *pgxpool.Pool, path string, hooks dryRunHooks) (RestorePlan, error) {
 	archive, err := OpenArchive(ctx, path)
 	if err != nil {
 		return RestorePlan{}, err
@@ -52,7 +60,7 @@ func DryRun(ctx context.Context, pool *pgxpool.Pool, path string) (RestorePlan, 
 	preflightContext, stopMonitoring := monitorLeaseLoss(ctx, lease.MonitorConnectionLoss())
 	defer stopMonitoring()
 
-	plan, err := preflightWithLease(preflightContext, lease, archive)
+	plan, err := preflightWithLeaseAndHooks(preflightContext, lease, archive, hooks)
 	if ctx.Err() == nil && context.Cause(preflightContext) != nil {
 		return RestorePlan{}, Wrap(CodeRestoreFailed, "target maintenance lease lost", context.Cause(preflightContext))
 	}
@@ -62,6 +70,10 @@ func DryRun(ctx context.Context, pool *pgxpool.Pool, path string) (RestorePlan, 
 // preflightWithLease validates a verified archive while the caller holds the target's
 // exclusive maintenance lease. It never opens the archive, runs migrations, or commits.
 func preflightWithLease(ctx context.Context, lease *database.MaintenanceLease, archive *Archive) (RestorePlan, error) {
+	return preflightWithLeaseAndHooks(ctx, lease, archive, dryRunHooks{})
+}
+
+func preflightWithLeaseAndHooks(ctx context.Context, lease *database.MaintenanceLease, archive *Archive, hooks dryRunHooks) (RestorePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return RestorePlan{}, err
 	}
@@ -107,6 +119,9 @@ func preflightWithLease(ctx context.Context, lease *database.MaintenanceLease, a
 		return RestorePlan{}, Wrap(CodeRestoreFailed, "begin backup reference validation", err)
 	}
 	defer transaction.Rollback(context.Background())
+	if hooks.afterLeaseTransaction != nil {
+		hooks.afterLeaseTransaction(ctx, transaction)
+	}
 
 	targetEmpty, err := targetIsEmpty(ctx, transaction)
 	if err != nil {
