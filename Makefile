@@ -1,4 +1,4 @@
-.PHONY: db-up db-down observability-up observability-down observability-check observability-verify dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e backup-create backup-inspect backup-restore-dry-run backup-restore test-backup-e2e release-tools release-check release-snapshot release-preflight verify-workflows verify-release
+.PHONY: db-up db-down observability-up observability-down observability-check observability-verify dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e backup-create backup-inspect backup-restore-dry-run backup-restore test-backup-e2e verify-backup-docs verify-backup-fixture release-tools release-check release-snapshot release-preflight verify-workflows verify-release
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
 RELEASE_TOOLS_DIR ?= $(CURDIR)/.release-tools/bin
@@ -49,11 +49,17 @@ verify: db-up check-generated
 	corepack pnpm@10.34.5 test
 	corepack pnpm@10.34.5 build
 
-verify-go-quick: check-generated
+verify-go-quick: check-generated verify-backup-docs verify-backup-fixture
 	CGO_ENABLED=0 go test ./... -count=1
 	CGO_ENABLED=0 go vet ./...
 	sh scripts/check-version_test.sh
 	sh scripts/check-release-artifacts_test.sh
+
+verify-backup-docs:
+	sh scripts/check-backup-docs_test.sh
+
+verify-backup-fixture:
+	CGO_ENABLED=0 go run ./internal/backup/testdata/generate --check
 
 verify-web-quick:
 	corepack pnpm@10.34.5 --filter @agent-studio/web generate:api

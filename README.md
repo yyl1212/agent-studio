@@ -113,6 +113,20 @@ Studio 顶部“版本历史”已支持发布版本时间线、任意两个快�
 
 健康检查：`GET http://localhost:8080/healthz`；就绪检查还会验证 PostgreSQL 与最新 migration：`GET http://localhost:8080/readyz`。
 
+## 实例备份与恢复
+
+实例备份覆盖工作流、版本和完整运行记录，归档为敏感明文文件；创建文件权限为 `0600`，但不内置加密。请将归档放在加密磁盘或使用外部加密工具，并在恢复前停止 API。完整安全边界、空实例检查、正式恢复清单和故障处理见[实例备份与恢复](docs/backup-restore.md)。
+
+仅展示日常创建、离线检查和目标 dry-run；所有涉及数据库的 CLI 命令从 `DATABASE_URL` 环境变量读取连接：
+
+```bash
+DATABASE_URL='postgres://user:password@host:5432/agent_studio?sslmode=disable' \
+  agent-studio backup create --output ./backups/studio-20260829.asbak
+agent-studio backup inspect ./backups/studio-20260829.asbak
+DATABASE_URL='postgres://user:password@target-host:5432/agent_studio?sslmode=disable' \
+  agent-studio backup restore --dry-run ./backups/studio-20260829.asbak
+```
+
 ## 调试回放与局部重跑
 
 完成一次测试、发布版本运行或局部调试后，在工作流顶部进入“运行记录”，点击目标运行的“调试回放”。回放页不会再次执行节点：画布保持只读，右侧时间线按持久化事件序号展示运行与节点状态；点击时间线事件或画布节点，可以检查该节点当时的输入、输出、活动端口、耗时、脱敏路径和公开错误。局部重跑产生的新运行会显示来源运行链接，便于沿调试链返回原始现场。
@@ -236,6 +250,12 @@ make test-sdk-e2e
 ```
 
 `make verify` 会检查节点生成代码，启动数据库，运行全部 Go 测试、`go vet`、OpenAPI 类型再生成差异检查、前端类型检查、组件测试和生产构建。`make test-e2e` 使用真实浏览器验证创建、配置、连线、测试、发布、版本绑定和 Agent 运行；`make test-sdk-e2e` 额外验证临时 Module 的 CLI 黄金路径和通用画布 Echo 节点。
+
+备份交付门禁也包含在 `make verify-go-quick`：它会检查备份文档的安全契约和仓库黄金备份 fixture。需要 Docker PostgreSQL 的完整备份恢复路径时运行：
+
+```bash
+make test-backup-e2e
+```
 
 单独调试：
 
