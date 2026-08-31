@@ -129,6 +129,118 @@ func TestBackupCommandRejectsInvalidArguments(t *testing.T) {
 	}
 }
 
+func TestBackupRestoreRequiresOneExplicitMode(t *testing.T) {
+	for _, args := range [][]string{
+		{"restore", "fixture.asbak"},
+		{"restore", "--dry-run", "--confirm-empty-instance", "fixture.asbak"},
+		{"restore", "--confirm-empty-instance"},
+		{"restore", "fixture.asbak", "--dry-run"},
+	} {
+		var stderr bytes.Buffer
+		code := backupCommandWithDependencies(context.Background(), args, io.Discard, &stderr, backupCommandDependencies{})
+		if code != 2 || stderr.String() != "backup restore usage: backup restore --dry-run <path> | backup restore --confirm-empty-instance <path>\n" {
+			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
+		}
+	}
+}
+
+func TestBackupRestoreRequiresDatabaseURL(t *testing.T) {
+	for _, args := range [][]string{{"restore", "--dry-run", "fixture.asbak"}, {"restore", "--confirm-empty-instance", "fixture.asbak"}} {
+		var stderr bytes.Buffer
+		code := backupCommandWithDependencies(context.Background(), args, io.Discard, &stderr, backupCommandDependencies{
+			lookupEnv: func(string) (string, bool) { return "", false },
+		})
+		if code != 1 || stderr.String() != "BACKUP_RESTORE_FAILED: DATABASE_URL is required\n" {
+			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
+		}
+	}
+}
+
+func TestBackupRestoreRoutesModesAndPrintsSafeSummaries(t *testing.T) {
+	secret := "postgres://user:secret@example/database"
+	summary := backupSummaryFixture("fixture.asbak")
+	summary.Tables = []backupdomain.TableManifest{{Name: backupdomain.TableWorkflows, Records: 1}, {Name: backupdomain.TableRuns, Records: 3}}
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "dry run", args: []string{"restore", "--dry-run", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha1\narchive-migration: 6\ntarget-migration: 0\nlatest-migration: 6\npending-migrations: 1,2,3,4,5,6\nrecords: 4\nworkflows: 1\nruns: 3\ntarget-empty: true\n"},
+		{name: "restore", args: []string{"restore", "--confirm-empty-instance", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha1\narchive-migration: 6\ncommitted-migration: 6\nrecords: 4\nworkflows: 1\nruns: 3\nrestored: true\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			dryRunCalled, restoreCalled := false, false
+			code := backupCommandWithDependencies(context.Background(), test.args, &stdout, &stderr, backupCommandDependencies{
+				lookupEnv: func(name string) (string, bool) { return secret, name == "DATABASE_URL" },
+				openPool:  func(context.Context, string) (*pgxpool.Pool, error) { return nil, nil },
+				closePool: func(*pgxpool.Pool) {},
+				dryRun: func(_ context.Context, _ *pgxpool.Pool, path string) (backupdomain.RestorePlan, error) {
+					dryRunCalled = true
+					if path != "fixture.asbak" {
+						t.Fatalf("path=%q", path)
+					}
+					return backupdomain.RestorePlan{Archive: summary, TargetMigrationVersion: 0, LatestMigrationVersion: 6, PendingMigrations: []int64{1, 2, 3, 4, 5, 6}, TargetEmpty: true}, nil
+				},
+				restore: func(_ context.Context, _ *pgxpool.Pool, path string) (backupdomain.RestoreResult, error) {
+					restoreCalled = true
+					if path != "fixture.asbak" {
+						t.Fatalf("path=%q", path)
+					}
+					return backupdomain.RestoreResult{Summary: summary, MigrationVersion: 6, Tables: map[backupdomain.TableName]uint64{backupdomain.TableWorkflows: 1, backupdomain.TableRuns: 3}}, nil
+				},
+			})
+			if code != 0 || stdout.String() != test.want || stderr.Len() != 0 || strings.Contains(stdout.String(), secret) || strings.Contains(stderr.String(), secret) {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if test.name == "dry run" && (!dryRunCalled || restoreCalled) {
+				t.Fatalf("dryRun=%t restore=%t", dryRunCalled, restoreCalled)
+			}
+			if test.name == "restore" && (dryRunCalled || !restoreCalled) {
+				t.Fatalf("dryRun=%t restore=%t", dryRunCalled, restoreCalled)
+			}
+		})
+	}
+}
+
+func TestBackupRestoreUsesSafeFailureOutput(t *testing.T) {
+	const secret = "postgres://user:sentinel-password@example/database"
+	for _, test := range []struct {
+		name string
+		deps backupCommandDependencies
+		want string
+	}{
+		{name: "open pool", deps: backupCommandDependencies{
+			lookupEnv: func(string) (string, bool) { return secret, true },
+			openPool:  func(context.Context, string) (*pgxpool.Pool, error) { return nil, errors.New(secret) },
+		}, want: "BACKUP_RESTORE_FAILED: open target database\n"},
+		{name: "api running", deps: backupCommandDependencies{
+			lookupEnv: func(string) (string, bool) { return secret, true }, openPool: func(context.Context, string) (*pgxpool.Pool, error) { return nil, nil }, closePool: func(*pgxpool.Pool) {},
+			dryRun: func(context.Context, *pgxpool.Pool, string) (backupdomain.RestorePlan, error) {
+				return backupdomain.RestorePlan{}, backupdomain.Wrap(backupdomain.CodeAPIRunning, "secret "+secret, errors.New(secret))
+			},
+		}, want: "BACKUP_API_RUNNING: dry-run backup\n"},
+		{name: "target not empty", deps: backupCommandDependencies{
+			lookupEnv: func(string) (string, bool) { return secret, true }, openPool: func(context.Context, string) (*pgxpool.Pool, error) { return nil, nil }, closePool: func(*pgxpool.Pool) {},
+			restore: func(context.Context, *pgxpool.Pool, string) (backupdomain.RestoreResult, error) {
+				return backupdomain.RestoreResult{}, backupdomain.Wrap(backupdomain.CodeTargetNotEmpty, "secret "+secret, errors.New(secret))
+			},
+		}, want: "BACKUP_TARGET_NOT_EMPTY: restore backup\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			args := []string{"restore", "--dry-run", "fixture.asbak"}
+			if test.name == "target not empty" {
+				args[1] = "--confirm-empty-instance"
+			}
+			code := backupCommandWithDependencies(context.Background(), args, &stdout, &stderr, test.deps)
+			if code != 1 || stdout.Len() != 0 || stderr.String() != test.want || strings.Contains(stdout.String(), secret) || strings.Contains(stderr.String(), secret) {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func backupSummaryFixture(path string) backupdomain.Summary {
 	return backupdomain.Summary{
 		Path: path, APIVersion: backupdomain.APIVersion, CreatedAt: time.Now().UTC(), RuntimeVersion: "0.5.0-test",
