@@ -71,6 +71,10 @@ ruby -ryaml -e '
 
 ruby -e '
   makefile = File.read(ARGV.fetch(0))
+  global_database_exports = makefile.lines.select { |line| line.strip == "export TEST_DATABASE_URL" }
+  raise "TEST_DATABASE_URL must not be exported globally" unless global_database_exports.empty?
+  expected_database_export = "test-api-integration verify backup-create backup-restore-dry-run backup-restore test-backup-e2e: export TEST_DATABASE_URL := $(TEST_DATABASE_URL)"
+  raise "database targets must export their scoped URL" unless makefile.lines.map(&:strip).include?(expected_database_export)
   expected = {
     "verify" => "@TEST_DATABASE_URL=\"$$TEST_DATABASE_URL\" CGO_ENABLED=0 go test -p 1 ./... -count=1",
     "verify-go-quick" => "CGO_ENABLED=0 go test -p 1 ./... -count=1"

@@ -7,10 +7,11 @@ GORELEASER ?= $(RELEASE_TOOLS_DIR)/goreleaser
 SYFT ?= $(RELEASE_TOOLS_DIR)/syft
 ACTIONLINT_VERSION ?= v1.7.12
 
-export TEST_DATABASE_URL
 export OUTPUT
 export BACKUP
 export CONFIRM
+
+test-api-integration verify backup-create backup-restore-dry-run backup-restore test-backup-e2e: export TEST_DATABASE_URL := $(TEST_DATABASE_URL)
 
 db-up:
 	docker compose up -d --wait db
