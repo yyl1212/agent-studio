@@ -11,8 +11,19 @@ ruby -ryaml -e '
   raise "wrong timeout" unless job.fetch("timeout-minutes") == 15
   service = job.fetch("services").fetch("postgres")
   raise "postgres image not pinned" unless service.fetch("image") == "postgres:18"
+  raise "postgres port must be localhost 5432" unless service.fetch("ports") == ["5432:5432"]
+  expected_service_env = {
+    "POSTGRES_DB" => "agent_studio",
+    "POSTGRES_USER" => "agent",
+    "POSTGRES_PASSWORD" => "agent"
+  }
+  raise "postgres credentials changed" unless service.fetch("env") == expected_service_env
+  expected_health = "--health-cmd \"pg_isready -U agent -d agent_studio\" --health-interval 2s --health-timeout 3s --health-retries 30"
+  actual_health = service.fetch("options").split.join(" ")
+  raise "postgres health options changed" unless actual_health == expected_health
   env = job.fetch("env")
   raise "CGO disabled missing" unless env.fetch("CGO_ENABLED") == "0"
+  raise "external database mode missing" unless env.fetch("EXTERNAL_DB") == "1"
   steps = job.fetch("steps")
   raise "unexpected backup recovery step count" unless steps.length == 3
   runs = steps.map { |step| step["run"] }.compact
@@ -61,7 +72,7 @@ ruby -ryaml -e '
 ruby -e '
   makefile = File.read(ARGV.fetch(0))
   expected = {
-    "verify" => "TEST_DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go test -p 1 ./... -count=1",
+    "verify" => "@TEST_DATABASE_URL=\"$$TEST_DATABASE_URL\" CGO_ENABLED=0 go test -p 1 ./... -count=1",
     "verify-go-quick" => "CGO_ENABLED=0 go test -p 1 ./... -count=1"
   }
   failures = []
@@ -76,8 +87,54 @@ ruby -e '
     end
     failures << "#{target} must run exactly #{command.inspect}, got #{go_tests.inspect}" unless go_tests == [command]
   end
+  recipe_lines = makefile.lines.select { |line| line.start_with?("\t") }
+  forbidden = ["$(OUTPUT)", "$(BACKUP)", "$(CONFIRM)", "$(TEST_DATABASE_URL)"]
+  forbidden.each do |expansion|
+    raise "Make recipe directly expands #{expansion}" if recipe_lines.any? { |line| line.include?(expansion) }
+  end
+  sensitive_commands = [
+    "@TEST_DATABASE_URL=\"$$TEST_DATABASE_URL\" CGO_ENABLED=0 go test ./apps/api/internal/store/postgres -count=1 -v",
+    "@TEST_DATABASE_URL=\"$$TEST_DATABASE_URL\" CGO_ENABLED=0 go test -p 1 ./... -count=1",
+    "@DATABASE_URL=\"$$TEST_DATABASE_URL\" CGO_ENABLED=0 go run ./cmd/agent-studio backup create --output \"$$OUTPUT\"",
+    "CGO_ENABLED=0 go run ./cmd/agent-studio backup inspect \"$$BACKUP\"",
+    "@DATABASE_URL=\"$$TEST_DATABASE_URL\" CGO_ENABLED=0 go run ./cmd/agent-studio backup restore --dry-run \"$$BACKUP\"",
+    "@DATABASE_URL=\"$$TEST_DATABASE_URL\" CGO_ENABLED=0 go run ./cmd/agent-studio backup restore --confirm-empty-instance \"$$BACKUP\"",
+    "@TEST_DATABASE_URL=\"$$TEST_DATABASE_URL\" sh scripts/test-backup-e2e.sh"
+  ]
+  stripped_lines = recipe_lines.map(&:strip)
+  sensitive_commands.each do |command|
+    raise "missing safe Make recipe #{command.inspect}" unless stripped_lines.include?(command)
+  end
   raise failures.join("\n") unless failures.empty?
 ' Makefile
+
+ruby -e '
+  wrapper = File.read(ARGV.fetch(0))
+  expected = "go test ./internal/backup -run '\''^(TestBackupRestoreE2E|TestCurrentRuntimeRestoresV1Alpha1GoldenArchive)$'\'' -count=1 -v"
+  raise "backup E2E wrapper must run round-trip and golden compatibility tests" unless wrapper.include?(expected)
+' scripts/test-backup-e2e.sh
+
+external_plan=$(EXTERNAL_DB=1 make -n test-backup-e2e)
+case "$external_plan" in
+  *"docker compose up -d --wait db"*)
+    printf '%s\n' 'external database mode must not start the Compose database' >&2
+    exit 1
+    ;;
+  *"sh scripts/test-backup-e2e.sh"*) ;;
+  *)
+    printf '%s\n' 'external database mode must run the backup E2E wrapper' >&2
+    exit 1
+    ;;
+esac
+
+local_plan=$(env -u EXTERNAL_DB make -n test-backup-e2e)
+case "$local_plan" in
+  *"docker compose up -d --wait db"*"sh scripts/test-backup-e2e.sh"*) ;;
+  *)
+    printf '%s\n' 'default local mode must start Compose before the backup E2E wrapper' >&2
+    exit 1
+    ;;
+esac
 
 if [ "${BACKUP_WORKFLOW_MUTATION_CHILD:-0}" = "1" ]; then
   exit 0
@@ -110,12 +167,35 @@ ruby -ryaml -e '
   url = duplicate_url.fetch("jobs").fetch("backup-recovery").fetch("env").fetch("TEST_DATABASE_URL")
   duplicate_url["env"] = {"TEST_DATABASE_URL" => url}
   File.write(File.join(output_dir, "duplicate-test-database-url.yml"), YAML.dump(duplicate_url))
+
+  missing_ports = clone.call
+  missing_ports.fetch("jobs").fetch("backup-recovery").fetch("services").fetch("postgres").delete("ports")
+  File.write(File.join(output_dir, "missing-postgres-ports.yml"), YAML.dump(missing_ports))
+
+  missing_health = clone.call
+  missing_health.fetch("jobs").fetch("backup-recovery").fetch("services").fetch("postgres").delete("options")
+  File.write(File.join(output_dir, "missing-postgres-health.yml"), YAML.dump(missing_health))
+
+  wrong_credentials = clone.call
+  wrong_credentials.fetch("jobs").fetch("backup-recovery").fetch("services").fetch("postgres").fetch("env")["POSTGRES_PASSWORD"] = "wrong"
+  File.write(File.join(output_dir, "wrong-postgres-credentials.yml"), YAML.dump(wrong_credentials))
+
+  missing_external_db = clone.call
+  missing_external_db.fetch("jobs").fetch("backup-recovery").fetch("env").delete("EXTERNAL_DB")
+  File.write(File.join(output_dir, "missing-external-db.yml"), YAML.dump(missing_external_db))
 ' "$workflow_path" "$mutation_dir"
 
 BACKUP_WORKFLOW_MUTATION_CHILD=1 sh "$0" "$mutation_dir/control.yml"
 
 mutation_failures=0
-for mutation in reusable-job-uses.yml missing-go-version-file.yml duplicate-test-database-url.yml; do
+for mutation in \
+  reusable-job-uses.yml \
+  missing-go-version-file.yml \
+  duplicate-test-database-url.yml \
+  missing-postgres-ports.yml \
+  missing-postgres-health.yml \
+  wrong-postgres-credentials.yml \
+  missing-external-db.yml; do
   if BACKUP_WORKFLOW_MUTATION_CHILD=1 sh "$0" "$mutation_dir/$mutation" >/dev/null 2>&1; then
     printf '%s\n' "workflow mutation accepted: $mutation" >&2
     mutation_failures=1

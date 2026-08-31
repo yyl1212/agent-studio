@@ -7,4 +7,4 @@ if [ -z "${TEST_DATABASE_URL:-}" ]; then
 fi
 
 BACKUP_E2E=1 TEST_DATABASE_URL="$TEST_DATABASE_URL" CGO_ENABLED=0 \
-  go test ./internal/backup -run '^TestBackupRestoreE2E$' -count=1 -v
+  go test ./internal/backup -run '^(TestBackupRestoreE2E|TestCurrentRuntimeRestoresV1Alpha1GoldenArchive)$' -count=1 -v

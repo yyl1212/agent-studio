@@ -21,6 +21,7 @@ done
 
 grep -F 'backup restore --dry-run' docs/backup-restore.md >/dev/null
 grep -F 'backup restore --confirm-empty-instance' docs/backup-restore.md >/dev/null
+grep -F '不会打印连接串或运行正文' docs/backup-restore.md >/dev/null
 
 if awk '
   /^   DATABASE_URL=.*[[:space:]]\\$/ {
