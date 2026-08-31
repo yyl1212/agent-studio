@@ -1,4 +1,4 @@
-.PHONY: db-up db-down observability-up observability-down observability-check observability-verify dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e release-tools release-check release-snapshot release-preflight verify-workflows verify-release
+.PHONY: db-up db-down observability-up observability-down observability-check observability-verify dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e backup-create backup-inspect backup-restore-dry-run backup-restore test-backup-e2e release-tools release-check release-snapshot release-preflight verify-workflows verify-release
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
 RELEASE_TOOLS_DIR ?= $(CURDIR)/.release-tools/bin
@@ -75,6 +75,26 @@ test-e2e: db-up
 test-sdk-e2e: db-up
 	CGO_ENABLED=0 go test ./internal/generatedtest -count=1 -v
 	corepack pnpm@10.34.5 --filter @agent-studio/web exec playwright test e2e/sdk-node.spec.ts
+
+backup-create: db-up
+	@test -n "$(OUTPUT)" || { printf '%s\n' 'usage: make backup-create OUTPUT=/path/file.asbak' >&2; exit 2; }
+	DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go run ./cmd/agent-studio backup create --output "$(OUTPUT)"
+
+backup-inspect:
+	@test -n "$(BACKUP)" || { printf '%s\n' 'usage: make backup-inspect BACKUP=/path/file.asbak' >&2; exit 2; }
+	CGO_ENABLED=0 go run ./cmd/agent-studio backup inspect "$(BACKUP)"
+
+backup-restore-dry-run: db-up
+	@test -n "$(BACKUP)" || { printf '%s\n' 'usage: make backup-restore-dry-run BACKUP=/path/file.asbak' >&2; exit 2; }
+	DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go run ./cmd/agent-studio backup restore --dry-run "$(BACKUP)"
+
+backup-restore: db-up
+	@test "$(CONFIRM)" = "empty-instance" || { printf '%s\n' 'set CONFIRM=empty-instance' >&2; exit 2; }
+	@test -n "$(BACKUP)" || { printf '%s\n' 'usage: make backup-restore BACKUP=/path/file.asbak CONFIRM=empty-instance' >&2; exit 2; }
+	DATABASE_URL=$(TEST_DATABASE_URL) CGO_ENABLED=0 go run ./cmd/agent-studio backup restore --confirm-empty-instance "$(BACKUP)"
+
+test-backup-e2e: db-up
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) sh scripts/test-backup-e2e.sh
 
 release-tools:
 	RELEASE_TOOLS_DIR=$(RELEASE_TOOLS_DIR) sh scripts/install-release-tools.sh
