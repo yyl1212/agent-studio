@@ -126,6 +126,7 @@ verify-workflows:
 	sh scripts/release-preflight_test.sh
 	sh scripts/check-release-version_test.sh
 	sh scripts/check-release-workflow_test.sh
+	sh scripts/check-backup-workflow_test.sh
 	CGO_ENABLED=0 go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 verify-release: release-tools

@@ -221,6 +221,15 @@ func VerifyTarget(config Config) error {
 	if actual != expected {
 		return fmt.Errorf("version output mismatch: got %q want %q", actual, expected)
 	}
+	help, err := runCLICommand(cliPath, []string{"help"}, versionCommandTimeout, maxVersionOutputBytes)
+	if err != nil {
+		return fmt.Errorf("run CLI help: %w", err)
+	}
+	for _, line := range []string{"backup create\n", "backup inspect\n", "backup restore\n"} {
+		if !strings.Contains(help, line) {
+			return fmt.Errorf("missing backup command %q", strings.TrimSpace(line))
+		}
+	}
 	return nil
 }
 
@@ -268,10 +277,10 @@ func (buffer *cappedBuffer) Exceeded() bool {
 	return buffer.exceeded
 }
 
-func runVersionCommand(cliPath string, timeout time.Duration, outputLimit int) (string, error) {
+func runCLICommand(cliPath string, args []string, timeout time.Duration, outputLimit int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, cliPath, "version")
+	command := exec.CommandContext(ctx, cliPath, args...)
 	command.WaitDelay = time.Second
 	output := &cappedBuffer{limit: outputLimit, cancel: cancel}
 	command.Stdout = output
@@ -282,6 +291,10 @@ func runVersionCommand(cliPath string, timeout time.Duration, outputLimit int) (
 		return content, err
 	}
 	return content, nil
+}
+
+func runVersionCommand(cliPath string, timeout time.Duration, outputLimit int) (string, error) {
+	return runCLICommand(cliPath, []string{"version"}, timeout, outputLimit)
 }
 
 func classifyVersionCommandError(runErr, contextErr error, outputExceeded bool, content string) error {

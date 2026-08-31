@@ -22,19 +22,20 @@ const (
 )
 
 type fixtureOptions struct {
-	omitArchive     string
-	badChecksum     string
-	badSBOMChecksum string
-	invalidSPDX     string
-	unsafePath      string
-	wrongOutput     string
-	staleSDK        string
-	missingFile     string
-	nonExec         string
-	extraTarget     bool
-	extraSBOM       bool
-	symlinkArchive  string
-	spdxVariant     string
+	omitArchive       string
+	badChecksum       string
+	badSBOMChecksum   string
+	invalidSPDX       string
+	unsafePath        string
+	wrongOutput       string
+	staleSDK          string
+	missingFile       string
+	nonExec           string
+	extraTarget       bool
+	extraSBOM         bool
+	symlinkArchive    string
+	spdxVariant       string
+	missingBackupHelp string
 }
 
 type fixtureTarget struct {
@@ -158,7 +159,7 @@ func TestVerifyCollectionRejectsSymlinkArchive(t *testing.T) {
 	assertErrorContains(t, err, "archive is not a regular file")
 }
 
-func TestVerifyTargetExecutesVersionCommand(t *testing.T) {
+func TestVerifyTargetAcceptsBackupCommands(t *testing.T) {
 	dist := makeFixture(t, fixtureOptions{})
 	err := VerifyTarget(Config{
 		DistDir: dist,
@@ -170,6 +171,18 @@ func TestVerifyTargetExecutesVersionCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyTarget() error = %v", err)
 	}
+}
+
+func TestVerifyTargetRejectsCLIWithoutBackupCommands(t *testing.T) {
+	dist := makeFixture(t, fixtureOptions{missingBackupHelp: "linux_amd64"})
+	err := VerifyTarget(Config{
+		DistDir: dist,
+		Version: fixtureVersion,
+		GOOS:    "linux",
+		GOARCH:  "amd64",
+		Commit:  fixtureCommit,
+	})
+	assertErrorContains(t, err, "missing backup command")
 }
 
 func TestVerifyTargetRejectsUnsafeArchivePath(t *testing.T) {
@@ -385,6 +398,10 @@ func writeArchive(t *testing.T, archivePath, key string, options fixtureOptions)
 	if options.wrongOutput == key {
 		versionOutput = "agent-studio v9.9.9"
 	}
+	helpOutput := "backup create\nbackup inspect\nbackup restore\ndoctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"
+	if options.missingBackupHelp == key {
+		helpOutput = "doctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"
+	}
 	mode := int64(0o755)
 	if options.nonExec == key {
 		mode = 0o644
@@ -394,7 +411,7 @@ func writeArchive(t *testing.T, archivePath, key string, options fixtureOptions)
 		mode    int64
 		content string
 	}{
-		{name: "agent-studio", mode: mode, content: "#!/bin/sh\nprintf '%s\\n' '" + versionOutput + "'\n"},
+		{name: "agent-studio", mode: mode, content: "#!/bin/sh\ncase \"$1\" in\n  version) printf '%s\\n' '" + versionOutput + "' ;;\n  help) printf '%s' '" + helpOutput + "' ;;\n  *) exit 2 ;;\nesac\n"},
 		{name: "README.md", mode: 0o644, content: "# Agent Studio\n"},
 		{name: "LICENSE", mode: 0o644, content: "Apache-2.0\n"},
 	}

@@ -68,6 +68,38 @@ jobs:
       - name: Verify Web
         run: make verify-web-quick
 
+  backup-recovery:
+    name: Backup recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: "0"
+      TEST_DATABASE_URL: postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: agent_studio
+          POSTGRES_USER: agent
+          POSTGRES_PASSWORD: agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent -d agent_studio"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify backup recovery
+        run: make test-backup-e2e
+
   release-artifacts:
     name: Release artifact snapshot
     runs-on: ubuntu-24.04
