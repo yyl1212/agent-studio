@@ -22,19 +22,22 @@ const (
 )
 
 type fixtureOptions struct {
-	omitArchive     string
-	badChecksum     string
-	badSBOMChecksum string
-	invalidSPDX     string
-	unsafePath      string
-	wrongOutput     string
-	staleSDK        string
-	missingFile     string
-	nonExec         string
-	extraTarget     bool
-	extraSBOM       bool
-	symlinkArchive  string
-	spdxVariant     string
+	omitArchive          string
+	badChecksum          string
+	badSBOMChecksum      string
+	invalidSPDX          string
+	unsafePath           string
+	wrongOutput          string
+	staleSDK             string
+	missingFile          string
+	nonExec              string
+	extraTarget          bool
+	extraSBOM            bool
+	symlinkArchive       string
+	spdxVariant          string
+	missingBackupHelp    string
+	prefixedBackupHelp   string
+	missingBackupCommand string
 }
 
 type fixtureTarget struct {
@@ -158,7 +161,7 @@ func TestVerifyCollectionRejectsSymlinkArchive(t *testing.T) {
 	assertErrorContains(t, err, "archive is not a regular file")
 }
 
-func TestVerifyTargetExecutesVersionCommand(t *testing.T) {
+func TestVerifyTargetAcceptsBackupCommands(t *testing.T) {
 	dist := makeFixture(t, fixtureOptions{})
 	err := VerifyTarget(Config{
 		DistDir: dist,
@@ -169,6 +172,46 @@ func TestVerifyTargetExecutesVersionCommand(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("VerifyTarget() error = %v", err)
+	}
+}
+
+func TestVerifyTargetRejectsCLIWithoutBackupCommands(t *testing.T) {
+	dist := makeFixture(t, fixtureOptions{missingBackupHelp: "linux_amd64"})
+	err := VerifyTarget(Config{
+		DistDir: dist,
+		Version: fixtureVersion,
+		GOOS:    "linux",
+		GOARCH:  "amd64",
+		Commit:  fixtureCommit,
+	})
+	assertErrorContains(t, err, "missing backup command")
+}
+
+func TestVerifyTargetRejectsPrefixedBackupCommandSubstrings(t *testing.T) {
+	dist := makeFixture(t, fixtureOptions{prefixedBackupHelp: "linux_amd64"})
+	err := VerifyTarget(Config{
+		DistDir: dist,
+		Version: fixtureVersion,
+		GOOS:    "linux",
+		GOARCH:  "amd64",
+		Commit:  fixtureCommit,
+	})
+	assertErrorContains(t, err, "missing backup command")
+}
+
+func TestVerifyTargetRejectsEachMissingBackupCommand(t *testing.T) {
+	for _, command := range []string{"backup create", "backup inspect", "backup restore"} {
+		t.Run(command, func(t *testing.T) {
+			dist := makeFixture(t, fixtureOptions{missingBackupCommand: command})
+			err := VerifyTarget(Config{
+				DistDir: dist,
+				Version: fixtureVersion,
+				GOOS:    "linux",
+				GOARCH:  "amd64",
+				Commit:  fixtureCommit,
+			})
+			assertErrorContains(t, err, "missing backup command")
+		})
 	}
 }
 
@@ -255,16 +298,37 @@ func TestRunVersionCommandBoundsTimeAndOutput(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		cliPath := writeExecutable(t, "#!/bin/sh\nwhile :; do :; done\n")
 		_, err := runVersionCommand(cliPath, 50*time.Millisecond, 1024)
-		assertErrorContains(t, err, "timed out")
+		assertErrorContains(t, err, "agent-studio version timed out")
 	})
 	t.Run("output limit cancels writer that ignores pipe closure", func(t *testing.T) {
 		cliPath := writeExecutable(t, "#!/bin/sh\ntrap '' PIPE\nwhile :; do printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; done\n")
 		started := time.Now()
 		_, err := runVersionCommand(cliPath, 5*time.Second, 64)
-		assertErrorContains(t, err, "output exceeds size limit")
+		assertErrorContains(t, err, "agent-studio version output exceeds size limit")
 		if elapsed := time.Since(started); elapsed >= 4*time.Second {
 			t.Fatalf("output-limited command returned after %s, want active cancellation before timeout", elapsed)
 		}
+	})
+}
+
+func TestRunCLICommandReportsHelpErrors(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		cliPath := writeExecutable(t, "#!/bin/sh\nwhile :; do :; done\n")
+		_, err := runCLICommand(cliPath, []string{"help"}, 50*time.Millisecond, 1024)
+		assertErrorContains(t, err, "agent-studio help timed out")
+		assertErrorNotContains(t, err, "version")
+	})
+	t.Run("output limit", func(t *testing.T) {
+		cliPath := writeExecutable(t, "#!/bin/sh\ntrap '' PIPE\nwhile :; do printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; done\n")
+		_, err := runCLICommand(cliPath, []string{"help"}, 5*time.Second, 64)
+		assertErrorContains(t, err, "agent-studio help output exceeds size limit")
+		assertErrorNotContains(t, err, "version")
+	})
+	t.Run("execution failure", func(t *testing.T) {
+		cliPath := writeExecutable(t, "#!/bin/sh\nprintf 'help failed\\n' >&2\nexit 7\n")
+		_, err := runCLICommand(cliPath, []string{"help"}, time.Second, 1024)
+		assertErrorContains(t, err, "execute agent-studio help")
+		assertErrorNotContains(t, err, "version")
 	})
 }
 
@@ -284,7 +348,7 @@ func TestCappedBufferCancelsOnOutputLimit(t *testing.T) {
 
 func TestClassifyVersionCommandErrorPrefersOutputLimitToDeadline(t *testing.T) {
 	err := classifyVersionCommandError(nil, context.DeadlineExceeded, true, "")
-	assertErrorContains(t, err, "output exceeds size limit")
+	assertErrorContains(t, err, "agent-studio version output exceeds size limit")
 }
 
 func writeExecutable(t *testing.T, content string) string {
@@ -300,6 +364,13 @@ func assertErrorContains(t *testing.T, err error, expected string) {
 	t.Helper()
 	if err == nil || !strings.Contains(err.Error(), expected) {
 		t.Fatalf("error = %v, want substring %q", err, expected)
+	}
+}
+
+func assertErrorNotContains(t *testing.T, err error, unexpected string) {
+	t.Helper()
+	if err != nil && strings.Contains(err.Error(), unexpected) {
+		t.Fatalf("error = %v, do not want substring %q", err, unexpected)
 	}
 }
 
@@ -385,6 +456,25 @@ func writeArchive(t *testing.T, archivePath, key string, options fixtureOptions)
 	if options.wrongOutput == key {
 		versionOutput = "agent-studio v9.9.9"
 	}
+	helpLines := []string{"backup create", "backup inspect", "backup restore", "doctor", "generate", "node index refresh", "node index status", "node info", "node init", "node inspect", "node package init", "node search", "node test", "version"}
+	if options.prefixedBackupHelp == key {
+		helpLines[0] = "prefix backup create"
+		helpLines[1] = "not-backup inspect"
+		helpLines[2] = "xbackup restore"
+	}
+	if options.missingBackupCommand != "" {
+		filtered := helpLines[:0]
+		for _, line := range helpLines {
+			if line != options.missingBackupCommand {
+				filtered = append(filtered, line)
+			}
+		}
+		helpLines = filtered
+	}
+	helpOutput := strings.Join(helpLines, "\n") + "\n"
+	if options.missingBackupHelp == key {
+		helpOutput = "doctor\ngenerate\nnode index refresh\nnode index status\nnode info\nnode init\nnode inspect\nnode package init\nnode search\nnode test\nversion\n"
+	}
 	mode := int64(0o755)
 	if options.nonExec == key {
 		mode = 0o644
@@ -394,7 +484,7 @@ func writeArchive(t *testing.T, archivePath, key string, options fixtureOptions)
 		mode    int64
 		content string
 	}{
-		{name: "agent-studio", mode: mode, content: "#!/bin/sh\nprintf '%s\\n' '" + versionOutput + "'\n"},
+		{name: "agent-studio", mode: mode, content: "#!/bin/sh\ncase \"$1\" in\n  version) printf '%s\\n' '" + versionOutput + "' ;;\n  help) printf '%s' '" + helpOutput + "' ;;\n  *) exit 2 ;;\nesac\n"},
 		{name: "README.md", mode: 0o644, content: "# Agent Studio\n"},
 		{name: "LICENSE", mode: 0o644, content: "Apache-2.0\n"},
 	}

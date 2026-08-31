@@ -221,6 +221,19 @@ func VerifyTarget(config Config) error {
 	if actual != expected {
 		return fmt.Errorf("version output mismatch: got %q want %q", actual, expected)
 	}
+	help, err := runCLICommand(cliPath, []string{"help"}, versionCommandTimeout, maxVersionOutputBytes)
+	if err != nil {
+		return fmt.Errorf("run CLI help: %w", err)
+	}
+	helpLines := make(map[string]struct{})
+	for _, line := range strings.Split(help, "\n") {
+		helpLines[line] = struct{}{}
+	}
+	for _, command := range []string{"backup create", "backup inspect", "backup restore"} {
+		if _, ok := helpLines[command]; !ok {
+			return fmt.Errorf("missing backup command %q", command)
+		}
+	}
 	return nil
 }
 
@@ -268,31 +281,39 @@ func (buffer *cappedBuffer) Exceeded() bool {
 	return buffer.exceeded
 }
 
-func runVersionCommand(cliPath string, timeout time.Duration, outputLimit int) (string, error) {
+func runCLICommand(cliPath string, args []string, timeout time.Duration, outputLimit int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, cliPath, "version")
+	command := exec.CommandContext(ctx, cliPath, args...)
 	command.WaitDelay = time.Second
 	output := &cappedBuffer{limit: outputLimit, cancel: cancel}
 	command.Stdout = output
 	command.Stderr = output
 	err := command.Run()
 	content := output.String()
-	if err := classifyVersionCommandError(err, ctx.Err(), output.Exceeded(), content); err != nil {
+	if err := classifyCLICommandError(strings.Join(args, " "), err, ctx.Err(), output.Exceeded(), content); err != nil {
 		return content, err
 	}
 	return content, nil
 }
 
+func runVersionCommand(cliPath string, timeout time.Duration, outputLimit int) (string, error) {
+	return runCLICommand(cliPath, []string{"version"}, timeout, outputLimit)
+}
+
 func classifyVersionCommandError(runErr, contextErr error, outputExceeded bool, content string) error {
+	return classifyCLICommandError("version", runErr, contextErr, outputExceeded, content)
+}
+
+func classifyCLICommandError(commandName string, runErr, contextErr error, outputExceeded bool, content string) error {
 	if outputExceeded {
-		return errors.New("agent-studio version output exceeds size limit")
+		return fmt.Errorf("agent-studio %s output exceeds size limit", commandName)
 	}
 	if errors.Is(contextErr, context.DeadlineExceeded) {
-		return errors.New("agent-studio version timed out")
+		return fmt.Errorf("agent-studio %s timed out", commandName)
 	}
 	if runErr != nil {
-		return fmt.Errorf("execute agent-studio version: %w: %s", runErr, strings.TrimSpace(content))
+		return fmt.Errorf("execute agent-studio %s: %w: %s", commandName, runErr, strings.TrimSpace(content))
 	}
 	return nil
 }
