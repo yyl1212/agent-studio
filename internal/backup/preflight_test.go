@@ -36,6 +36,46 @@ func TestDryRunPlansMigrationsWithoutMutatingEmptyDatabase(t *testing.T) {
 	assertTargetVersionAndBusinessRows(t, pool, 0, 0)
 }
 
+func TestDryRunUsesExclusiveLeaseSessionWithSingleConnection(t *testing.T) {
+	pool := openUnmigratedTargetWithMaxConns(t, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	plan, err := DryRun(ctx, pool, referenceArchivePath(t, 6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.TargetMigrationVersion != 0 || !plan.TargetEmpty {
+		t.Fatalf("plan=%+v", plan)
+	}
+	assertTargetVersionAndBusinessRows(t, pool, 0, 0)
+}
+
+func TestDryRunFailsWhenExclusiveLeaseConnectionIsTerminated(t *testing.T) {
+	pool := openUnmigratedTarget(t)
+	archivePath := slowReferenceArchivePath(t, 50000)
+	result := make(chan error, 1)
+	go func() {
+		_, err := DryRun(context.Background(), pool, archivePath)
+		result <- err
+	}()
+
+	backendPID := waitForExclusiveMaintenanceBackend(t, pool)
+	var terminated bool
+	if err := pool.QueryRow(context.Background(), `SELECT pg_terminate_backend($1)`, backendPID).Scan(&terminated); err != nil || !terminated {
+		t.Fatalf("terminate backend=%t err=%v", terminated, err)
+	}
+	select {
+	case err := <-result:
+		if CodeOf(err) != CodeRestoreFailed {
+			t.Fatalf("code=%q err=%v", CodeOf(err), err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("dry-run did not stop after losing its maintenance lease")
+	}
+	assertTargetVersionAndBusinessRows(t, pool, 0, 0)
+}
+
 func TestDryRunPlansOnlyMissingMigrations(t *testing.T) {
 	archivePath := referenceArchivePath(t, 6)
 	for _, targetVersion := range []int64{3, 6} {
@@ -159,6 +199,10 @@ func TestDryRunReturnsSafeArchiveAndCancellationErrors(t *testing.T) {
 }
 
 func openUnmigratedTarget(t *testing.T) *pgxpool.Pool {
+	return openUnmigratedTargetWithMaxConns(t, 0)
+}
+
+func openUnmigratedTargetWithMaxConns(t *testing.T, maxConns int32) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -183,6 +227,9 @@ func openUnmigratedTarget(t *testing.T) *pgxpool.Pool {
 	}
 	query := parsed.Query()
 	query.Set("options", "-csearch_path="+schema)
+	if maxConns > 0 {
+		query.Set("pool_max_conns", fmt.Sprint(maxConns))
+	}
 	parsed.RawQuery = query.Encode()
 	pool, err := database.OpenPool(context.Background(), parsed.String())
 	if err != nil {
@@ -195,6 +242,43 @@ func openUnmigratedTarget(t *testing.T) *pgxpool.Pool {
 		backupDatabaseMutex.Unlock()
 	})
 	return pool
+}
+
+func slowReferenceArchivePath(t *testing.T, extraWorkflows int) string {
+	t.Helper()
+	data := newReferenceFixtureData()
+	for index := 0; index < extraWorkflows; index++ {
+		id := fmt.Sprintf("00000000-0000-0000-0000-%012d", 1000+index)
+		data.workflows = append(data.workflows, WorkflowRecord{
+			ID: id, Name: id, Slug: "workflow-" + id, Description: "", DraftGraph: json.RawMessage(`{}`),
+			DraftRevision: 1, CreatedAt: time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC),
+			UpdatedAt: time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC), AgentPresentation: json.RawMessage(`{}`),
+		})
+	}
+	path := filepath.Join(t.TempDir(), "slow-references.asbak")
+	if _, err := WriteArchive(context.Background(), path, manifestFixture(time.Now().UTC()), referenceFixtureWriters(t, data)); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func waitForExclusiveMaintenanceBackend(t *testing.T, pool *pgxpool.Pool) int32 {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var backendPID *int32
+		err := pool.QueryRow(context.Background(), `SELECT pid
+			FROM pg_locks
+			WHERE locktype='advisory' AND mode='ExclusiveLock' AND granted
+			ORDER BY pid
+			LIMIT 1`).Scan(&backendPID)
+		if err == nil && backendPID != nil {
+			return *backendPID
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("exclusive maintenance lease was not acquired")
+	return 0
 }
 
 func referenceArchivePath(t *testing.T, migrationVersion int64) string {

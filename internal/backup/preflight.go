@@ -49,17 +49,23 @@ func DryRun(ctx context.Context, pool *pgxpool.Pool, path string) (RestorePlan, 
 		return RestorePlan{}, Wrap(CodeRestoreFailed, "acquire maintenance lease", err)
 	}
 	defer lease.Release(context.Background())
+	preflightContext, stopMonitoring := monitorLeaseLoss(ctx, lease.MonitorConnectionLoss())
+	defer stopMonitoring()
 
-	return preflightWithLease(ctx, pool, archive)
+	plan, err := preflightWithLease(preflightContext, lease, archive)
+	if ctx.Err() == nil && context.Cause(preflightContext) != nil {
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "target maintenance lease lost", context.Cause(preflightContext))
+	}
+	return plan, err
 }
 
 // preflightWithLease validates a verified archive while the caller holds the target's
 // exclusive maintenance lease. It never opens the archive, runs migrations, or commits.
-func preflightWithLease(ctx context.Context, pool *pgxpool.Pool, archive *Archive) (RestorePlan, error) {
+func preflightWithLease(ctx context.Context, lease *database.MaintenanceLease, archive *Archive) (RestorePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return RestorePlan{}, err
 	}
-	if archive == nil {
+	if lease == nil || archive == nil {
 		return RestorePlan{}, Wrap(CodeArchiveInvalid, "validate opened backup archive", nil)
 	}
 
@@ -77,7 +83,7 @@ func preflightWithLease(ctx context.Context, pool *pgxpool.Pool, archive *Archiv
 		return RestorePlan{}, Wrap(CodeArchiveInvalid, "validate backup migration version", nil)
 	}
 
-	targetVersion, err := database.CurrentVersion(ctx, pool)
+	targetVersion, err := lease.CurrentVersion(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return RestorePlan{}, err
@@ -93,7 +99,16 @@ func preflightWithLease(ctx context.Context, pool *pgxpool.Pool, archive *Archiv
 		return RestorePlan{}, Wrap(CodeFormatUnsupported, "backup migration is not supported", nil)
 	}
 
-	targetEmpty, err := targetIsEmpty(ctx, pool)
+	transaction, err := lease.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return RestorePlan{}, err
+		}
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "begin backup reference validation", err)
+	}
+	defer transaction.Rollback(context.Background())
+
+	targetEmpty, err := targetIsEmpty(ctx, transaction)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return RestorePlan{}, err
@@ -103,15 +118,6 @@ func preflightWithLease(ctx context.Context, pool *pgxpool.Pool, archive *Archiv
 	if !targetEmpty {
 		return RestorePlan{}, Wrap(CodeTargetNotEmpty, "target contains backup data", nil)
 	}
-
-	transaction, err := pool.Begin(ctx)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return RestorePlan{}, err
-		}
-		return RestorePlan{}, Wrap(CodeRestoreFailed, "begin backup reference validation", err)
-	}
-	defer transaction.Rollback(context.Background())
 	if _, err := stageReferences(ctx, transaction, archive); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || CodeOf(err) != "" {
 			return RestorePlan{}, err
@@ -128,18 +134,18 @@ func preflightWithLease(ctx context.Context, pool *pgxpool.Pool, archive *Archiv
 	}, nil
 }
 
-func targetIsEmpty(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+func targetIsEmpty(ctx context.Context, querier database.RowQuerier) (bool, error) {
 	for _, name := range TableOrder {
 		var relation *string
-		if err := pool.QueryRow(ctx, `SELECT to_regclass($1)::text`, string(name)).Scan(&relation); err != nil {
+		if err := querier.QueryRow(ctx, `SELECT to_regclass($1)::text`, string(name)).Scan(&relation); err != nil {
 			return false, err
 		}
 		if relation == nil {
 			continue
 		}
 		var exists bool
-		query := "SELECT EXISTS(SELECT 1 FROM " + pgx.Identifier{string(name)}.Sanitize() + " LIMIT 1)"
-		if err := pool.QueryRow(ctx, query).Scan(&exists); err != nil {
+		statement := "SELECT EXISTS(SELECT 1 FROM " + pgx.Identifier{string(name)}.Sanitize() + " LIMIT 1)"
+		if err := querier.QueryRow(ctx, statement).Scan(&exists); err != nil {
 			return false, err
 		}
 		if exists {
