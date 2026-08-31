@@ -36,7 +36,8 @@ type dryRunHooks struct {
 
 // DryRun validates an archive and its restore prerequisites without changing the target.
 func DryRun(ctx context.Context, pool *pgxpool.Pool, path string) (RestorePlan, error) {
-	return dryRunWithHooks(ctx, pool, path, dryRunHooks{})
+	plan, err := dryRunWithHooks(ctx, pool, path, dryRunHooks{})
+	return plan, sanitizePublicBackupError(err)
 }
 
 func dryRunWithHooks(ctx context.Context, pool *pgxpool.Pool, path string, hooks dryRunHooks) (RestorePlan, error) {
@@ -48,10 +49,10 @@ func dryRunWithHooks(ctx context.Context, pool *pgxpool.Pool, path string, hooks
 
 	lease, err := database.TryExclusive(ctx, pool)
 	if errors.Is(err, database.ErrMaintenanceBusy) {
-		return RestorePlan{}, Wrap(CodeAPIRunning, "target is in use", err)
+		return RestorePlan{}, Wrap(CodeAPIRunning, "target is in use", nil)
 	}
 	if err != nil {
-		return RestorePlan{}, Wrap(CodeRestoreFailed, "acquire maintenance lease", err)
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "acquire maintenance lease", nil)
 	}
 	defer lease.Release(context.Background())
 	preflightContext, stopMonitoring := monitorLeaseLoss(ctx, lease.MonitorConnectionLoss())
@@ -59,7 +60,7 @@ func dryRunWithHooks(ctx context.Context, pool *pgxpool.Pool, path string, hooks
 
 	plan, err := preflightWithLeaseAndHooks(preflightContext, lease, archive, hooks)
 	if ctx.Err() == nil && context.Cause(preflightContext) != nil {
-		return RestorePlan{}, Wrap(CodeRestoreFailed, "target maintenance lease lost", context.Cause(preflightContext))
+		return RestorePlan{}, Wrap(CodeRestoreFailed, "target maintenance lease lost", nil)
 	}
 	return plan, err
 }

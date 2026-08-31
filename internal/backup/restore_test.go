@@ -33,6 +33,61 @@ func TestRestoreRoundTripPreservesAllDomainData(t *testing.T) {
 	assertRestoredSpecialValues(t, target)
 }
 
+func TestRestoreAndDryRunPublicErrorsRemoveUnsafeUnwrapCauses(t *testing.T) {
+	const secret = "sentinel-connection-url"
+	missingPath := filepath.Join(t.TempDir(), secret+".asbak")
+	for _, test := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "restore", call: func() error {
+			_, err := Restore(context.Background(), nil, missingPath)
+			return err
+		}},
+		{name: "dry run", call: func() error {
+			_, err := DryRun(context.Background(), nil, missingPath)
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.call()
+			if CodeOf(err) != CodeArchiveInvalid {
+				t.Fatalf("code=%q err=%v", CodeOf(err), err)
+			}
+			assertErrorChainOmits(t, err, secret)
+		})
+	}
+}
+
+func TestPublicBackupErrorSanitizationPreservesCodesAndContextOnly(t *testing.T) {
+	const secret = "postgres://user:password@database.example/private"
+	unsafe := errors.New(secret)
+	joined := errors.Join(
+		Wrap(CodeArchiveInvalid, "close backup table", unsafe),
+		Wrap(CodeRestoreFailed, "copy backup table", unsafe),
+	)
+	sanitized := sanitizePublicBackupError(joined)
+	codes := backupCodesInChain(sanitized)
+	if CodeOf(sanitized) != CodeArchiveInvalid || codes[CodeArchiveInvalid] != 1 || codes[CodeRestoreFailed] != 1 {
+		t.Fatalf("primary=%q codes=%v err=%v", CodeOf(sanitized), codes, sanitized)
+	}
+	assertErrorChainOmits(t, sanitized, secret)
+
+	for _, contextErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		if got := sanitizePublicBackupError(contextErr); got != contextErr {
+			t.Fatalf("context error=%v got=%v", contextErr, got)
+		}
+	}
+
+	restoreContext, cancel := context.WithCancelCause(context.Background())
+	cancel(unsafe)
+	err := normalizeRestoreContextError(context.Background(), restoreContext, unsafe)
+	if CodeOf(err) != CodeRestoreFailed {
+		t.Fatalf("code=%q err=%v", CodeOf(err), err)
+	}
+	assertErrorChainOmits(t, err, secret)
+}
+
 func TestRestoreUsesExclusiveLeaseSessionWithSingleConnection(t *testing.T) {
 	source, target := openRestorePools(t, 1)
 	seedCompleteRestoreFixture(t, source)
@@ -268,6 +323,7 @@ func TestRestoreLeaseConnectionLossReturnsSafeFailureAndRollsBack(t *testing.T) 
 	if CodeOf(err) != CodeRestoreFailed || err == nil || strings.Contains(err.Error(), os.Getenv("TEST_DATABASE_URL")) {
 		t.Fatalf("code=%q err=%v", CodeOf(err), err)
 	}
+	assertErrorChainOmits(t, err, "database maintenance connection closed")
 	assertBusinessRows(t, target, 0)
 }
 

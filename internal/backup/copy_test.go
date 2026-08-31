@@ -7,11 +7,115 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type trackingReadCloser struct {
 	io.Reader
 	closed bool
+}
+
+func TestCopyRecordsCombinesCopyOrValuesFailureWithCloseValidationFailure(t *testing.T) {
+	const secret = "postgres://unsafe-copy-cause"
+	for _, test := range []struct {
+		name          string
+		valuesFailure bool
+	}{
+		{name: "copy failure"},
+		{name: "values failure", valuesFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			archive := openReferenceFixtureArchive(t, func(data *referenceFixtureData) {
+				data.workflows[1].Description = strings.Repeat("x", 128<<10)
+			})
+			defer archive.Close()
+			transaction := &restoreCopyFailureTx{failure: errors.New(secret), valuesFailure: test.valuesFailure}
+			values := func(record WorkflowRecord) ([]any, error) {
+				if test.valuesFailure {
+					return nil, errors.New(secret)
+				}
+				return []any{record.ID}, nil
+			}
+
+			_, err := copyRecordsTo(context.Background(), transaction, archive, TableWorkflows, "unused",
+				[]string{"id"}, decodeWorkflowRecord, values)
+			codes := backupCodesInChain(err)
+			if CodeOf(err) != CodeArchiveInvalid || codes[CodeArchiveInvalid] != 1 || codes[CodeRestoreFailed] != 1 {
+				t.Fatalf("primary=%q codes=%v err=%v", CodeOf(err), codes, err)
+			}
+			assertErrorChainOmits(t, err, secret)
+		})
+	}
+}
+
+type restoreCopyFailureTx struct {
+	pgx.Tx
+	failure       error
+	valuesFailure bool
+}
+
+func (transaction *restoreCopyFailureTx) CopyFrom(
+	_ context.Context,
+	_ pgx.Identifier,
+	_ []string,
+	source pgx.CopyFromSource,
+) (int64, error) {
+	if !source.Next() {
+		return 0, source.Err()
+	}
+	if transaction.valuesFailure {
+		_, err := source.Values()
+		return 0, err
+	}
+	return 0, transaction.failure
+}
+
+func backupCodesInChain(err error) map[Code]int {
+	result := make(map[Code]int)
+	var visit func(error)
+	visit = func(current error) {
+		if current == nil {
+			return
+		}
+		if coded, ok := current.(*Error); ok {
+			result[coded.code]++
+		}
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				visit(child)
+			}
+			return
+		}
+		if wrapped, ok := current.(interface{ Unwrap() error }); ok {
+			visit(wrapped.Unwrap())
+		}
+	}
+	visit(err)
+	return result
+}
+
+func assertErrorChainOmits(t *testing.T, err error, secret string) {
+	t.Helper()
+	var visit func(error)
+	visit = func(current error) {
+		if current == nil {
+			return
+		}
+		if strings.Contains(current.Error(), secret) {
+			t.Fatalf("unsafe error chain element=%T %v", current, current)
+		}
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				visit(child)
+			}
+			return
+		}
+		if wrapped, ok := current.(interface{ Unwrap() error }); ok {
+			visit(wrapped.Unwrap())
+		}
+	}
+	visit(err)
 }
 
 func (reader *trackingReadCloser) Close() error {

@@ -1,6 +1,9 @@
 package backup
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 type Code string
 
@@ -42,4 +45,33 @@ func CodeOf(err error) Code {
 		return coded.code
 	}
 	return ""
+}
+
+func sanitizePublicBackupError(err error) error {
+	if err == nil || err == context.Canceled || err == context.DeadlineExceeded {
+		return err
+	}
+	if coded, ok := err.(*Error); ok {
+		return Wrap(coded.code, coded.operation, nil)
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		safe := make([]error, 0, len(children))
+		for _, child := range children {
+			if sanitized := sanitizePublicBackupError(child); sanitized != nil {
+				safe = append(safe, sanitized)
+			}
+		}
+		if len(safe) == 1 {
+			return safe[0]
+		}
+		return errors.Join(safe...)
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return Wrap(CodeRestoreFailed, "backup operation failed", nil)
 }

@@ -22,7 +22,8 @@ type restoreHooks struct {
 }
 
 func Restore(ctx context.Context, pool *pgxpool.Pool, path string) (RestoreResult, error) {
-	return restoreWithHooks(ctx, pool, path, restoreHooks{})
+	result, err := restoreWithHooks(ctx, pool, path, restoreHooks{})
+	return result, sanitizePublicBackupError(err)
 }
 
 func restoreWithHooks(ctx context.Context, pool *pgxpool.Pool, path string, hooks restoreHooks) (RestoreResult, error) {
@@ -34,10 +35,10 @@ func restoreWithHooks(ctx context.Context, pool *pgxpool.Pool, path string, hook
 
 	lease, err := database.TryExclusive(ctx, pool)
 	if errors.Is(err, database.ErrMaintenanceBusy) {
-		return RestoreResult{}, Wrap(CodeAPIRunning, "target is in use", err)
+		return RestoreResult{}, Wrap(CodeAPIRunning, "target is in use", nil)
 	}
 	if err != nil {
-		return RestoreResult{}, Wrap(CodeRestoreFailed, "acquire maintenance lease", err)
+		return RestoreResult{}, Wrap(CodeRestoreFailed, "acquire maintenance lease", nil)
 	}
 	defer lease.Release(context.Background())
 	restoreContext, stopMonitoring := monitorLeaseLoss(ctx, lease.MonitorConnectionLoss())
@@ -54,7 +55,7 @@ func restoreWithHooks(ctx context.Context, pool *pgxpool.Pool, path string, hook
 	}
 	if err := lease.Migrate(restoreContext); err != nil {
 		return RestoreResult{}, normalizeRestoreContextError(ctx, restoreContext,
-			Wrap(CodeRestoreFailed, "migrate empty target", err))
+			wrapRestoreFailure("migrate empty target", err))
 	}
 	key := importerKey{APIVersion: archive.manifest.APIVersion, MigrationVersion: archive.manifest.DatabaseMigrationVersion}
 	importArchive := importers[key]
@@ -73,7 +74,7 @@ func normalizeRestoreContextError(parent, restoreContext context.Context, err er
 		return parent.Err()
 	}
 	if cause := context.Cause(restoreContext); cause != nil {
-		return Wrap(CodeRestoreFailed, "target maintenance lease lost", cause)
+		return Wrap(CodeRestoreFailed, "target maintenance lease lost", nil)
 	}
 	return err
 }
@@ -318,9 +319,7 @@ func copyRecordsTo[T any](
 	}
 	source := newRecordSource(ctx, reader, decode, values)
 	defer func() {
-		if closeErr := source.Close(); closeErr != nil && resultErr == nil {
-			resultErr = closeErr
-		}
+		resultErr = combineCopyAndCloseErrors(resultErr, source.Close())
 	}()
 	copied, copyErr := tx.CopyFrom(ctx, pgx.Identifier{target}, columns, source)
 	if sourceErr := source.Err(); sourceErr != nil {
@@ -337,6 +336,28 @@ func copyRecordsTo[T any](
 		return 0, Wrap(CodeReferenceInvalid, "validate restored table count", nil)
 	}
 	return count, nil
+}
+
+func combineCopyAndCloseErrors(resultErr, closeErr error) error {
+	if closeErr == nil {
+		return resultErr
+	}
+	var safeClose error
+	if CodeOf(closeErr) != "" {
+		safeClose = sanitizePublicBackupError(closeErr)
+	} else {
+		safeClose = Wrap(CodeArchiveInvalid, "close backup table", nil)
+	}
+	if resultErr == nil {
+		return safeClose
+	}
+	safeResult := sanitizePublicBackupError(resultErr)
+	// Keep a specific archive diagnosis primary; otherwise the close validation
+	// outranks a generic database/values failure while both remain discoverable.
+	if code := CodeOf(safeResult); code != "" && code != CodeRestoreFailed {
+		return errors.Join(safeResult, safeClose)
+	}
+	return errors.Join(safeClose, safeResult)
 }
 
 func optionalJSON(value *json.RawMessage) any {
