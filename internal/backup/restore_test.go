@@ -453,7 +453,7 @@ func assertRestoredSpecialValues(t *testing.T, target *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	wantHeartbeat := time.Date(2026, 8, 29, 10, 0, 0, 123461000, time.UTC)
-	if status != "running" || output != nil || len(redacted) != 1 || redacted[0] != "/secret" || !heartbeat.Equal(wantHeartbeat) {
+	if status != "running" || output == nil || *output != "null" || len(redacted) != 1 || redacted[0] != "/secret" || !heartbeat.Equal(wantHeartbeat) {
 		t.Fatalf("status=%s output=%v redacted=%v heartbeat=%s", status, output, redacted, heartbeat)
 	}
 	if err := target.QueryRow(context.Background(), `SELECT status,input_redacted_paths FROM runs WHERE id=$1`, backupRun2).Scan(&status, &redacted); err != nil {
@@ -461,6 +461,20 @@ func assertRestoredSpecialValues(t *testing.T, target *pgxpool.Pool) {
 	}
 	if status != "cancelling" || redacted == nil || len(redacted) != 0 {
 		t.Fatalf("status=%s redacted=%v", status, redacted)
+	}
+	var graphObject, nodeInput, nodeOutput, eventInput, eventOutput *string
+	if err := target.QueryRow(context.Background(), `SELECT graph_snapshot::text FROM runs WHERE id=$1`, backupRun2).Scan(&graphObject); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.QueryRow(context.Background(), `SELECT input::text,output::text FROM node_runs WHERE id=$1`, backupNode1).Scan(&nodeInput, &nodeOutput); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.QueryRow(context.Background(), `SELECT input::text,output::text FROM run_events WHERE run_id=$1 AND sequence=1`, backupRun2).Scan(&eventInput, &eventOutput); err != nil {
+		t.Fatal(err)
+	}
+	if graphObject == nil || *graphObject != "{}" || nodeInput == nil || *nodeInput != "null" || nodeOutput == nil || *nodeOutput != "[]" ||
+		eventInput == nil || *eventInput != "null" || eventOutput == nil || *eventOutput != "[]" {
+		t.Fatalf("graph=%v nodeInput=%v nodeOutput=%v eventInput=%v eventOutput=%v", graphObject, nodeInput, nodeOutput, eventInput, eventOutput)
 	}
 }
 

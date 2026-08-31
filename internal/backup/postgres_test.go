@@ -70,6 +70,67 @@ func TestCreateAndInspectPostgresSnapshot(t *testing.T) {
 	}
 }
 
+func TestCreateUsesStrictNullableJSONBWire(t *testing.T) {
+	source, _ := openRestorePools(t, 0)
+	seedCompleteRestoreFixture(t, source)
+	archivePath, _ := createRestoreArchive(t, source)
+	archive, err := OpenArchive(context.Background(), archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+
+	assertFields := func(table TableName, selectRecord func(map[string]json.RawMessage) bool, want map[string]string) {
+		t.Helper()
+		matched := false
+		if err := archive.ReadTable(context.Background(), table, func(raw json.RawMessage) error {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				return err
+			}
+			if !selectRecord(fields) {
+				return nil
+			}
+			matched = true
+			for field, expected := range want {
+				if got := string(fields[field]); got != expected {
+					t.Fatalf("%s.%s=%s want=%s", table, field, got, expected)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !matched {
+			t.Fatalf("record not found in %s", table)
+		}
+	}
+	fieldEquals := func(name, value string) func(map[string]json.RawMessage) bool {
+		return func(fields map[string]json.RawMessage) bool {
+			var got string
+			return json.Unmarshal(fields[name], &got) == nil && got == value
+		}
+	}
+	assertFields(TableRuns, fieldEquals("id", backupRun1), map[string]string{
+		"graphSnapshot": `{"valid":false,"value":null}`,
+		"output":        `{"valid":true,"value":null}`,
+		"error":         `{"valid":false,"value":null}`,
+	})
+	assertFields(TableRuns, fieldEquals("id", backupRun2), map[string]string{
+		"graphSnapshot": `{"valid":true,"value":{}}`,
+	})
+	assertFields(TableNodeRuns, fieldEquals("id", backupNode1), map[string]string{
+		"input":  `{"valid":true,"value":null}`,
+		"output": `{"valid":true,"value":[]}`,
+		"error":  `{"valid":false,"value":null}`,
+	})
+	assertFields(TableRunEvents, fieldEquals("runId", backupRun2), map[string]string{
+		"input":  `{"valid":true,"value":null}`,
+		"output": `{"valid":true,"value":[]}`,
+		"error":  `{"valid":false,"value":null}`,
+	})
+}
+
 func TestCreateUsesOneReadOnlyRepeatableReadSnapshot(t *testing.T) {
 	pool := openBackupPool(t)
 	insertMinimalWorkflow(t, pool, backupWorkflow1, "first")

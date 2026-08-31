@@ -166,7 +166,7 @@ func TestStrictRecordDecodersRejectArchiveOnlyInvalidValues(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now, AgentPresentation: json.RawMessage(`{}`),
 	}
 	run := RunRecord{
-		ID: validateRunOne, WorkflowID: validateWorkflowOne, DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)),
+		ID: validateRunOne, WorkflowID: validateWorkflowOne, DraftRevision: pointer(int64(1)), GraphSnapshot: presentJSONB(`{}`),
 		Mode: "test", Status: "completed", Input: json.RawMessage(`{}`), InputRedactedPaths: []string{}, StartedAt: now,
 	}
 	workflowBody, err := json.Marshal(workflow)
@@ -252,7 +252,7 @@ func newReferenceFixtureData() referenceFixtureData {
 		},
 		runs: []RunRecord{
 			{ID: validateRunOne, WorkflowID: validateWorkflowOne, WorkflowVersionID: pointer(validateVersionOne), Mode: "published", Status: "completed", Input: json.RawMessage(`{}`), InputRedactedPaths: []string{}, StartedAt: now},
-			{ID: validateRunTwo, WorkflowID: validateWorkflowOne, GraphSnapshot: pointer(json.RawMessage(`{}`)), Mode: "debug", Status: "completed", Input: json.RawMessage(`{}`), SourceRunID: &runOne, SourceNodeID: pointer("start"), InputRedactedPaths: []string{}, StartedAt: now.Add(time.Second)},
+			{ID: validateRunTwo, WorkflowID: validateWorkflowOne, GraphSnapshot: presentJSONB(`{}`), Mode: "debug", Status: "completed", Input: json.RawMessage(`{}`), SourceRunID: &runOne, SourceNodeID: pointer("start"), InputRedactedPaths: []string{}, StartedAt: now.Add(time.Second)},
 			{ID: validateRunThree, WorkflowID: validateWorkflowOne, WorkflowVersionID: pointer(validateVersionOne), Mode: "published", Status: "completed", Input: json.RawMessage(`{}`), RetryOfRunID: &runOne, RetryKey: pointer(validateRetryKey), InputRedactedPaths: []string{}, StartedAt: now.Add(2 * time.Second)},
 		},
 		nodeRuns:    []NodeRunRecord{{ID: validateNodeOne, RunID: validateRunTwo, NodeID: "start", NodeType: "start", Status: "completed"}},

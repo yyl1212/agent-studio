@@ -10,6 +10,72 @@ import (
 	"github.com/google/uuid"
 )
 
+// NullableJSONB is the v1alpha1 wire representation for nullable PostgreSQL
+// jsonb columns. Valid=false means SQL NULL; Valid=true preserves Value,
+// including a JSON literal null.
+type NullableJSONB struct {
+	Valid bool            `json:"valid"`
+	Value json.RawMessage `json:"value"`
+}
+
+func (value NullableJSONB) MarshalJSON() ([]byte, error) {
+	raw := value.Value
+	if len(raw) == 0 {
+		raw = json.RawMessage("null")
+	}
+	if !json.Valid(raw) || (!value.Valid && !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))) {
+		return nil, errors.New("invalid nullable jsonb state")
+	}
+	type wire NullableJSONB
+	return json.Marshal(wire{Valid: value.Valid, Value: raw})
+}
+
+func (value *NullableJSONB) UnmarshalJSON(body []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil || len(fields) != 2 {
+		return errors.New("invalid nullable jsonb wire")
+	}
+	validRaw, hasValid := fields["valid"]
+	valueRaw, hasValue := fields["value"]
+	validToken := bytes.TrimSpace(validRaw)
+	if !hasValid || !hasValue ||
+		(!bytes.Equal(validToken, []byte("true")) && !bytes.Equal(validToken, []byte("false"))) ||
+		!json.Valid(valueRaw) {
+		return errors.New("invalid nullable jsonb wire")
+	}
+	valid := bytes.Equal(validToken, []byte("true"))
+	if !valid && !bytes.Equal(bytes.TrimSpace(valueRaw), []byte("null")) {
+		return errors.New("invalid nullable jsonb state")
+	}
+	value.Valid = valid
+	value.Value = append(value.Value[:0], valueRaw...)
+	return nil
+}
+
+func nullableJSONB(body []byte) NullableJSONB {
+	if len(body) == 0 {
+		return NullableJSONB{}
+	}
+	return NullableJSONB{Valid: true, Value: append(json.RawMessage(nil), body...)}
+}
+
+func (value NullableJSONB) databaseValue() any {
+	if !value.Valid {
+		return nil
+	}
+	if len(value.Value) == 0 {
+		return json.RawMessage("null")
+	}
+	return value.Value
+}
+
+func validNullableJSONB(value NullableJSONB) bool {
+	if !value.Valid {
+		return len(value.Value) == 0 || bytes.Equal(bytes.TrimSpace(value.Value), []byte("null"))
+	}
+	return json.Valid(value.Value)
+}
+
 type WorkflowRecord struct {
 	ID                 string          `json:"id"`
 	Name               string          `json:"name"`
@@ -35,55 +101,55 @@ type WorkflowVersionRecord struct {
 }
 
 type RunRecord struct {
-	ID                 string           `json:"id"`
-	WorkflowID         string           `json:"workflowId"`
-	WorkflowVersionID  *string          `json:"workflowVersionId"`
-	DraftRevision      *int64           `json:"draftRevision"`
-	GraphSnapshot      *json.RawMessage `json:"graphSnapshot"`
-	Mode               string           `json:"mode"`
-	Status             string           `json:"status"`
-	Input              json.RawMessage  `json:"input"`
-	Output             *json.RawMessage `json:"output"`
-	Error              *json.RawMessage `json:"error"`
-	StartedAt          time.Time        `json:"startedAt"`
-	EndedAt            *time.Time       `json:"endedAt"`
-	SourceRunID        *string          `json:"sourceRunId"`
-	SourceNodeID       *string          `json:"sourceNodeId"`
-	RetryOfRunID       *string          `json:"retryOfRunId"`
-	RetryKey           *string          `json:"retryKey"`
-	InputRedactedPaths []string         `json:"inputRedactedPaths"`
-	CancelRequestedAt  *time.Time       `json:"cancelRequestedAt"`
-	HeartbeatAt        *time.Time       `json:"heartbeatAt"`
-	AgentRequestKey    *string          `json:"agentRequestKey"`
+	ID                 string          `json:"id"`
+	WorkflowID         string          `json:"workflowId"`
+	WorkflowVersionID  *string         `json:"workflowVersionId"`
+	DraftRevision      *int64          `json:"draftRevision"`
+	GraphSnapshot      NullableJSONB   `json:"graphSnapshot"`
+	Mode               string          `json:"mode"`
+	Status             string          `json:"status"`
+	Input              json.RawMessage `json:"input"`
+	Output             NullableJSONB   `json:"output"`
+	Error              NullableJSONB   `json:"error"`
+	StartedAt          time.Time       `json:"startedAt"`
+	EndedAt            *time.Time      `json:"endedAt"`
+	SourceRunID        *string         `json:"sourceRunId"`
+	SourceNodeID       *string         `json:"sourceNodeId"`
+	RetryOfRunID       *string         `json:"retryOfRunId"`
+	RetryKey           *string         `json:"retryKey"`
+	InputRedactedPaths []string        `json:"inputRedactedPaths"`
+	CancelRequestedAt  *time.Time      `json:"cancelRequestedAt"`
+	HeartbeatAt        *time.Time      `json:"heartbeatAt"`
+	AgentRequestKey    *string         `json:"agentRequestKey"`
 }
 
 type NodeRunRecord struct {
-	ID        string           `json:"id"`
-	RunID     string           `json:"runId"`
-	NodeID    string           `json:"nodeId"`
-	NodeType  string           `json:"nodeType"`
-	Status    string           `json:"status"`
-	Input     *json.RawMessage `json:"input"`
-	Output    *json.RawMessage `json:"output"`
-	Error     *json.RawMessage `json:"error"`
-	StartedAt *time.Time       `json:"startedAt"`
-	EndedAt   *time.Time       `json:"endedAt"`
+	ID        string        `json:"id"`
+	RunID     string        `json:"runId"`
+	NodeID    string        `json:"nodeId"`
+	NodeType  string        `json:"nodeType"`
+	Status    string        `json:"status"`
+	Input     NullableJSONB `json:"input"`
+	Output    NullableJSONB `json:"output"`
+	Error     NullableJSONB `json:"error"`
+	StartedAt *time.Time    `json:"startedAt"`
+	EndedAt   *time.Time    `json:"endedAt"`
 }
 
 type RunEventRecord struct {
-	RunID               string           `json:"runId"`
-	Sequence            int64            `json:"sequence"`
-	Type                string           `json:"type"`
-	NodeID              *string          `json:"nodeId"`
-	Status              *string          `json:"status"`
-	Input               *json.RawMessage `json:"input"`
-	Output              *json.RawMessage `json:"output"`
-	ActivePorts         []string         `json:"activePorts"`
-	Error               *json.RawMessage `json:"error"`
-	InputRedactedPaths  []string         `json:"inputRedactedPaths"`
-	OutputRedactedPaths []string         `json:"outputRedactedPaths"`
-	DataBytes           int64            `json:"dataBytes"`
-	Timestamp           time.Time        `json:"timestamp"`
+	RunID               string        `json:"runId"`
+	Sequence            int64         `json:"sequence"`
+	Type                string        `json:"type"`
+	NodeID              *string       `json:"nodeId"`
+	Status              *string       `json:"status"`
+	Input               NullableJSONB `json:"input"`
+	Output              NullableJSONB `json:"output"`
+	ActivePorts         []string      `json:"activePorts"`
+	Error               NullableJSONB `json:"error"`
+	InputRedactedPaths  []string      `json:"inputRedactedPaths"`
+	OutputRedactedPaths []string      `json:"outputRedactedPaths"`
+	DataBytes           int64         `json:"dataBytes"`
+	Timestamp           time.Time     `json:"timestamp"`
 }
 
 type WorkflowDraftCheckpointRecord struct {
@@ -162,8 +228,8 @@ func decodeRunRecord(raw json.RawMessage) (RunRecord, error) {
 		!validOptionalUUID(record.SourceRunID) || !validOptionalUUID(record.RetryOfRunID) || !validOptionalUUID(record.RetryKey) ||
 		!validOptionalUUID(record.AgentRequestKey) || (record.DraftRevision != nil && *record.DraftRevision <= 0) ||
 		!oneOf(record.Mode, "test", "published", "debug") || !oneOf(record.Status, "running", "cancelling", "completed", "failed", "cancelled") ||
-		!jsonObject(record.Input) || (record.GraphSnapshot != nil && !jsonObject(*record.GraphSnapshot)) ||
-		(record.Error != nil && !jsonObject(*record.Error)) || record.InputRedactedPaths == nil || !validUTC(record.StartedAt) ||
+		!jsonObject(record.Input) || !validNullableJSONB(record.GraphSnapshot) || !validNullableJSONB(record.Output) ||
+		!validNullableJSONB(record.Error) || record.InputRedactedPaths == nil || !validUTC(record.StartedAt) ||
 		!validOptionalUTC(record.EndedAt) || !validOptionalUTC(record.CancelRequestedAt) || !validOptionalUTC(record.HeartbeatAt) {
 		return RunRecord{}, invalidRecord()
 	}
@@ -179,13 +245,13 @@ func validRunLocalSemantics(record RunRecord) bool {
 func validRunSourceFields(record RunRecord) bool {
 	switch record.Mode {
 	case "published":
-		return record.WorkflowVersionID != nil && record.DraftRevision == nil && record.GraphSnapshot == nil &&
+		return record.WorkflowVersionID != nil && record.DraftRevision == nil && !record.GraphSnapshot.Valid &&
 			record.SourceRunID == nil && record.SourceNodeID == nil
 	case "test":
-		return record.WorkflowVersionID == nil && record.DraftRevision != nil && record.GraphSnapshot != nil &&
+		return record.WorkflowVersionID == nil && record.DraftRevision != nil && record.GraphSnapshot.Valid &&
 			record.SourceRunID == nil && record.SourceNodeID == nil
 	case "debug":
-		return record.WorkflowVersionID == nil && record.DraftRevision == nil && record.GraphSnapshot != nil &&
+		return record.WorkflowVersionID == nil && record.DraftRevision == nil && record.GraphSnapshot.Valid &&
 			record.SourceRunID != nil && record.SourceNodeID != nil && *record.SourceNodeID != ""
 	default:
 		return false
@@ -201,7 +267,8 @@ func decodeNodeRunRecord(raw json.RawMessage) (NodeRunRecord, error) {
 		return NodeRunRecord{}, err
 	}
 	if !validUUID(record.ID) || !validUUID(record.RunID) || record.NodeID == "" || record.NodeType == "" ||
-		!nodeStatus(record.Status) || (record.Error != nil && !jsonObject(*record.Error)) ||
+		!nodeStatus(record.Status) || !validNullableJSONB(record.Input) || !validNullableJSONB(record.Output) ||
+		!validNullableJSONB(record.Error) ||
 		!validOptionalUTC(record.StartedAt) || !validOptionalUTC(record.EndedAt) {
 		return NodeRunRecord{}, invalidRecord()
 	}
@@ -218,7 +285,8 @@ func decodeRunEventRecord(raw json.RawMessage) (RunEventRecord, error) {
 	}
 	if !validUUID(record.RunID) || record.Sequence <= 0 || !oneOf(record.Type,
 		"run.started", "node.started", "node.completed", "node.failed", "node.skipped", "node.cancelled", "run.completed", "run.failed", "run.cancelled") ||
-		(record.Status != nil && !nodeStatus(*record.Status)) || (record.Error != nil && !jsonObject(*record.Error)) ||
+		(record.Status != nil && !nodeStatus(*record.Status)) || !validNullableJSONB(record.Input) ||
+		!validNullableJSONB(record.Output) || !validNullableJSONB(record.Error) ||
 		record.ActivePorts == nil || record.InputRedactedPaths == nil || record.OutputRedactedPaths == nil ||
 		record.DataBytes < 0 || !validUTC(record.Timestamp) {
 		return RunEventRecord{}, invalidRecord()

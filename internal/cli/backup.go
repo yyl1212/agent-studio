@@ -202,11 +202,22 @@ func writeBackupRestorePlan(writer io.Writer, plan backupdomain.RestorePlan) err
 		formatMigrationList(plan.PendingMigrations)); err != nil {
 		return err
 	}
+	if _, err := fmt.Fprintf(writer, "uncompressed: %d\nrestore-order: %s\n", plan.Archive.UncompressedBytes, formatTableOrder()); err != nil {
+		return err
+	}
 	if err := writeBackupTableCounts(writer, plan.Archive.Tables); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintf(writer, "target-empty: %t\n", plan.TargetEmpty)
 	return err
+}
+
+func formatTableOrder() string {
+	values := make([]string, len(backupdomain.TableOrder))
+	for index, name := range backupdomain.TableOrder {
+		values[index] = string(name)
+	}
+	return strings.Join(values, ",")
 }
 
 func writeBackupRestoreResult(writer io.Writer, result backupdomain.RestoreResult) error {

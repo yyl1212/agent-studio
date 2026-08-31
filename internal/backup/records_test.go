@@ -26,7 +26,7 @@ func TestValidateTableRecordAcceptsAllCompatibilityRecords(t *testing.T) {
 		},
 		TableRuns: RunRecord{
 			ID: recordUUID2, WorkflowID: recordUUID1, Mode: "test", Status: "completed", Input: json.RawMessage(`{}`),
-			DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)), StartedAt: now, InputRedactedPaths: []string{},
+			DraftRevision: pointer(int64(1)), GraphSnapshot: presentJSONB(`{}`), StartedAt: now, InputRedactedPaths: []string{},
 		},
 		TableNodeRuns: NodeRunRecord{
 			ID: recordUUID2, RunID: recordUUID1, NodeID: "start", NodeType: "start", Status: "completed",
@@ -75,11 +75,29 @@ func TestRecordDecodersRejectUnknownMissingAndTrailingFields(t *testing.T) {
 	}
 }
 
+func TestRecordDecoderRejectsAmbiguousAndInvalidNullableJSONBWire(t *testing.T) {
+	const oldAmbiguous = `{"id":"00000000-0000-0000-0000-000000000001","workflowId":"00000000-0000-0000-0000-000000000002","workflowVersionId":"00000000-0000-0000-0000-000000000002","draftRevision":null,"graphSnapshot":null,"mode":"published","status":"completed","input":{},"output":null,"error":null,"startedAt":"2026-08-29T10:00:00Z","endedAt":null,"sourceRunId":null,"sourceNodeId":null,"retryOfRunId":null,"retryKey":null,"inputRedactedPaths":[],"cancelRequestedAt":null,"heartbeatAt":null,"agentRequestKey":null}`
+	const invalidState = `{"id":"00000000-0000-0000-0000-000000000001","workflowId":"00000000-0000-0000-0000-000000000002","workflowVersionId":null,"draftRevision":1,"graphSnapshot":{"valid":true,"value":{}},"mode":"test","status":"completed","input":{},"output":{"valid":false,"value":{}},"error":{"valid":false,"value":null},"startedAt":"2026-08-29T10:00:00Z","endedAt":null,"sourceRunId":null,"sourceNodeId":null,"retryOfRunId":null,"retryKey":null,"inputRedactedPaths":[],"cancelRequestedAt":null,"heartbeatAt":null,"agentRequestKey":null}`
+	for _, test := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "legacy ambiguous null", raw: oldAmbiguous},
+		{name: "invalid false state carries value", raw: invalidState},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodeRunRecord(json.RawMessage(test.raw)); CodeOf(err) != CodeArchiveInvalid {
+				t.Fatalf("code=%q err=%v", CodeOf(err), err)
+			}
+		})
+	}
+}
+
 func TestRecordDecodersRejectInvalidUUIDTimeJSONAndArrays(t *testing.T) {
 	now := time.Now().UTC()
 	validRun := RunRecord{
 		ID: recordUUID1, WorkflowID: recordUUID2, Mode: "test", Status: "running", Input: json.RawMessage(`{}`),
-		DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)), StartedAt: now, InputRedactedPaths: []string{},
+		DraftRevision: pointer(int64(1)), GraphSnapshot: presentJSONB(`{}`), StartedAt: now, InputRedactedPaths: []string{},
 	}
 	for _, test := range []struct {
 		name   string
@@ -109,7 +127,7 @@ func TestRecordDecodersRejectInvalidUUIDTimeJSONAndArrays(t *testing.T) {
 func TestRunRecordDecoderAcceptsLocalRelationshipSemanticCases(t *testing.T) {
 	valid := RunRecord{
 		ID: recordUUID1, WorkflowID: recordUUID2, Mode: "test", Status: "running", Input: json.RawMessage(`{}`),
-		DraftRevision: pointer(int64(1)), GraphSnapshot: pointer(json.RawMessage(`{}`)), StartedAt: time.Now().UTC(),
+		DraftRevision: pointer(int64(1)), GraphSnapshot: presentJSONB(`{}`), StartedAt: time.Now().UTC(),
 		InputRedactedPaths: []string{},
 	}
 	for _, test := range []struct {
@@ -121,7 +139,7 @@ func TestRunRecordDecoderAcceptsLocalRelationshipSemanticCases(t *testing.T) {
 		{name: "published missing version", mutate: func(record *RunRecord) {
 			record.Mode = "published"
 			record.DraftRevision = nil
-			record.GraphSnapshot = nil
+			record.GraphSnapshot = NullableJSONB{}
 		}},
 		{name: "published has snapshot", mutate: func(record *RunRecord) { record.Mode = "published"; record.WorkflowVersionID = pointer(recordUUID2) }},
 		{name: "debug missing source", mutate: func(record *RunRecord) { record.Mode = "debug"; record.DraftRevision = nil }},
@@ -140,6 +158,10 @@ func TestRunRecordDecoderAcceptsLocalRelationshipSemanticCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func presentJSONB(value string) NullableJSONB {
+	return NullableJSONB{Valid: true, Value: json.RawMessage(value)}
 }
 
 func TestRunEventDecoderRejectsInvalidIntegerEnumAndNilArrays(t *testing.T) {

@@ -252,8 +252,8 @@ func copyRuns(ctx context.Context, tx pgx.Tx, archive *Archive) (uint64, error) 
 		decodeRunRecord,
 		func(record RunRecord) ([]any, error) {
 			return []any{referenceUUID(record.ID), referenceUUID(record.WorkflowID), optionalReferenceUUID(record.WorkflowVersionID),
-				record.DraftRevision, optionalJSON(record.GraphSnapshot), record.Mode, record.Status, record.Input,
-				optionalJSON(record.Output), optionalJSON(record.Error), record.StartedAt, record.EndedAt,
+				record.DraftRevision, record.GraphSnapshot.databaseValue(), record.Mode, record.Status, record.Input,
+				record.Output.databaseValue(), record.Error.databaseValue(), record.StartedAt, record.EndedAt,
 				optionalReferenceUUID(record.SourceRunID), record.SourceNodeID, optionalReferenceUUID(record.RetryOfRunID),
 				optionalReferenceUUID(record.RetryKey), record.InputRedactedPaths, record.CancelRequestedAt, record.HeartbeatAt,
 				optionalReferenceUUID(record.AgentRequestKey)}, nil
@@ -266,7 +266,7 @@ func copyNodeRuns(ctx context.Context, tx pgx.Tx, archive *Archive) (uint64, err
 		decodeNodeRunRecord,
 		func(record NodeRunRecord) ([]any, error) {
 			return []any{referenceUUID(record.ID), referenceUUID(record.RunID), record.NodeID, record.NodeType, record.Status,
-				optionalJSON(record.Input), optionalJSON(record.Output), optionalJSON(record.Error), record.StartedAt, record.EndedAt}, nil
+				record.Input.databaseValue(), record.Output.databaseValue(), record.Error.databaseValue(), record.StartedAt, record.EndedAt}, nil
 		})
 }
 
@@ -276,7 +276,7 @@ func copyRunEvents(ctx context.Context, tx pgx.Tx, archive *Archive) (uint64, er
 		decodeRunEventRecord,
 		func(record RunEventRecord) ([]any, error) {
 			return []any{referenceUUID(record.RunID), record.Sequence, record.Type, record.NodeID, record.Status,
-				optionalJSON(record.Input), optionalJSON(record.Output), record.ActivePorts, optionalJSON(record.Error),
+				record.Input.databaseValue(), record.Output.databaseValue(), record.ActivePorts, record.Error.databaseValue(),
 				record.InputRedactedPaths, record.OutputRedactedPaths, record.DataBytes, record.Timestamp}, nil
 		})
 }
@@ -358,13 +358,6 @@ func combineCopyAndCloseErrors(resultErr, closeErr error) error {
 		return errors.Join(safeResult, safeClose)
 	}
 	return errors.Join(safeClose, safeResult)
-}
-
-func optionalJSON(value *json.RawMessage) any {
-	if value == nil {
-		return nil
-	}
-	return *value
 }
 
 func validateRestoredData(ctx context.Context, tx pgx.Tx, archive *Archive, counts map[TableName]uint64) error {

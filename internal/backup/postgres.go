@@ -299,10 +299,10 @@ func scanRunRecord(row pgx.Row) (RunRecord, error) {
 	); err != nil {
 		return RunRecord{}, Wrap(CodeCreateFailed, "scan source run", err)
 	}
-	record.GraphSnapshot = rawPointer(graph)
+	record.GraphSnapshot = nullableJSONB(graph)
 	record.Input = append(json.RawMessage(nil), input...)
-	record.Output = rawPointer(output)
-	record.Error = rawPointer(errorJSON)
+	record.Output = nullableJSONB(output)
+	record.Error = nullableJSONB(errorJSON)
 	record.InputRedactedPaths = nonNilStrings(record.InputRedactedPaths)
 	record.StartedAt = record.StartedAt.UTC()
 	normalizeOptionalTime(record.EndedAt)
@@ -326,7 +326,7 @@ func exportNodeRuns(ctx context.Context, transaction pgx.Tx, writer io.Writer) (
 			&input, &output, &errorJSON, &record.StartedAt, &record.EndedAt); err != nil {
 			return 0, Wrap(CodeCreateFailed, "scan source node run", err)
 		}
-		record.Input, record.Output, record.Error = rawPointer(input), rawPointer(output), rawPointer(errorJSON)
+		record.Input, record.Output, record.Error = nullableJSONB(input), nullableJSONB(output), nullableJSONB(errorJSON)
 		normalizeOptionalTime(record.StartedAt)
 		normalizeOptionalTime(record.EndedAt)
 		if err := writeRecord(writer, TableNodeRuns, record); err != nil {
@@ -356,7 +356,7 @@ func exportRunEvents(ctx context.Context, transaction pgx.Tx, writer io.Writer) 
 			&record.OutputRedactedPaths, &record.DataBytes, &record.Timestamp); err != nil {
 			return 0, Wrap(CodeCreateFailed, "scan source run event", err)
 		}
-		record.Input, record.Output, record.Error = rawPointer(input), rawPointer(output), rawPointer(errorJSON)
+		record.Input, record.Output, record.Error = nullableJSONB(input), nullableJSONB(output), nullableJSONB(errorJSON)
 		record.ActivePorts = nonNilStrings(record.ActivePorts)
 		record.InputRedactedPaths = nonNilStrings(record.InputRedactedPaths)
 		record.OutputRedactedPaths = nonNilStrings(record.OutputRedactedPaths)
@@ -409,14 +409,6 @@ func normalizeOptionalTime(value *time.Time) {
 	if value != nil {
 		*value = value.UTC()
 	}
-}
-
-func rawPointer(body []byte) *json.RawMessage {
-	if len(body) == 0 {
-		return nil
-	}
-	value := json.RawMessage(append([]byte(nil), body...))
-	return &value
 }
 
 func nonNilStrings(values []string) []string {

@@ -159,13 +159,14 @@ func TestBackupRestoreRequiresDatabaseURL(t *testing.T) {
 func TestBackupRestoreRoutesModesAndPrintsSafeSummaries(t *testing.T) {
 	secret := "postgres://user:secret@example/database"
 	summary := backupSummaryFixture("fixture.asbak")
+	summary.UncompressedBytes = 2048
 	summary.Tables = []backupdomain.TableManifest{{Name: backupdomain.TableWorkflows, Records: 1}, {Name: backupdomain.TableRuns, Records: 3}}
 	for _, test := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{name: "dry run", args: []string{"restore", "--dry-run", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha1\narchive-migration: 6\ntarget-migration: 0\nlatest-migration: 6\npending-migrations: 1,2,3,4,5,6\nrecords: 4\nworkflows: 1\nruns: 3\ntarget-empty: true\n"},
+		{name: "dry run", args: []string{"restore", "--dry-run", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha1\narchive-migration: 6\ntarget-migration: 0\nlatest-migration: 6\npending-migrations: 1,2,3,4,5,6\nuncompressed: 2048\nrestore-order: workflows,workflow_versions,runs,node_runs,run_events,workflow_draft_checkpoints\nrecords: 4\nworkflows: 1\nruns: 3\ntarget-empty: true\n"},
 		{name: "restore", args: []string{"restore", "--confirm-empty-instance", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha1\narchive-migration: 6\ncommitted-migration: 6\nrecords: 4\nworkflows: 1\nruns: 3\nrestored: true\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

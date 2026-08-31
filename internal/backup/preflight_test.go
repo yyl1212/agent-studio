@@ -176,24 +176,104 @@ func TestDryRunRejectsNonEmptyBusinessTargetWithoutPersistentWrites(t *testing.T
 	assertTargetVersionAndBusinessRows(t, pool, 6, 8)
 }
 
+func TestDryRunRejectsInvalidReferencesWithoutPersistentWrites(t *testing.T) {
+	pool := openUnmigratedTarget(t)
+	setTargetMigrationVersion(t, pool, 6)
+	data := newReferenceFixtureData()
+	removeReferenceNodeRunParent(&data)
+	archivePath := filepath.Join(t.TempDir(), "invalid-reference.asbak")
+	if _, err := WriteArchive(context.Background(), archivePath, manifestFixture(time.Now().UTC()), referenceFixtureWriters(t, data)); err != nil {
+		t.Fatal(err)
+	}
+	var ledgerBefore int64
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM schema_migrations`).Scan(&ledgerBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := DryRun(context.Background(), pool, archivePath)
+	if CodeOf(err) != CodeReferenceInvalid {
+		t.Fatalf("code=%q err=%v", CodeOf(err), err)
+	}
+	var ledgerAfter int64
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM schema_migrations`).Scan(&ledgerAfter); err != nil {
+		t.Fatal(err)
+	}
+	if ledgerAfter != ledgerBefore {
+		t.Fatalf("migration ledger rows=%d want=%d", ledgerAfter, ledgerBefore)
+	}
+	for _, table := range TableOrder {
+		var count int64
+		if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM "+pgx.Identifier{string(table)}.Sanitize()).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows=%d", table, count)
+		}
+	}
+	var temporaryReferences int64
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_class relation
+		JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+		WHERE namespace.nspname LIKE 'pg_temp_%' AND relation.relname = ANY($1)`, []string{
+		"backup_workflow_refs", "backup_version_refs", "backup_run_refs", "backup_node_run_refs", "backup_event_refs", "backup_checkpoint_refs",
+	}).Scan(&temporaryReferences); err != nil {
+		t.Fatal(err)
+	}
+	if temporaryReferences != 0 {
+		t.Fatalf("temporary reference tables=%d", temporaryReferences)
+	}
+}
+
 func TestDryRunRejectsSharedMaintenanceLeases(t *testing.T) {
 	archivePath := referenceArchivePath(t, 6)
-	for _, name := range []string{"api shared lease", "backup shared lease"} {
-		t.Run(name, func(t *testing.T) {
-			pool := openUnmigratedTarget(t)
-			lease, err := database.TryShared(context.Background(), pool)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer lease.Release(context.Background())
+	t.Run("api runtime lease", func(t *testing.T) {
+		pool := openUnmigratedTarget(t)
+		lease, err := database.PrepareRuntime(context.Background(), pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lease.Release(context.Background())
 
-			_, err = DryRun(context.Background(), pool, archivePath)
-			if CodeOf(err) != CodeAPIRunning {
-				t.Fatalf("code=%q err=%v", CodeOf(err), err)
+		_, err = DryRun(context.Background(), pool, archivePath)
+		if CodeOf(err) != CodeAPIRunning {
+			t.Fatalf("code=%q err=%v", CodeOf(err), err)
+		}
+		assertTargetVersionAndBusinessRows(t, pool, 6, 0)
+	})
+
+	t.Run("backup create lease", func(t *testing.T) {
+		pool := openBackupPool(t)
+		snapshotStarted := make(chan struct{})
+		continueCreate := make(chan struct{})
+		createResult := make(chan error, 1)
+		output := filepath.Join(t.TempDir(), "shared.asbak")
+		defer func() {
+			select {
+			case <-continueCreate:
+			default:
+				close(continueCreate)
 			}
-			assertTargetVersionAndBusinessRows(t, pool, 0, 0)
-		})
-	}
+		}()
+		go func() {
+			_, err := createWithHooks(context.Background(), pool, CreateOptions{
+				Output: output, RuntimeVersion: "test",
+			}, createHooks{afterSnapshot: func() {
+				close(snapshotStarted)
+				<-continueCreate
+			}})
+			createResult <- err
+		}()
+		<-snapshotStarted
+
+		_, err := DryRun(context.Background(), pool, archivePath)
+		if CodeOf(err) != CodeAPIRunning {
+			t.Fatalf("code=%q err=%v", CodeOf(err), err)
+		}
+		close(continueCreate)
+		if err := <-createResult; err != nil {
+			t.Fatal(err)
+		}
+		assertTargetVersionAndBusinessRows(t, pool, 6, 0)
+	})
 }
 
 func TestDryRunReturnsSafeArchiveAndCancellationErrors(t *testing.T) {
