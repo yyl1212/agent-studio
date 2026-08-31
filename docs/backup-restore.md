@@ -77,8 +77,9 @@ make backup-restore-dry-run BACKUP=./backups/studio-20260829.asbak
 3. 确认目标业务表为空；如果 schema 已存在，可使用只读计数检查：
 
    ```bash
-   DATABASE_URL='postgres://user:password@target-host:5432/agent_studio?sslmode=disable' \
-     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT (SELECT count(*) FROM workflows) AS workflows, (SELECT count(*) FROM workflow_versions) AS workflow_versions, (SELECT count(*) FROM runs) AS runs, (SELECT count(*) FROM node_runs) AS node_runs, (SELECT count(*) FROM run_events) AS run_events, (SELECT count(*) FROM workflow_draft_checkpoints) AS workflow_draft_checkpoints;'
+   DATABASE_URL='postgres://user:password@target-host:5432/agent_studio?sslmode=disable'
+   export DATABASE_URL
+   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT (SELECT count(*) FROM workflows) AS workflows, (SELECT count(*) FROM workflow_versions) AS workflow_versions, (SELECT count(*) FROM runs) AS runs, (SELECT count(*) FROM node_runs) AS node_runs, (SELECT count(*) FROM run_events) AS run_events, (SELECT count(*) FROM workflow_draft_checkpoints) AS workflow_draft_checkpoints;'
    ```
 
    若 schema 尚不存在，保持目标为空并让 dry-run 计算迁移计划；不要预先写入业务数据。

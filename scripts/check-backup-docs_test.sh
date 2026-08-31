@@ -22,6 +22,17 @@ done
 grep -F 'backup restore --dry-run' docs/backup-restore.md >/dev/null
 grep -F 'backup restore --confirm-empty-instance' docs/backup-restore.md >/dev/null
 
+if ! awk '
+  /^   DATABASE_URL=/ { assigned = 1; next }
+  assigned && /^   export DATABASE_URL$/ { exported = 1; next }
+  exported && /^   psql "\$DATABASE_URL" -v ON_ERROR_STOP=1 -c / { found = 1; exit }
+  { assigned = 0; exported = 0 }
+  END { exit !found }
+' docs/backup-restore.md; then
+  printf '%s\n' 'backup docs must assign and export DATABASE_URL before invoking psql' >&2
+  exit 1
+fi
+
 for forbidden in \
   '备份包已内置加密' \
   '可以合并恢复到非空实例' \
