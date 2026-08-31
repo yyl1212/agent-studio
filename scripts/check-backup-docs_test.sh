@@ -22,14 +22,26 @@ done
 grep -F 'backup restore --dry-run' docs/backup-restore.md >/dev/null
 grep -F 'backup restore --confirm-empty-instance' docs/backup-restore.md >/dev/null
 
+if awk '
+  /^   DATABASE_URL=.*[[:space:]]\\$/ {
+    if (getline nextLine > 0 && nextLine ~ /^[[:space:]]+psql "\$DATABASE_URL" -v ON_ERROR_STOP=1 -c /) {
+      oldForm = 1
+    }
+  }
+  END { exit !oldForm }
+' docs/backup-restore.md; then
+  printf '%s\n' 'backup docs must not use a temporary DATABASE_URL assignment with psql' >&2
+  exit 1
+fi
+
 if ! awk '
-  /^   DATABASE_URL=/ { assigned = 1; next }
+  /^   DATABASE_URL=[^[:space:]]/ { assigned = 1; next }
   assigned && /^   export DATABASE_URL$/ { exported = 1; next }
   exported && /^   psql "\$DATABASE_URL" -v ON_ERROR_STOP=1 -c / { found = 1; exit }
   { assigned = 0; exported = 0 }
   END { exit !found }
 ' docs/backup-restore.md; then
-  printf '%s\n' 'backup docs must assign and export DATABASE_URL before invoking psql' >&2
+  printf '%s\n' 'backup docs must assign a non-empty DATABASE_URL, export it, then invoke psql' >&2
   exit 1
 fi
 
