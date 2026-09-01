@@ -95,8 +95,8 @@ def validate_script(path)
   require_body(current_api, [/\Acurrent_api_start_role=\$1\z/, /\Acurrent_api_start_url=\$\(database_url ["']\$current_api_start_role["']\)\z/, /\ADATABASE_URL=["']\$current_api_start_url["'] start_process ["']\$current_api["']\z/, /\Acurrent_api_pid=\$started_pid\z/, /\Await_ready\b/], "start_current_api must execute role resolution, start and wait")
   worker = function_body(code, "start_current_worker")
   require_body(worker, [/\Acurrent_worker_start_role=\$1\z/, /\Acurrent_worker_start_url=\$\(database_url ["']\$current_worker_start_role["']\)\z/, /\ADATABASE_URL=["']\$current_worker_start_url["'] start_process ["']\$current_worker["']\z/, /\Acurrent_worker_pid=\$started_pid\z/, /\Await_ready\b/], "start_current_worker must execute role resolution, start and wait")
-  require_body(function_body(code, "stop_legacy_api"), [/\Astop_process ["']\$legacy_api_pid["']\z/, /\Alegacy_api_pid=\z/], "stop_legacy_api must stop and clear its pid")
-  require_body(function_body(code, "stop_current_runtime"), [/\Astop_process ["']\$current_worker_pid["']\z/, /\Astop_process ["']\$current_api_pid["']\z/, /\Acurrent_worker_pid=\z/, /\Acurrent_api_pid=\z/], "stop_current_runtime must stop and clear both pids")
+  require_body(function_body(code, "stop_legacy_api"), [/\Astop_process ["']\$legacy_api_pid["'] ["']\$deadline_epoch_ms["']\z/, /\Alegacy_api_pid=\z/], "stop_legacy_api must stop and clear its pid")
+  require_body(function_body(code, "stop_current_runtime"), [/\Astop_process ["']\$current_worker_pid["'] ["']\$deadline_epoch_ms["']\z/, /\Astop_process ["']\$current_api_pid["'] ["']\$deadline_epoch_ms["']\z/, /\Acurrent_worker_pid=\z/, /\Acurrent_api_pid=\z/], "stop_current_runtime must stop and clear both pids")
   create = function_body(code, "create_database")
   require_body(create, [/\Acreate_database_role=\$1\z/, /\Acreate_database_name=\$\(database_name ["']\$create_database_role["']\)\z/, /\Apostgres_exec\s+psql\b.*CREATE DATABASE.*\$create_database_name/, /\Acreate_database_table_count=\$\(postgres_exec\s+psql\b.*database_url ["']\$create_database_role["']/, /\Aassert_eq ["']\$create_database_table_count["'] 0 empty_database\z/], "create_database must execute mapped creation and empty assertion")
   dump = function_body(code, "dump_database")
@@ -149,8 +149,9 @@ def validate_workflow(path)
   reject!("v04 steps cannot continue on error") if steps.any? { |step| step.key?("continue-on-error") }
   reject!("v04 execution steps cannot be conditional") if steps.reject { |step| step.equal?(upload) }.any? { |step| step.key?("if") }
   reject!("workflow must never upload a database dump") if job.to_s.match?(/(?:\*\.dump|\.dump\b)/i)
+  upload_paths = upload&.dig("with", "path").to_s.lines.map(&:strip).reject(&:empty?)
   safe_upload = uploads.length == 1 && upload["if"] == "failure()" && upload.dig("with", "name") == "v04-upgrade-rollback-logs" &&
-                upload["uses"].match?(/\Aactions\/upload-artifact@[0-9a-f]{40}\z/) && upload.dig("with", "path") == "artifacts/v04-upgrade-rollback/*.log" &&
+                upload["uses"].match?(/\Aactions\/upload-artifact@[0-9a-f]{40}\z/) && upload_paths == ["artifacts/v04-upgrade-rollback/*.log", "artifacts/v04-upgrade-rollback/failure-summary.json"] &&
                 upload.dig("with", "retention-days").to_i == 7
   reject!("failure artifact must use the exact safe log contract") unless safe_upload && !upload.key?("continue-on-error")
 end
@@ -220,7 +221,7 @@ seed_legacy_runs() {
   postgres_exec psql --dbname="$(database_url upgrade_source)" -c "INSERT INTO runs(status) VALUES ('running'), ('cancelling')"
 }
 stop_legacy_api() {
-  stop_process "$legacy_api_pid"; legacy_api_pid=
+  stop_process "$legacy_api_pid" "$deadline_epoch_ms"; legacy_api_pid=
 }
 dump_database() {
   dump_role=$1; [ "$dump_role" = upgrade_source ]; postgres_exec pg_dump --format=custom --dbname="$(database_url "$dump_role")" --file="$run_root/v040.dump"
@@ -241,7 +242,7 @@ smoke_current_run() {
   smoke_run_status=$(curl -fsS "$current_api_url/api/runs/current" | jq -r .status); smoke_terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT count(*) FROM run_events WHERE terminal'); smoke_lease_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT count(*) FROM runs WHERE lease_owner IS NOT NULL'); assert_eq "$smoke_run_status" completed current_run_status; assert_eq "$smoke_terminal_count" 1 current_terminal_events; assert_eq "$smoke_lease_count" 0 current_leases
 }
 stop_current_runtime() {
-  stop_process "$current_worker_pid"; current_worker_pid=; stop_process "$current_api_pid"; current_api_pid=
+  stop_process "$current_worker_pid" "$deadline_epoch_ms"; current_worker_pid=; stop_process "$current_api_pid" "$deadline_epoch_ms"; current_api_pid=
 }
 restore_database() {
   restore_role=$1; [ "$restore_role" = rollback_target ]; postgres_exec pg_restore --exit-on-error --dbname="$(database_url "$restore_role")" "$run_root/v040.dump"
@@ -287,7 +288,7 @@ jobs:
       - name: Preserve failure logs
         if: failure()
         uses: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-        with: {name: v04-upgrade-rollback-logs, path: "artifacts/v04-upgrade-rollback/*.log", retention-days: 7}
+        with: {name: v04-upgrade-rollback-logs, path: "artifacts/v04-upgrade-rollback/*.log\nartifacts/v04-upgrade-rollback/failure-summary.json\n", retention-days: 7}
 YAML
 
 sh -n "$valid_script"
@@ -325,6 +326,7 @@ missing_cancelling="$test_root/missing-cancelling.sh"; replace "$missing_cancell
 dangerous="$test_root/dangerous.sh"; cp "$valid_script" "$dangerous"; printf '%s\n' "postgres_exec psql -c 'ALTER TABLE runs DROP COLUMN status'" >>"$dangerous"; sh -n "$dangerous"; expect_rejected script "$dangerous" "forbidden inverse"
 unsafe_artifact="$test_root/unsafe-artifact.yml"; replace "$unsafe_artifact" "$valid_workflow" 'name: v04-upgrade-rollback-logs' 'name: unsafe-database-artifact'; expect_rejected workflow "$unsafe_artifact" "exact safe log contract"
 dump_upload="$test_root/dump-upload.yml"; replace "$dump_upload" "$valid_workflow" 'artifacts/v04-upgrade-rollback/*.log' 'artifacts/v04-upgrade-rollback/*.dump'; expect_rejected workflow "$dump_upload" "never upload a database dump"
+other_json="$test_root/other-json.yml"; replace "$other_json" "$valid_workflow" 'artifacts/v04-upgrade-rollback/failure-summary.json' 'artifacts/v04-upgrade-rollback/*.json'; expect_rejected workflow "$other_json" "exact safe log contract"
 
 ruby -e 'm=File.read("Makefile"); raise unless m.match?(/^test-v05-upgrade-rollback-e2e:\n\tsh scripts\/test-v05-upgrade-rollback-e2e\.sh$/) && m.lines.grep(/^\.PHONY:/).join.include?("test-v05-upgrade-rollback-e2e")'
 make --no-print-directory -n test-v05-upgrade-rollback-e2e >/dev/null
@@ -352,6 +354,8 @@ abort "cleanup must use attempted compose state" unless cleanup.include?("compos
 abort "cleanup must collect PostgreSQL logs before down" unless cleanup.index("collect_postgres_logs") && cleanup.index("docker compose") && cleanup.index("collect_postgres_logs") < cleanup.rindex("docker compose")
 abort "cleanup down must be independently bounded" unless cleanup.match?(/run_cleanup_bounded.*docker compose.*down --remove-orphans/m)
 abort "cleanup must not remove volumes" if cleanup.match?(/down[^\n]*(?:--volumes|\s-v(?:\s|$))/)
+%w[cleanup_total_deadline_ms cleanup_stop_deadline_ms cleanup_logs_deadline_ms cleanup_artifact_deadline_ms cleanup_down_deadline_ms cleanup_remove_deadline_ms].each { |name| abort "#{name} missing" unless cleanup.include?(name) }
+abort "stop_process must accept a shared absolute deadline" unless source[/^stop_process\(\)\s*\{\n(.*?)^\}/m,1].include?('stop_process_deadline_ms=$2')
 up=source.index('docker compose -f "$compose_file" up -d db') or abort "compose up missing"
 attempt=source.rindex("compose_attempted=1",up) or abort "compose attempt must be marked before up"
 abort "compose attempt marker too early to bind up" if source[attempt...up].include?("compose_attempted=0")
@@ -365,7 +369,11 @@ sensitive=source[/^sensitive_literals\(\)\s*\{\n(.*?)^\}/m,1] or abort "sensitiv
 transition=source[/^assert_legacy_transition\(\)\s*\{\n(.*?)^\}/m,1] or abort "transition assertion missing"
 %w[completed_snapshot cancelling_snapshot run.started run.completed].each { |marker| abort "transition #{marker} assertion missing" unless transition.include?(marker) }
 cancelled=source[/^assert_cancelling_cancelled\(\)\s*\{\n(.*?)^\}/m,1] or abort "worker assertion missing"
-%w[lease_token running_node_count running_event_count running_terminal_count].each { |marker| abort "legacy unclaimed #{marker} assertion missing" unless cancelled.include?(marker) }
+%w[lease_token running_node_count running_event_count running_terminal_count worker_assert_event_sequence run.started,run.cancelled].each { |marker| abort "legacy unclaimed #{marker} assertion missing" unless cancelled.include?(marker) }
+scan=source[/^contains_sensitive_data\(\)\s*\{\n(.*?)^\}/m,1] or abort "sensitive scanner missing"
+abort "scanner errors must be distinct" unless scan.include?('exit 2')
+artifacts=source[/^capture_failure_artifacts\(\)\s*\{\n(.*?)^\}/m,1] or abort "artifact capture missing"
+abort "artifact scan must fail closed" unless artifacts.match?(/case .*scan.* in/m) && artifacts.include?('failure_artifact_unsafe=1')
 rollback=source[/^assert_rollback_records\(\)\s*\{\n(.*?)^\}/m,1] or abort "rollback assertion missing"
 %w[completed_snapshot cancelling_snapshot running_snapshot run.started run.completed].each { |marker| abort "rollback #{marker} content assertion missing" unless rollback.include?(marker) }
 require_match(source, /elapsed_ms=.*now_epoch_ms.*start_epoch_ms/m, "elapsed measurement missing")
@@ -504,22 +512,44 @@ $(cat "$sensitive_functions")
 RUN_PAYLOAD_ENCRYPTION_KEY=contract-key
 current_request_key=contract-idempotency
 export RUN_PAYLOAD_ENCRYPTION_KEY
-run_cleanup_bounded() { shift; "\$@"; }
+run_bounded_until() { shift 2; "\$@"; }
+run_cleanup_bounded() { shift 2; "\$@"; }
 for literal in contract-key contract-idempotency legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker; do
   printf '%s\n' "\$literal" >"$test_root/sensitive.log"
-  contains_sensitive_data "$test_root/sensitive.log"
+  contains_sensitive_data "$test_root/sensitive.log" 9999999999999
 done
 artifact_dir="$test_root/safe-artifacts"; legacy_log="$test_root/sensitive.log"; current_api_log="$test_root/empty-api.log"; worker_log="$test_root/empty-worker.log"; postgres_log="$test_root/empty-postgres.log"; restore_list="$test_root/empty-restore.log"; summary_log="$test_root/failure-summary.json"
 : >"\$current_api_log"; : >"\$worker_log"; : >"\$postgres_log"; : >"\$restore_list"
 for literal in contract-key contract-idempotency legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker; do printf '%s\n' "\$literal"; done >"\$legacy_log"
 current_phase=09_start_current_api; start_epoch_ms=0; old_commit=; dump_sha=; compose_project_id=contract01
 now_epoch_ms() { printf '%s\n' 1234; }
-capture_failure_artifacts 17
+capture_failure_artifacts 17 9999999999999
 summary="\$artifact_dir/failure-summary.json"; [ -f "\$summary" ]; jq -e '.phase=="09_start_current_api" and .exitCode==17 and .elapsedMs==1234 and .logsWithheld==true and .composeProjectId=="contract01" and (keys|sort)==["composeProjectId","elapsedMs","exitCode","logsWithheld","phase"]' "\$summary" >/dev/null
 for literal in contract-key contract-idempotency legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker 'sh -c' '--dbname'; do ! grep -F -- "\$literal" "\$summary" >/dev/null; done
+contains_sensitive_data() { [ "\${fake_scan_status:-1}" -eq 2 ] && return 2; [ "\$1" = "\$summary_log" ] && return 1; [ "\$1" = "\$legacy_log" ] && return "\$fake_scan_status"; return 1; }
+for scan_case in '2|true|no' '1|false|yes'; do fake_scan_status=\${scan_case%%|*}; scan_rest=\${scan_case#*|}; expected_withheld=\${scan_rest%%|*}; expected_runtime=\${scan_rest#*|}; artifact_dir="$test_root/scan-\$fake_scan_status"; summary_log="$test_root/summary-\$fake_scan_status.json"; printf safe-log >"\$legacy_log"; capture_failure_artifacts 17 9999999999999; jq -e --argjson expected "\$expected_withheld" '.logsWithheld==\$expected' "\$artifact_dir/failure-summary.json" >/dev/null; [ "\$expected_runtime" = yes ] && [ -f "\$artifact_dir/runtime.log" ] || [ ! -f "\$artifact_dir/runtime.log" ]; done
 SH
 [ -s "$test_root/sensitive-harness.sh" ] || { printf '%s\n' 'sensitive harness generation failed' >&2; exit 1; }
 chmod +x "$test_root/sensitive-harness.sh"
 if ! sh "$test_root/sensitive-harness.sh"; then printf '%s\n' 'sensitive literal fixture failed' >&2; exit 1; fi
+
+cleanup_functions="$test_root/cleanup-functions.sh"
+extract_functions "$cleanup_functions" now_epoch_ms remaining_budget_ms set_safe_command_label wait_bounded run_bounded_until run_cleanup_bounded stop_process collect_postgres_logs cleanup
+cat >"$fake_bin/docker" <<'SH'
+#!/bin/sh
+case "$*" in *"logs --no-color db"*) sleep 30;; *"down --remove-orphans"*) : >"$CLEANUP_DOWN_MARKER";; esac
+SH
+chmod +x "$fake_bin/docker"
+cat >"$test_root/cleanup-harness.sh" <<SH
+#!/bin/sh
+set -eu
+$(cat "$cleanup_functions")
+run_root="$test_root/hanging-run-root"; mkdir "\$run_root"; compose_file="\$run_root/compose.yaml"; postgres_log="\$run_root/postgres.log"; compose_attempted=1; current_request_key=; last_safe_command_label=initializing
+sh -c 'trap "" TERM; while :; do sleep 1; done' & current_worker_pid=\$!; sh -c 'trap "" TERM; while :; do sleep 1; done' & current_api_pid=\$!; sh -c 'trap "" TERM; while :; do sleep 1; done' & legacy_api_pid=\$!
+cleanup 0
+SH
+chmod +x "$test_root/cleanup-harness.sh"
+cleanup_started=$(ruby -e 'puts (Time.now.to_f*1000).to_i'); PATH="$fake_bin:$PATH" CLEANUP_DOWN_MARKER="$test_root/cleanup-down.marker" sh "$test_root/cleanup-harness.sh"; cleanup_elapsed=$(($(ruby -e 'puts (Time.now.to_f*1000).to_i')-cleanup_started))
+[ -f "$test_root/cleanup-down.marker" ] && [ ! -e "$test_root/hanging-run-root" ] && [ "$cleanup_elapsed" -lt 20000 ]
 
 printf '%s\n' 'v0.4 upgrade/rollback E2E contract passed'

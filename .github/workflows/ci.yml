@@ -201,7 +201,9 @@ jobs:
           name: v04-upgrade-rollback-logs
           if-no-files-found: ignore
           retention-days: 7
-          path: artifacts/v04-upgrade-rollback/*.log
+          path: |
+            artifacts/v04-upgrade-rollback/*.log
+            artifacts/v04-upgrade-rollback/failure-summary.json
 
   release-artifacts:
     name: Release artifact snapshot

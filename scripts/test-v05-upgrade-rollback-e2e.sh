@@ -70,12 +70,12 @@ run_bounded_until() {
   bounded_deadline_ms=$1; bounded_command_label=$2; shift 2
   set_safe_command_label "$bounded_command_label" || return 2
   bounded_command_budget_ms=$(remaining_budget_ms "$bounded_deadline_ms") || return 124
-  ruby -e 'budget=ARGV.shift.to_i; child=nil; stop=lambda{|sig| begin Process.kill(sig,-child) if child rescue Errno::ESRCH end}; child=Process.spawn(*ARGV,pgroup:true); %w[HUP INT TERM].each{|sig| Signal.trap(sig){stop.call("TERM"); sleep 0.1; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 143}}; deadline=Process.clock_gettime(Process::CLOCK_MONOTONIC)+budget/1000.0; loop do; waited=Process.waitpid(child,Process::WNOHANG); exit($?.exitstatus || 128+$?.termsig) if waited; if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline; stop.call("TERM"); grace=Process.clock_gettime(Process::CLOCK_MONOTONIC)+1; loop do; waited=Process.waitpid(child,Process::WNOHANG); exit 124 if waited; break if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=grace; sleep 0.05; end; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 124; end; sleep 0.05; end' "$bounded_command_budget_ms" "$@" <&0 &
+  ruby -e 'budget=ARGV.shift.to_i; child=nil; stop=lambda{|sig| begin Process.kill(sig,-child) if child rescue Errno::ESRCH end}; child=Process.spawn(*ARGV,pgroup:true); %w[HUP INT TERM].each{|sig| Signal.trap(sig){stop.call("TERM"); sleep 0.1; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 143}}; deadline=Process.clock_gettime(Process::CLOCK_MONOTONIC)+budget/1000.0; grace=[1.0,budget/1000.0].min; term_at=deadline-grace; loop do; waited=Process.waitpid(child,Process::WNOHANG); exit($?.exitstatus || 128+$?.termsig) if waited; if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=term_at; stop.call("TERM"); loop do; waited=Process.waitpid(child,Process::WNOHANG); exit 124 if waited; break if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline; sleep 0.05; end; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 124; end; sleep 0.05; end' "$bounded_command_budget_ms" "$@" <&0 &
   bounded_supervisor_pid=$!
   wait_bounded "$bounded_supervisor_pid"
 }
 run_bounded() { bounded_label=$1; shift; run_bounded_until "$deadline_epoch_ms" "$bounded_label" "$@"; }
-run_cleanup_bounded() { cleanup_label=$1; shift; run_bounded_until "$cleanup_deadline_ms" "$cleanup_label" "$@"; }
+run_cleanup_bounded() { cleanup_command_deadline_ms=$1; cleanup_label=$2; shift 2; run_bounded_until "$cleanup_command_deadline_ms" "$cleanup_label" "$@"; }
 curl() { run_bounded http_request "$curl_binary" "$@"; }
 go() { [ "$current_phase" = 02_legacy_build ] && go_build_label=legacy_build || go_build_label=current_build; run_bounded "$go_build_label" env CGO_ENABLED="${CGO_ENABLED:-}" "$go_binary" "$@"; }
 git() { run_bounded repo_read "$git_binary" "$@"; }
@@ -109,12 +109,12 @@ start_process() {
 
 stop_process() {
   stop_pid=$1
+  stop_process_deadline_ms=$2
   [ -n "$stop_pid" ] || return 0
   if kill -0 "$stop_pid" 2>/dev/null; then
     kill "$stop_pid" 2>/dev/null || true
-    stop_deadline_epoch=$(( $(date +%s) + 10 ))
-    while kill -0 "$stop_pid" 2>/dev/null && [ "$(date +%s)" -lt "$stop_deadline_epoch" ] && before_deadline; do
-      sleep 1
+    while kill -0 "$stop_pid" 2>/dev/null && [ "$(now_epoch_ms)" -lt "$stop_process_deadline_ms" ]; do
+      sleep 0.2
     done
     if kill -0 "$stop_pid" 2>/dev/null; then
       kill -KILL "$stop_pid" 2>/dev/null || true
@@ -181,45 +181,56 @@ sensitive_literals() {
 
 contains_sensitive_data() {
   sensitive_scan_file=$1
-  sensitive_literals | ruby -e 'data=File.binread(ARGV.fetch(0)); literals=STDIN.each_line(chomp:true).reject(&:empty?); exit 0 if literals.any?{|value| data.include?(value)} || data.match?(/postgres(?:ql)?:\/\/|authorization|ciphertext|password/i); exit 1' "$sensitive_scan_file"
+  sensitive_scan_deadline_ms=$2
+  sensitive_literals | run_bounded_until "$sensitive_scan_deadline_ms" artifact_io ruby -e 'begin; data=File.binread(ARGV.fetch(0)); literals=STDIN.each_line(chomp:true).reject(&:empty?); exit 0 if literals.any?{|value| data.include?(value)} || data.match?(/postgres(?:ql)?:\/\/|authorization|ciphertext|password/i); exit 1; rescue StandardError; exit 2; end' "$sensitive_scan_file"
 }
 
 collect_postgres_logs() {
-  run_cleanup_bounded compose_logs docker compose -f "$compose_file" logs --no-color db >"$postgres_log" 2>&1 || printf '%s\n' 'PostgreSQL log collection failed' >"$postgres_log"
+  postgres_logs_deadline_ms=$1
+  run_cleanup_bounded "$postgres_logs_deadline_ms" compose_logs docker compose -f "$compose_file" logs --no-color db >"$postgres_log" 2>&1 || printf '%s\n' 'PostgreSQL log collection failed' >"$postgres_log"
 }
 
 capture_failure_artifacts() {
   failure_artifact_status=$1
-  run_cleanup_bounded artifact_io mkdir -p "$artifact_dir" || return 0
+  failure_artifact_deadline_ms=$2
+  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io mkdir -p "$artifact_dir" || return 0
   failure_artifact_unsafe=0
-  for failure_artifact_candidate in "$legacy_log" "$current_api_log" "$worker_log" "$postgres_log" "$restore_list"; do [ ! -f "$failure_artifact_candidate" ] || contains_sensitive_data "$failure_artifact_candidate" && failure_artifact_unsafe=1; done
+  for failure_artifact_candidate in "$legacy_log" "$current_api_log" "$worker_log" "$postgres_log" "$restore_list"; do
+    [ ! -f "$failure_artifact_candidate" ] && continue
+    if contains_sensitive_data "$failure_artifact_candidate" "$failure_artifact_deadline_ms"; then failure_artifact_scan_status=0; else failure_artifact_scan_status=$?; fi
+    case "$failure_artifact_scan_status" in 1) :;; 0|*) failure_artifact_unsafe=1;; esac
+  done
   failure_artifact_elapsed_ms=$(( $(now_epoch_ms) - start_epoch_ms ))
-  run_cleanup_bounded artifact_io jq -n --arg phase "$current_phase" --argjson exitCode "$failure_artifact_status" --argjson elapsedMs "$failure_artifact_elapsed_ms" --arg peeled "$old_commit" --arg dump "$dump_sha" --argjson logsWithheld "$([ "$failure_artifact_unsafe" -eq 1 ] && printf true || printf false)" --arg project "$compose_project_id" '{phase:$phase,exitCode:$exitCode,elapsedMs:$elapsedMs,logsWithheld:$logsWithheld,composeProjectId:$project}+(if $peeled=="" then {} else {peeledCommit:$peeled} end)+(if $dump=="" then {} else {dumpSha256:$dump} end)' >"$summary_log"
-  contains_sensitive_data "$summary_log" && return 1
-  run_cleanup_bounded artifact_io rm -f "$artifact_dir/runtime.log" "$artifact_dir/postgres.log" "$artifact_dir/restore-list.log" "$artifact_dir/summary.log" "$artifact_dir/withheld.log" "$artifact_dir/failure-summary.json" || true
-  run_cleanup_bounded artifact_io cp "$summary_log" "$artifact_dir/failure-summary.json" || return 0
+  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io jq -n --arg phase "$current_phase" --argjson exitCode "$failure_artifact_status" --argjson elapsedMs "$failure_artifact_elapsed_ms" --arg peeled "$old_commit" --arg dump "$dump_sha" --argjson logsWithheld "$([ "$failure_artifact_unsafe" -eq 1 ] && printf true || printf false)" --arg project "$compose_project_id" '{phase:$phase,exitCode:$exitCode,elapsedMs:$elapsedMs,logsWithheld:$logsWithheld,composeProjectId:$project}+(if $peeled=="" then {} else {peeledCommit:$peeled} end)+(if $dump=="" then {} else {dumpSha256:$dump} end)' >"$summary_log"
+  if contains_sensitive_data "$summary_log" "$failure_artifact_deadline_ms"; then failure_summary_scan_status=0; else failure_summary_scan_status=$?; fi
+  if [ "$failure_summary_scan_status" -ne 1 ]; then
+    failure_artifact_unsafe=1
+    run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io jq '.logsWithheld=true' "$summary_log" >"$summary_log.safe" && run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io mv "$summary_log.safe" "$summary_log"
+  fi
+  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io rm -f "$artifact_dir/runtime.log" "$artifact_dir/postgres.log" "$artifact_dir/restore-list.log" "$artifact_dir/summary.log" "$artifact_dir/withheld.log" "$artifact_dir/failure-summary.json" || true
+  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$summary_log" "$artifact_dir/failure-summary.json" || return 0
   if [ "$failure_artifact_unsafe" -eq 1 ]; then printf '%s\n' 'failure logs withheld after sensitive-data scan' >"$artifact_dir/withheld.log"; return 0; fi
-  run_cleanup_bounded artifact_io sh -c 'cat "$1" "$2" "$3" >"$4"' sh "$legacy_log" "$current_api_log" "$worker_log" "$artifact_dir/runtime.log" || return 0
-  run_cleanup_bounded artifact_io cp "$postgres_log" "$artifact_dir/postgres.log" || true
-  [ ! -s "$restore_list" ] || run_cleanup_bounded artifact_io cp "$restore_list" "$artifact_dir/restore-list.log" || true
+  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io sh -c 'cat "$1" "$2" "$3" >"$4"' sh "$legacy_log" "$current_api_log" "$worker_log" "$artifact_dir/runtime.log" || return 0
+  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$postgres_log" "$artifact_dir/postgres.log" || true
+  [ ! -s "$restore_list" ] || run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$restore_list" "$artifact_dir/restore-list.log" || true
 }
 
 cleanup() {
   cleanup_status=$1
   trap - EXIT HUP INT TERM
   set +e
-  cleanup_deadline_ms=$(( $(now_epoch_ms) + 20000 )); cleanup_total_deadline_ms=$((start_epoch_ms + 590000)); [ "$cleanup_deadline_ms" -le "$cleanup_total_deadline_ms" ] || cleanup_deadline_ms=$cleanup_total_deadline_ms
-  [ -z "$current_worker_pid" ] || stop_process "$current_worker_pid"
-  [ -z "$current_api_pid" ] || stop_process "$current_api_pid"
-  [ -z "$legacy_api_pid" ] || stop_process "$legacy_api_pid"
-  [ "$compose_attempted" -eq 0 ] || collect_postgres_logs
+  cleanup_started_ms=$(now_epoch_ms); cleanup_total_deadline_ms=$((cleanup_started_ms + 20000)); cleanup_stop_deadline_ms=$((cleanup_started_ms + 4000)); cleanup_logs_deadline_ms=$((cleanup_started_ms + 7000)); cleanup_artifact_deadline_ms=$((cleanup_started_ms + 10000)); cleanup_down_deadline_ms=$((cleanup_started_ms + 18000)); cleanup_remove_deadline_ms=$cleanup_total_deadline_ms
+  [ -z "$current_worker_pid" ] || stop_process "$current_worker_pid" "$cleanup_stop_deadline_ms"
+  [ -z "$current_api_pid" ] || stop_process "$current_api_pid" "$cleanup_stop_deadline_ms"
+  [ -z "$legacy_api_pid" ] || stop_process "$legacy_api_pid" "$cleanup_stop_deadline_ms"
+  [ "$compose_attempted" -eq 0 ] || collect_postgres_logs "$cleanup_logs_deadline_ms"
   if [ "$cleanup_status" -ne 0 ]; then
-    capture_failure_artifacts "$cleanup_status"
+    capture_failure_artifacts "$cleanup_status" "$cleanup_artifact_deadline_ms"
   fi
   if [ "$compose_attempted" -eq 1 ]; then
-    run_cleanup_bounded compose_down docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
+    run_cleanup_bounded "$cleanup_down_deadline_ms" compose_down docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
   fi
-  run_cleanup_bounded artifact_io rm -rf "$run_root" >/dev/null 2>&1 || true
+  run_cleanup_bounded "$cleanup_remove_deadline_ms" artifact_io rm -rf "$run_root" >/dev/null 2>&1 || true
   exit "$cleanup_status"
 }
 
@@ -338,7 +349,7 @@ capture_legacy_snapshot() {
 }
 
 stop_legacy_api() {
-  stop_process "$legacy_api_pid"
+  stop_process "$legacy_api_pid" "$deadline_epoch_ms"
   legacy_api_pid=
 }
 
@@ -424,6 +435,8 @@ assert_cancelling_cancelled() {
   worker_assert_node_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM node_runs WHERE run_id='$cancelling_run_id'")
   worker_assert_terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$cancelling_run_id' AND type IN ('run.completed','run.failed','run.cancelled')")
   worker_assert_cancelled_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$cancelling_run_id' AND type='run.cancelled'")
+  worker_assert_event_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$cancelling_run_id'")
+  worker_assert_event_sequence=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT CASE WHEN count(*)=2 AND min(sequence)=1 AND max(sequence)=2 THEN string_agg(type,',' ORDER BY sequence) ELSE 'invalid' END FROM run_events WHERE run_id='$cancelling_run_id'")
   worker_assert_running_status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$running_run_id'")
   worker_assert_running_reason=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT recovery_reason FROM runs WHERE id='$running_run_id'")
   worker_assert_running_lease=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT lease_owner IS NULL FROM runs WHERE id='$running_run_id'")
@@ -435,6 +448,8 @@ assert_cancelling_cancelled() {
   assert_eq "$worker_assert_node_count" 0 cancelling_node_runs
   assert_eq "$worker_assert_terminal_count" 1 cancelling_terminal_events
   assert_eq "$worker_assert_cancelled_count" 1 cancelling_cancelled_events
+  assert_eq "$worker_assert_event_count" 2 cancelling_event_count
+  assert_eq "$worker_assert_event_sequence" run.started,run.cancelled cancelling_event_sequence
   assert_eq "$worker_assert_running_status" recovery_required legacy_running_status
   assert_eq "$worker_assert_running_reason" legacy_active_run legacy_running_reason
   assert_eq "$worker_assert_running_lease" t legacy_running_lease
@@ -486,9 +501,9 @@ smoke_current_run() {
 }
 
 stop_current_runtime() {
-  stop_process "$current_worker_pid"
+  stop_process "$current_worker_pid" "$deadline_epoch_ms"
   current_worker_pid=
-  stop_process "$current_api_pid"
+  stop_process "$current_api_pid" "$deadline_epoch_ms"
   current_api_pid=
 }
 
