@@ -126,7 +126,8 @@ validate_script() {
     run_default = "RUN_COUNT=${RUN_COUNT:-500}"
     deadline_default = "RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}"
     run_check = "[ \"$RUN_COUNT\" = \"500\" ] || exit 1"
-    raise "RUN_COUNT must only accept 500 once before workload" unless lines.count(run_default) == 1 && lines.count(run_check) == 1 && lines.index(run_default) < lines.index(run_check) && lines.index(run_check) < up_index
+    raise "RUN_COUNT and deadline defaults must be the only assignments" unless lines.grep(/^RUN_COUNT=/) == [run_default] && lines.grep(/^RC_CAPACITY_DEADLINE_SECONDS=/) == [deadline_default]
+    raise "RUN_COUNT must only accept 500 once before workload" unless lines.count(run_check) == 1 && lines.index(run_default) < lines.index(run_check) && lines.index(run_check) < up_index
     deadline_start = lines.index("validate_deadline() {")
     deadline_end = deadline_start && lines[(deadline_start + 1)..].index("}")
     raise "deadline validator missing" unless deadline_start && deadline_end
@@ -137,7 +138,6 @@ validate_script() {
     raise "deadline validation cannot be neutralized" if deadline.any? { |line| line.include?("|| true") || line.include?("|| :") }
     deadline_call = "validate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\""
     raise "deadline default/call order invalid" unless lines.count(deadline_default) == 1 && lines.count(deadline_call) == 1 && lines.index(deadline_default) < lines.index(deadline_call) && lines.index(deadline_call) < up_index
-    raise "run defaults cannot be reassigned after validation" if lines[(lines.index(deadline_call) + 1)..].any? { |line| line.start_with?("RUN_COUNT=") || line.start_with?("RC_CAPACITY_DEADLINE_SECONDS=") }
 
     raise "summary_file must be assigned once under run_root" unless lines.grep(/^summary_file=/) == ["summary_file=\"$run_root/summary.json\""]
     raise "summary must be written by jq -n" unless lines.any? { |line| line.start_with?("jq -n ") && line.end_with?("> \"$summary_file\"") }
@@ -248,7 +248,7 @@ FIXTURE
       worker_port) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("    environment:\n", "    ports:\n      - \"127.0.0.1:$worker_port:8080\"\n    environment:\n"))' "$candidate"; expected='Worker must not expose ports';;
       no_cleanup) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("  docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true", "  :"))' "$candidate"; expected='cleanup must remove only this Compose project';;
       late_trap) ruby -e 'p=ARGV[0]; s=File.read(p); t="trap cleanup EXIT HUP INT TERM\n"; File.write(p, s.sub(t, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{t}"))' "$candidate"; expected='immediately follow';;
-      defaults_reassign) printf '%s\n' 'RUN_COUNT=1' 'RC_CAPACITY_DEADLINE_SECONDS=571' >>"$candidate"; expected='defaults cannot be reassigned';;
+      defaults_reassign) ruby -e 'p=ARGV[0]; s=File.read(p); marker="[ \"$RUN_COUNT\" = \"500\" ] || exit 1\n"; injection="RUN_COUNT=1\nRC_CAPACITY_DEADLINE_SECONDS=60\nvalidate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\"\n"; File.write(p, s.sub(marker, marker + injection))' "$candidate"; expected='defaults must be the only assignments';;
       deadline_noop) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("exit 1 ;;", ": ;;"))' "$candidate"; expected='deadline must reject non-integers directly';;
       fixed_project) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("COMPOSE_PROJECT_NAME=\"agent_studio_rc_capacity_$$\"", "COMPOSE_PROJECT_NAME=\"fixed\" # $$"))' "$candidate"; expected='PID-derived';;
       reassign_project) printf '%s\n' 'COMPOSE_PROJECT_NAME="agent_studio_rc_capacity_$$"' >>"$candidate"; expected='assigned exactly once';;
