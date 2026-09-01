@@ -23,6 +23,7 @@ func TestWorkerTelemetryUsesOnlyBoundedLabels(t *testing.T) {
 	ctx := context.Background()
 	telemetry.claim(ctx, "sentinel-database-url", time.Millisecond)
 	telemetry.queue(ctx, 2, time.Second)
+	telemetry.queueSample(ctx, "sentinel-private-value")
 	telemetry.leaseStarted(ctx, true)
 	telemetry.renewal(ctx, "sentinel-ciphertext")
 	telemetry.fenced(ctx)
@@ -41,7 +42,7 @@ func TestWorkerTelemetryUsesOnlyBoundedLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"sentinel-database-url", "sentinel-ciphertext", "sentinel-private-input", "sentinel-node-id", "sentinel-safety"} {
+	for _, forbidden := range []string{"sentinel-database-url", "sentinel-ciphertext", "sentinel-private-input", "sentinel-private-value", "sentinel-node-id", "sentinel-safety"} {
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("telemetry leaked %q: %s", forbidden, body)
 		}
@@ -51,7 +52,7 @@ func TestWorkerTelemetryUsesOnlyBoundedLabels(t *testing.T) {
 		"agent_studio.worker.oldest_queued_age", "agent_studio.worker.active_leases", "agent_studio.worker.lease_renew_total",
 		"agent_studio.worker.expired_lease_reclaim_total", "agent_studio.worker.fencing_rejected_total",
 		"agent_studio.worker.auto_recovery_total", "agent_studio.worker.run_recovery_required_total",
-		"agent_studio.worker.payload_decrypt_failure_total",
+		"agent_studio.worker.payload_decrypt_failure_total", "agent_studio.worker.queue_sample_total",
 	} {
 		if !strings.Contains(string(body), metricName) {
 			t.Fatalf("missing metric %q: %s", metricName, body)

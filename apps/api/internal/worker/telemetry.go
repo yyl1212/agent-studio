@@ -23,6 +23,7 @@ type Telemetry struct {
 	payloadFailures  metric.Int64Counter
 	queueDepth       metric.Int64Gauge
 	oldestQueued     metric.Float64Gauge
+	queueSamples     metric.Int64Counter
 }
 
 func newTelemetry(providers observability.Providers) *Telemetry {
@@ -38,10 +39,12 @@ func newTelemetry(providers observability.Providers) *Telemetry {
 	payloadFailures, _ := meter.Int64Counter("agent_studio.worker.payload_decrypt_failure_total")
 	queueDepth, _ := meter.Int64Gauge("agent_studio.worker.queue_depth")
 	oldestQueued, _ := meter.Float64Gauge("agent_studio.worker.oldest_queued_age", metric.WithUnit("s"))
+	queueSamples, _ := meter.Int64Counter("agent_studio.worker.queue_sample_total")
 	return &Telemetry{
 		claims: claims, claimLatency: claimLatency, activeLeases: activeLeases, renewals: renewals,
 		reclaimed: reclaimed, fencingRejected: fencingRejected, autoRecoveries: autoRecoveries,
 		recoveryRequired: recoveryRequired, payloadFailures: payloadFailures, queueDepth: queueDepth, oldestQueued: oldestQueued,
+		queueSamples: queueSamples,
 	}
 }
 
@@ -60,6 +63,13 @@ func (telemetry *Telemetry) queue(ctx context.Context, depth int64, oldest time.
 	}
 	telemetry.queueDepth.Record(ctx, depth)
 	telemetry.oldestQueued.Record(ctx, oldest.Seconds())
+}
+
+func (telemetry *Telemetry) queueSample(ctx context.Context, outcome string) {
+	if outcome != "success" {
+		outcome = "error"
+	}
+	telemetry.queueSamples.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
 }
 
 func (telemetry *Telemetry) leaseStarted(ctx context.Context, reclaimed bool) {

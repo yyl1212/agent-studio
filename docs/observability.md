@@ -4,7 +4,7 @@ Agent Studio 可选启用 OpenTelemetry Metrics 与 Traces。默认配置不创�
 
 ## 启用配置
 
-基础配置使用以下六个环境变量：
+遥测基础配置及 Worker 队列采样配置如下：
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
@@ -14,6 +14,7 @@ Agent Studio 可选启用 OpenTelemetry Metrics 与 Traces。默认配置不创�
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5000` | 单次导出超时，单位毫秒 |
 | `OTEL_EXPORTER_OTLP_COMPRESSION` | `gzip` | 只允许 `gzip` 或 `none` |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `10000` | Metrics 导出周期，单位毫秒 |
+| `WORKER_QUEUE_SAMPLE_INTERVAL` | `5s` | Worker 队列独立采样周期，Go duration 格式，范围 `1s`～`1m` |
 
 Endpoint 只接受不含 userinfo、query、fragment 的 HTTP(S) 地址，并允许路径前缀。应用分别追加 `/v1/traces` 与 `/v1/metrics`。资源属性最多 32 项，每项最长 256 字符；只能描述服务和部署环境，禁止写入用户、租户、工作流、节点、密钥或凭据。
 
@@ -67,12 +68,15 @@ Prometheus 可查询以下基础指标：
 
 独立 Worker 还提供以下耐久运行指标（Prometheus 会把点号规范化为下划线）：
 
-- `agent_studio_worker_queue_depth` 与 `agent_studio_worker_oldest_queued_age_seconds`：队列深度和最老排队时长；
+- `agent_studio_worker_queue_depth` 与 `agent_studio_worker_oldest_queued_age_seconds`：最近一次成功采样的队列深度和最老排队时长；
+- `agent_studio_worker_queue_sample_total{outcome="success|error"}`：独立队列采样的成功与错误次数；
 - `agent_studio_worker_run_claim_total`、`agent_studio_worker_claim_latency_seconds`：领取结果与耗时；
 - `agent_studio_worker_active_leases`、`agent_studio_worker_lease_renew_total`：活动 lease 和续租结果；
 - `agent_studio_worker_expired_lease_reclaim_total`、`agent_studio_worker_fencing_rejected_total`：过期租约接管和旧 token 写入拒绝；
 - `agent_studio_worker_auto_recovery_total`、`agent_studio_worker_run_recovery_required_total`：自动恢复与人工恢复；
 - `agent_studio_worker_payload_decrypt_failure_total`：按有限类别统计的载荷解密失败。
+
+`agent_studio_worker_queue_depth` 与 `agent_studio_worker_oldest_queued_age_seconds` 由独立于领取循环的采样器按 `WORKER_QUEUE_SAMPLE_INTERVAL` 更新，即使 Worker 的活动槽位已满也会继续采样。采样失败不会把 Gauge 归零，而是保留最后一次成功值，并只增加 `queue_sample_total{outcome="error"}`；因此判断 Gauge 是否新鲜时应同时观察错误 Counter。
 
 在 Jaeger 中选择配置的 `OTEL_SERVICE_NAME`，可看到 `HTTP ...`、`workflow.run` 与 `workflow.node`。同步测试运行沿 W3C Trace Context 形成父子链；异步 Agent Run 使用新根 span，并通过 Link 关联原请求。JSON 日志仅在已有值时写入 `requestId`、`traceId`、`spanId`、`run_id` 与 `node_id`，便于跨信号定位。
 
@@ -99,6 +103,7 @@ Span 只记录固定名称、有限错误类别和允许的 ID；Metric 只使�
 | Jaeger 没有链路 | 不影响业务 | 检查 Collector traces pipeline 和服务名 |
 | 关闭时遥测超时 | 业务关闭继续，记录固定 `telemetry/shutdown` 类别 | 检查 Collector 可达性和导出超时 |
 | 队列深度或最老排队时间持续上升 | Worker 未启动、容量不足或领取失败 | 检查 Worker 日志、`run_claim_total{outcome="error"}` 和数据库连接 |
+| `queue_sample_total{outcome="error"}` 持续增加 | 队列统计查询失败；Gauge 仍是最后一次成功值，不代表当前队列为零 | 检查 PostgreSQL 可达性和查询健康度，并对比 `success` 增长与采样周期；采样错误不会终止 Worker，也不会逐次写日志 |
 | lease 续租失败或 fencing 拒绝增加 | Worker 卡顿、数据库中断或旧 Worker 恢复写入 | 检查 `lease_renew_total`、进程时钟与数据库延迟；不要放宽 fencing |
 | 人工恢复持续增加 | Worker 故障发生在只读/副作用节点，或私有载荷不可用 | 在管理端核对恢复原因；检查密钥与节点版本，不要自动批量重试副作用 |
 | Worker drain 超时 | 节点未在关闭窗口内响应取消 | 检查 `WORKER_SHUTDOWN_TIMEOUT` 和节点实现；等待 lease 到期后由新 Worker 安全接管 |

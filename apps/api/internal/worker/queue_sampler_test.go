@@ -2,10 +2,16 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestQueueSamplerSamplesImmediately(t *testing.T) {
@@ -80,6 +86,57 @@ func TestQueueSamplerContinuesAfterSourceError(t *testing.T) {
 	}
 	cancel()
 	waitForQueueSamplerExit(t, done)
+}
+
+func TestQueueSamplerRetainsLastSuccessfulMetricsAfterError(t *testing.T) {
+	const sentinel = "sentinel-private-queue-error"
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	telemetry := newTelemetry(observability.Providers{MeterProvider: provider})
+	source := newQueueSamplerSource(
+		queueSamplerResult{depth: 7, oldest: 3 * time.Second},
+		queueSamplerResult{err: errors.New(sentinel)},
+	)
+	sampler := queueSampler{source: source, recorder: telemetryQueueSampleRecorder{telemetry: telemetry}}
+
+	sampler.sample(context.Background())
+	sampler.sample(context.Background())
+
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(collected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), sentinel) {
+		t.Fatalf("queue telemetry leaked source error: %s", body)
+	}
+	metrics := queueSamplerMetrics(collected)
+	depth, ok := metrics["agent_studio.worker.queue_depth"].Data.(metricdata.Gauge[int64])
+	if !ok || len(depth.DataPoints) != 1 || depth.DataPoints[0].Value != 7 {
+		t.Fatalf("queue depth=%#v", metrics["agent_studio.worker.queue_depth"])
+	}
+	oldest, ok := metrics["agent_studio.worker.oldest_queued_age"].Data.(metricdata.Gauge[float64])
+	if !ok || len(oldest.DataPoints) != 1 || oldest.DataPoints[0].Value != 3 {
+		t.Fatalf("oldest queued age=%#v", metrics["agent_studio.worker.oldest_queued_age"])
+	}
+	samples, ok := metrics["agent_studio.worker.queue_sample_total"].Data.(metricdata.Sum[int64])
+	if !ok || len(samples.DataPoints) != 2 {
+		t.Fatalf("queue samples=%#v", metrics["agent_studio.worker.queue_sample_total"])
+	}
+	outcomes := make(map[string]int64, len(samples.DataPoints))
+	for _, point := range samples.DataPoints {
+		for _, attr := range point.Attributes.ToSlice() {
+			if attr.Key == "outcome" {
+				outcomes[attr.Value.AsString()] = point.Value
+			}
+		}
+	}
+	if outcomes["success"] != 1 || outcomes["error"] != 1 || len(outcomes) != 2 {
+		t.Fatalf("queue sample outcomes=%#v", outcomes)
+	}
 }
 
 func TestQueueSamplerStopsAfterCancellation(t *testing.T) {
@@ -242,6 +299,16 @@ type queueSamplerRecorder struct {
 
 func newQueueSamplerRecorder() *queueSamplerRecorder {
 	return &queueSamplerRecorder{samples: make(chan recordedQueueSample, 4)}
+}
+
+func queueSamplerMetrics(collected metricdata.ResourceMetrics) map[string]metricdata.Metrics {
+	metrics := make(map[string]metricdata.Metrics)
+	for _, scope := range collected.ScopeMetrics {
+		for _, current := range scope.Metrics {
+			metrics[current.Name] = current
+		}
+	}
+	return metrics
 }
 
 func (recorder *queueSamplerRecorder) queue(_ context.Context, depth int64, oldest time.Duration) {
