@@ -93,14 +93,15 @@ validate_script() {
     docker_builds = commands.select { |command| command.delete("\"\x27").split[0, 2] == %w[docker build] }
     raise "capacity image must be built exactly once" unless docker_builds == ["docker build -t \"$test_image\" \"$repo_root\""]
     services_command = "actual_services=$(docker compose -f \"$compose_file\" config --services | sort | tr \x27\\n\x27 \x27 \x27)"
-    raise "Compose must define exactly db/api/worker services" unless lines.include?(services_command) && lines.include?("[ \"$actual_services\" = \"api db worker \" ] || exit 1")
+    services_assertion = "[ \"$actual_services\" = \"api db worker \" ] || exit 1"
+    raise "Compose must define exactly db/api/worker services" unless lines.include?(services_command) && lines.include?(services_assertion)
     def compose_subcommand(tokens)
       index = tokens.each_cons(2).find_index { |pair| pair == %w[docker compose] }
       return nil unless index
       tail = tokens[(index + 2)..]
       until tail.empty? || !tail.first.start_with?("-")
         option = tail.shift
-        tail.shift if %w[-f --file -p --project-name --project-directory --env-file].include?(option)
+        tail.shift if %w[-f --file -p --project-name --project-directory --env-file --ansi --profile --parallel --progress].include?(option)
       end
       tail.first
     end
@@ -110,8 +111,9 @@ validate_script() {
     contract_only = "if [ \"${RC_CAPACITY_CONTRACT_ONLY:-}\" = \"1\" ]; then exit 0; fi"
     contract_index = lines.index(contract_only)
     config_index = lines.index(services_command)
+    assertion_index = lines.index(services_assertion)
     up_index = lines.index(compose_ups.first)
-    raise "contract-only mode must exit after config and before up" unless contract_index && config_index && up_index && config_index < contract_index && contract_index < up_index
+    raise "Compose verification order is invalid" unless config_index && assertion_index && contract_index && up_index && config_index < assertion_index && assertion_index < contract_index && contract_index < up_index
     cleanup_start = lines.index("cleanup() {")
     cleanup_end = cleanup_start && lines[(cleanup_start + 1)..].index("}")
     raise "cleanup block missing" unless cleanup_start && cleanup_end
@@ -119,9 +121,12 @@ validate_script() {
     raise "cleanup must remove only this Compose project" unless cleanup.include?("docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true")
     raise "cleanup must remove only run_root" unless cleanup.include?("rm -rf \"$run_root\"")
     trap_index = lines.index("trap cleanup EXIT HUP INT TERM")
-    raise "cleanup trap must precede contract-only and up" unless trap_index && trap_index < contract_index && trap_index < up_index
+    raise "cleanup trap must immediately follow run_root" unless trap_index == lines.index(expected_run_root) + 1
 
-    raise "RUN_COUNT must only accept 500" unless lines.include?("[ \"$RUN_COUNT\" = \"500\" ] || exit 1")
+    run_default = "RUN_COUNT=${RUN_COUNT:-500}"
+    deadline_default = "RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}"
+    run_check = "[ \"$RUN_COUNT\" = \"500\" ] || exit 1"
+    raise "RUN_COUNT must only accept 500 once before workload" unless lines.count(run_default) == 1 && lines.count(run_check) == 1 && lines.index(run_default) < lines.index(run_check) && lines.index(run_check) < up_index
     deadline_start = lines.index("validate_deadline() {")
     deadline_end = deadline_start && lines[(deadline_start + 1)..].index("}")
     raise "deadline validator missing" unless deadline_start && deadline_end
@@ -130,7 +135,9 @@ validate_script() {
     raise "deadline lower bound must fail directly" unless deadline.any? { |line| line.include?("[ \"$RC_CAPACITY_DEADLINE_SECONDS\" -lt 60 ]") && line.match?(/\b(?:exit|return) 1/) }
     raise "deadline upper bound must fail directly" unless deadline.any? { |line| line.include?("[ \"$RC_CAPACITY_DEADLINE_SECONDS\" -gt 570 ]") && line.match?(/\b(?:exit|return) 1/) }
     raise "deadline validation cannot be neutralized" if deadline.any? { |line| line.include?("|| true") || line.include?("|| :") }
-    raise "deadline validator must run" unless lines.count("validate_deadline() {") == 1 && lines.count("validate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\"") == 1
+    deadline_call = "validate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\""
+    raise "deadline default/call order invalid" unless lines.count(deadline_default) == 1 && lines.count(deadline_call) == 1 && lines.index(deadline_default) < lines.index(deadline_call) && lines.index(deadline_call) < up_index
+    raise "run defaults cannot be reassigned after validation" if lines[(lines.index(deadline_call) + 1)..].any? { |line| line.start_with?("RUN_COUNT=") || line.start_with?("RC_CAPACITY_DEADLINE_SECONDS=") }
 
     raise "summary_file must be assigned once under run_root" unless lines.grep(/^summary_file=/) == ["summary_file=\"$run_root/summary.json\""]
     raise "summary must be written by jq -n" unless lines.any? { |line| line.start_with?("jq -n ") && line.end_with?("> \"$summary_file\"") }
@@ -177,7 +184,12 @@ run_contract_self_test() {
 set -eu
 COMPOSE_PROJECT_NAME="agent_studio_rc_capacity_$$"
 export COMPOSE_PROJECT_NAME
+cleanup() {
+  docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$run_root"
+}
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-rc-capacity.XXXXXX")
+trap cleanup EXIT HUP INT TERM
 compose_file="$run_root/compose.yaml"
 RUN_COUNT=${RUN_COUNT:-500}
 RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}
@@ -209,11 +221,6 @@ services:
     environment:
       WORKER_MAX_ACTIVE_RUNS: "4"
 YAML
-cleanup() {
-  docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
-  rm -rf "$run_root"
-}
-trap cleanup EXIT HUP INT TERM
 actual_services=$(docker compose -f "$compose_file" config --services | sort | tr '\n' ' ')
 [ "$actual_services" = "api db worker " ] || exit 1
 if [ "${RC_CAPACITY_CONTRACT_ONLY:-}" = "1" ]; then exit 0; fi
@@ -229,16 +236,19 @@ queueWaitP95Ms=0
 FIXTURE
 
   validate_script "$base"
-  for case_name in duplicate_image duplicate_up contract_after_up worker_port no_cleanup late_trap deadline_noop fixed_project reassign_project comment_api_port summary_or_true summary_rewrite brace_overwrite semicolon_down single_quoted_variable run_root_rebind; do
+  for case_name in duplicate_image duplicate_up ansi_up assertion_after_contract contract_after_up worker_port no_cleanup late_trap defaults_reassign deadline_noop fixed_project reassign_project comment_api_port summary_or_true summary_rewrite brace_overwrite semicolon_down single_quoted_variable run_root_rebind; do
     candidate="$fixture_root/$case_name.sh"
     cat "$base" >"$candidate"
     case "$case_name" in
       duplicate_image) printf '%s\n' 'docker build -t "$test_image" "$repo_root"' >>"$candidate"; expected='built exactly once';;
       duplicate_up) printf '%s\n' 'docker compose -f "$compose_file" up -d db api worker' >>"$candidate"; expected='start db/api/worker exactly once';;
-      contract_after_up) ruby -e 'p=ARGV[0]; s=File.read(p); c="if [ \"${RC_CAPACITY_CONTRACT_ONLY:-}\" = \"1\" ]; then exit 0; fi\n"; File.write(p, s.sub(c, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{c}"))' "$candidate"; expected='contract-only mode must exit';;
+      ansi_up) printf '%s\n' 'docker compose --ansi never -f "$compose_file" up -d db api worker' >>"$candidate"; expected='start db/api/worker exactly once';;
+      assertion_after_contract) ruby -e 'p=ARGV[0]; s=File.read(p); a="[ \"$actual_services\" = \"api db worker \" ] || exit 1\n"; File.write(p, s.sub(a, "").sub("if [ \"${RC_CAPACITY_CONTRACT_ONLY:-}\" = \"1\" ]; then exit 0; fi\n", "if [ \"${RC_CAPACITY_CONTRACT_ONLY:-}\" = \"1\" ]; then exit 0; fi\n#{a}"))' "$candidate"; expected='Compose verification order';;
+      contract_after_up) ruby -e 'p=ARGV[0]; s=File.read(p); c="if [ \"${RC_CAPACITY_CONTRACT_ONLY:-}\" = \"1\" ]; then exit 0; fi\n"; File.write(p, s.sub(c, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{c}"))' "$candidate"; expected='Compose verification order';;
       worker_port) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("    environment:\n", "    ports:\n      - \"127.0.0.1:$worker_port:8080\"\n    environment:\n"))' "$candidate"; expected='Worker must not expose ports';;
       no_cleanup) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("  docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true", "  :"))' "$candidate"; expected='cleanup must remove only this Compose project';;
-      late_trap) ruby -e 'p=ARGV[0]; s=File.read(p); t="trap cleanup EXIT HUP INT TERM\n"; File.write(p, s.sub(t, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{t}"))' "$candidate"; expected='cleanup trap must precede';;
+      late_trap) ruby -e 'p=ARGV[0]; s=File.read(p); t="trap cleanup EXIT HUP INT TERM\n"; File.write(p, s.sub(t, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{t}"))' "$candidate"; expected='immediately follow';;
+      defaults_reassign) printf '%s\n' 'RUN_COUNT=1' 'RC_CAPACITY_DEADLINE_SECONDS=571' >>"$candidate"; expected='defaults cannot be reassigned';;
       deadline_noop) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("exit 1 ;;", ": ;;"))' "$candidate"; expected='deadline must reject non-integers directly';;
       fixed_project) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("COMPOSE_PROJECT_NAME=\"agent_studio_rc_capacity_$$\"", "COMPOSE_PROJECT_NAME=\"fixed\" # $$"))' "$candidate"; expected='PID-derived';;
       reassign_project) printf '%s\n' 'COMPOSE_PROJECT_NAME="agent_studio_rc_capacity_$$"' >>"$candidate"; expected='assigned exactly once';;
@@ -273,6 +283,7 @@ validate_script "$script"
 ruby -ryaml -e '
   workflow = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
   job = workflow.fetch("jobs").fetch("rc-capacity")
+  raise "rc capacity job cannot be conditional or continue on error" unless !job.key?("if") && (!job.key?("continue-on-error") || job["continue-on-error"] == false)
   raise "rc capacity job timeout must be 12 minutes" unless job.fetch("timeout-minutes") == 12
   env = job.fetch("env")
   raise "rc capacity job must disable CGO" unless env.fetch("CGO_ENABLED") == "0"
