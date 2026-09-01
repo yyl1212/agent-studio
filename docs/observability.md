@@ -65,6 +65,15 @@ Prometheus 可查询以下基础指标：
 - `agent_studio_workflow_node_executions_total`
 - `agent_studio_postgres_pool_connections`
 
+独立 Worker 还提供以下耐久运行指标（Prometheus 会把点号规范化为下划线）：
+
+- `agent_studio_worker_queue_depth` 与 `agent_studio_worker_oldest_queued_age_seconds`：队列深度和最老排队时长；
+- `agent_studio_worker_run_claim_total`、`agent_studio_worker_claim_latency_seconds`：领取结果与耗时；
+- `agent_studio_worker_active_leases`、`agent_studio_worker_lease_renew_total`：活动 lease 和续租结果；
+- `agent_studio_worker_expired_lease_reclaim_total`、`agent_studio_worker_fencing_rejected_total`：过期租约接管和旧 token 写入拒绝；
+- `agent_studio_worker_auto_recovery_total`、`agent_studio_worker_run_recovery_required_total`：自动恢复与人工恢复；
+- `agent_studio_worker_payload_decrypt_failure_total`：按有限类别统计的载荷解密失败。
+
 在 Jaeger 中选择配置的 `OTEL_SERVICE_NAME`，可看到 `HTTP ...`、`workflow.run` 与 `workflow.node`。同步测试运行沿 W3C Trace Context 形成父子链；异步 Agent Run 使用新根 span，并通过 Link 关联原请求。JSON 日志仅在已有值时写入 `requestId`、`traceId`、`spanId`、`run_id` 与 `node_id`，便于跨信号定位。
 
 ## 数据安全边界
@@ -89,8 +98,12 @@ Span 只记录固定名称、有限错误类别和允许的 ID；Metric 只使�
 | Prometheus 没有数据 | 不影响业务 | 检查 Collector metrics pipeline 和 scrape target |
 | Jaeger 没有链路 | 不影响业务 | 检查 Collector traces pipeline 和服务名 |
 | 关闭时遥测超时 | 业务关闭继续，记录固定 `telemetry/shutdown` 类别 | 检查 Collector 可达性和导出超时 |
+| 队列深度或最老排队时间持续上升 | Worker 未启动、容量不足或领取失败 | 检查 Worker 日志、`run_claim_total{outcome="error"}` 和数据库连接 |
+| lease 续租失败或 fencing 拒绝增加 | Worker 卡顿、数据库中断或旧 Worker 恢复写入 | 检查 `lease_renew_total`、进程时钟与数据库延迟；不要放宽 fencing |
+| 人工恢复持续增加 | Worker 故障发生在只读/副作用节点，或私有载荷不可用 | 在管理端核对恢复原因；检查密钥与节点版本，不要自动批量重试副作用 |
+| Worker drain 超时 | 节点未在关闭窗口内响应取消 | 检查 `WORKER_SHUTDOWN_TIMEOUT` 和节点实现；等待 lease 到期后由新 Worker 安全接管 |
 
-应用先完成业务关闭、注销连接池指标，再使用独立且最长 5 秒的 Context flush 遥测，最后关闭 Store。Runtime shutdown 幂等；启动中途失败也会关闭已创建的 Provider。
+API 先完成业务关闭、注销连接池指标，再使用独立且最长 5 秒的 Context flush 遥测，最后关闭 Store。Worker 收到终止信号后进入 drain：停止领取新运行，在 `WORKER_SHUTDOWN_TIMEOUT` 内等待活动运行，并持续维护租约；超时后退出，由租约到期与 fencing 保证后续接管安全。Runtime shutdown 幂等；启动中途失败也会关闭已创建的 Provider。
 
 ## 生产责任
 

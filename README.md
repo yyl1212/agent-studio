@@ -7,10 +7,11 @@ flowchart LR
   B["React 画布与 Schema 表单"] -->|"JSON API / NDJSON"| A["Go chi API"]
   A --> S["工作流服务"]
   S --> C["DAG 编译器"]
-  S --> E["并发执行引擎"]
+  A -->|"持久化排队"| P[("PostgreSQL 18")]
+  W["独立 Go Worker"] -->|"租约领取 / 续租"| P
+  W --> E["并发执行引擎"]
   C --> R["节点注册表"]
   E --> R
-  A --> P[("PostgreSQL 18")]
   R --> M["Mock / OpenAI-compatible"]
 ```
 
@@ -75,7 +76,31 @@ corepack pnpm@10.34.5 install
 cp .env.example .env
 ```
 
+`RUN_PAYLOAD_ENCRYPTION_KEY` 是 API 与 Worker 的强制共享配置，必须是 Base64 编码的 32 字节随机值。`.env.example` 里的值只用于本机演示；首次启动前应生成自己的临时开发密钥，并把输出填入未提交的 `.env`：
+
+```bash
+openssl rand -base64 32
+```
+
+不要把真实环境的密钥提交到仓库、备份或日志。已存在活动运行时不得随意轮换；密钥丢失会使对应私有载荷无法解密。
+
 ## 本地启动
+
+推荐一次启动 PostgreSQL、API 与独立 Worker：
+
+```bash
+export RUN_PAYLOAD_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+make dev-stack
+```
+
+API 和 Worker 使用同一镜像、数据库与密钥，但以两个独立进程运行。分别查看日志：
+
+```bash
+docker compose logs -f api
+docker compose logs -f worker
+```
+
+源码调试时也可以分终端启动。先确保 `.env` 已配置同一个 `RUN_PAYLOAD_ENCRYPTION_KEY`，再运行：
 
 启动 PostgreSQL：
 
@@ -93,7 +118,13 @@ make dev-api
 
 `make dev-api` 会自动加载根目录 `.env`；修改模型或网络策略配置后重启 API 即可生效。
 
-终端二启动 Web：
+终端二启动 Worker：
+
+```bash
+make dev-worker
+```
+
+终端三启动 Web：
 
 ```bash
 make dev-web
@@ -110,6 +141,8 @@ Studio 顶部“版本历史”已支持发布版本时间线、任意两个快�
 顶部“节点包”导航提供只读的本地索引目录；使用与安全边界见[官方节点包索引](docs/node-index.md)。
 
 顶部“运行”导航提供全局筛选、3 秒智能刷新、协作取消和安全完整重试；操作步骤、幂等语义与秘密边界见[运行管理与恢复](docs/run-management.md)。
+
+运行由 Worker 从 PostgreSQL 队列领取。API 或浏览器断开不会中止后台执行；Worker 异常退出后，纯节点可按租约自动接管，只读或有副作用的不确定节点会暂停为“等待人工恢复”。管理员可在“运行”详情的恢复入口逐个确认重试或终止运行，公开 Agent 页面不会暴露这些管理操作。
 
 健康检查：`GET http://localhost:8080/healthz`；就绪检查还会验证 PostgreSQL 与最新 migration：`GET http://localhost:8080/readyz`。
 
@@ -139,7 +172,7 @@ DATABASE_URL='postgres://user:password@target-host:5432/agent_studio?sslmode=dis
 
 入口输入在浏览器中必须是 JSON 对象。被脱敏的秘密入口不会从历史记录恢复，需要重新填写；如果必要的历史冻结边包含秘密值，系统会拒绝局部重跑，而不是用空值或掩码继续执行。取消只会中止尚未完成的请求，不能撤销已经发生的模型费用、Webhook 或其他外部副作用。
 
-早期版本产生、缺少完整事件快照的 legacy 运行会降级为只读摘要：仍可查看画布和节点最终状态，但不能精确回放或局部重跑。运行仍在 API 进程内执行，不提供独立 Worker 或服务重启续跑；Agent 发布页可在浏览器断线或刷新后恢复已经持久化的状态，但 API 进程重启时未完成的运行只会安全收敛为“已取消”，不会自动续跑。
+早期版本产生、缺少完整事件快照的 legacy 运行会降级为只读摘要：仍可查看画布和节点最终状态，但不能精确回放或局部重跑。升级时遗留的活动运行会进入人工恢复，不会猜测或静默重放历史副作用；处理方式见 [v0.5-D 升级与回滚](docs/upgrades/v0.5-d.md)。
 
 ## Go 节点 SDK
 
@@ -283,8 +316,8 @@ corepack pnpm@10.34.5 build
 
 - 单租户、本地部署，不包含登录、RBAC、团队协作与审计后台。
 - 工作流是无环图，不支持循环、人工审批、定时触发和分布式队列。
-- 运行在 API 进程内执行；重启不会恢复正在运行的任务。
-- 调试事件可在运行结束后回放，但首版不提供独立 Worker、浏览器断线续跑或运行中断点恢复。
+- 运行通过 PostgreSQL 队列和独立 Worker 执行；当前不引入 Redis/Kafka，也不支持跨区域调度。
+- 浏览器或 API 断线不影响后台执行；Worker 故障只会自动接管可证明安全的工作，副作用不确定时必须人工恢复。
 - 模型接入为 Mock 或 OpenAI-compatible Chat Completions，不含供应商专属高级能力。
 - Code 节点使用受步数、时间和输出大小约束的 Starlark，不执行任意系统命令。
 - 本地 RAG 闭环仍不在本阶段范围；Retriever 仅为确定性演示节点，不是生产知识库。
