@@ -18,6 +18,22 @@ function publicView(status: AgentRunPublicView['run']['status'], output: unknown
 }
 
 describe('AgentRunView', () => {
+  it('queued 展示排队状态并允许取消', () => {
+    render(<AgentRunView phase="queued" view={publicView('queued')} events={[]} onCancel={vi.fn()} onRestart={vi.fn()} />)
+    expect(screen.getByText('正在排队')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '取消运行' })).toBeEnabled()
+  })
+
+  it('recovery_required 停止运行动画、继续等待且不暴露管理操作或内部信息', () => {
+    render(<AgentRunView phase="recovery_required" view={publicView('recovery_required')} events={publicView('recovery_required').events} onCancel={vi.fn()} onRestart={vi.fn()} />)
+    expect(screen.getByText('等待管理员处理')).toBeInTheDocument()
+    expect(screen.getByText('运行需要管理员确认，结果会在处理后继续更新。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /恢复|重试|确认/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '取消运行' })).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('secret-node')
+    expect(document.body.textContent).not.toContain('secret-output')
+  })
+
   it('运行中只显示聚合进度并允许取消', () => {
     render(<AgentRunView phase="running" view={publicView('running')} events={publicView('running').events} onCancel={vi.fn()} onRestart={vi.fn()} />)
     expect(screen.getByText('正在运行')).toBeInTheDocument()
@@ -42,5 +58,6 @@ describe('AgentRunView', () => {
     expect(screen.getByText(label)).toBeInTheDocument()
     expect(screen.getByText(/运行 ID：/)).toHaveTextContent('run-1')
     expect(screen.getByRole('button', { name: '再次运行' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '取消运行' })).not.toBeInTheDocument()
   })
 })

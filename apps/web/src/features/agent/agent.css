@@ -28,6 +28,20 @@
 .agent-run-card { display: grid; gap: 18px; }
 .agent-run-card > header, .agent-result > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .agent-run-status { color: var(--agent-accent); font-size: 20px; font-weight: 800; }
+.agent-run-card.status-queued .agent-run-status::before,
+.agent-run-card.status-running .agent-run-status::before,
+.agent-run-card.status-cancelling .agent-run-status::before,
+.agent-run-card.status-reconnecting .agent-run-status::before {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 9px;
+  border-radius: 50%;
+  background: currentcolor;
+  content: '';
+  animation: agent-status-pulse 1.4s ease-in-out infinite;
+}
+.agent-recovery-notice { margin: 0; padding: 14px 16px; border-radius: 12px; color: #92400e; background: #fffbeb; line-height: 1.6; }
 .agent-run-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .agent-run-actions button, .agent-result button { padding: 9px 13px; border: 1px solid var(--as-border); border-radius: 9px; background: var(--as-surface); }
 .agent-run-actions button:focus-visible, .agent-result button:focus-visible, .agent-form-card input:focus-visible, .agent-form-card textarea:focus-visible, .agent-form-card select:focus-visible { outline: 3px solid color-mix(in srgb, var(--agent-accent) 35%, transparent); outline-offset: 2px; }
@@ -37,6 +51,7 @@
 .agent-loading { display: grid; place-content: center; gap: 18px; text-align: center; }
 .agent-skeleton { width: min(560px, 80vw); height: 220px; border-radius: 22px; background: linear-gradient(100deg, #e8ebf1 30%, #f7f8fa 50%, #e8ebf1 70%); background-size: 200% 100%; animation: agent-skeleton 1.4s infinite; }
 @keyframes agent-skeleton { to { background-position-x: -200%; } }
+@keyframes agent-status-pulse { 50% { opacity: .35; transform: scale(.75); } }
 
 @media (max-width: 720px) {
   .agent-page { padding: 24px 12px; }
@@ -48,5 +63,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-skeleton { animation: none; }
+  .agent-skeleton, .agent-run-status::before { animation: none !important; }
 }

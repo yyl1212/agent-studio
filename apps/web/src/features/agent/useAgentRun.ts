@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { APIError, api, type AgentManifest, type AgentRunPublicEvent, type AgentRunPublicView } from '../../lib/api/client'
 
-export type AgentRunPhase = 'idle' | 'recovering' | 'starting' | 'running' | 'reconnecting' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
+export type AgentServicePhase = AgentRunPublicView['run']['status']
+export type AgentRunPhase = 'idle' | 'recovering' | 'starting' | 'reconnecting' | AgentServicePhase
 export interface UseAgentRunOptions { slug: string; runId?: string; onAccepted(runId: string): void }
 export interface AgentRunController {
   phase: AgentRunPhase
+  servicePhase?: AgentServicePhase
   view?: AgentRunPublicView
   events: AgentRunPublicEvent[]
   error?: string
@@ -15,10 +17,12 @@ export interface AgentRunController {
 
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000] as const
 const POLL_DELAY_MS = 1000
+const RECOVERY_POLL_DELAY_MS = 5000
 const terminal = new Set<AgentRunPhase>(['completed', 'failed', 'cancelled'])
 
 export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): AgentRunController {
   const [phase, setPhase] = useState<AgentRunPhase>(runId ? 'recovering' : 'idle')
+  const [servicePhase, setServicePhase] = useState<AgentServicePhase>()
   const [view, setView] = useState<AgentRunPublicView>()
   const [events, setEvents] = useState<AgentRunPublicEvent[]>([])
   const eventsRef = useRef<AgentRunPublicEvent[]>([])
@@ -30,6 +34,7 @@ export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): Ag
   const activeRunID = useRef<string | undefined>(undefined)
   const retryIndex = useRef(0)
   const cancelling = useRef(false)
+  const servicePhaseRef = useRef<AgentServicePhase | undefined>(undefined)
   const requestIdentity = useRef<{ signature: string; key: string } | undefined>(undefined)
   const onAcceptedRef = useRef(onAccepted)
   onAcceptedRef.current = onAccepted
@@ -59,10 +64,15 @@ export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): Ag
       setEvents(merged)
       setView({ ...next, events: merged })
       setError(undefined)
-      const status = next.run.status as AgentRunPhase
+      const status = serviceStatus(next.run.status)
+      servicePhaseRef.current = status
+      setServicePhase(status)
       setPhase(status)
       cancelling.current = status === 'cancelling'
-      const schedule = () => { timer.current = setTimeout(() => { void poll(expectedGeneration) }, POLL_DELAY_MS) }
+      const schedule = () => {
+        const delay = status === 'recovery_required' ? RECOVERY_POLL_DELAY_MS : POLL_DELAY_MS
+        timer.current = setTimeout(() => { void poll(expectedGeneration) }, delay)
+      }
       if (next.hasMore) queueMicrotask(() => { void poll(expectedGeneration) })
       else if (terminal.has(status)) return
       else schedule()
@@ -88,8 +98,10 @@ export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): Ag
     sequence.current = 0
     retryIndex.current = 0
     cancelling.current = false
+    servicePhaseRef.current = undefined
     activeRunID.current = runId
     setView(undefined)
+    setServicePhase(undefined)
     eventsRef.current = []
     setEvents([])
     setError(undefined)
@@ -122,7 +134,10 @@ export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): Ag
       activeRunID.current = accepted.runId
       sequence.current = 0
       retryIndex.current = 0
-      setPhase(accepted.status as AgentRunPhase)
+      const status = serviceStatus(accepted.status)
+      servicePhaseRef.current = status
+      setServicePhase(status)
+      setPhase(status)
       onAcceptedRef.current(accepted.runId)
       await poll(expectedGeneration)
     } catch (caught) {
@@ -135,7 +150,10 @@ export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): Ag
   const cancel = useCallback(async () => {
     const id = activeRunID.current
     if (!id || cancelling.current || terminal.has(phase)) return
+    if (servicePhaseRef.current !== 'queued' && servicePhaseRef.current !== 'running') return
     cancelling.current = true
+    servicePhaseRef.current = 'cancelling'
+    setServicePhase('cancelling')
     setPhase('cancelling')
     setError(undefined)
     const expectedGeneration = generation.current
@@ -162,7 +180,26 @@ export function useAgentRun({ slug, runId, onAccepted }: UseAgentRunOptions): Ag
     }
   }, [phase, poll, slug, stopRequest])
 
-  return { phase, view, events, error, start, cancel }
+  return { phase, servicePhase, view, events, error, start, cancel }
+}
+
+function serviceStatus(status: AgentRunPublicView['run']['status']): AgentServicePhase {
+  switch (status) {
+    case 'queued':
+    case 'running':
+    case 'recovery_required':
+    case 'cancelling':
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+      return status
+    default:
+      return assertNever(status)
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unsupported agent run status: ${String(value)}`)
 }
 
 function isPermanent(error: unknown) {
