@@ -236,7 +236,7 @@ queueWaitP95Ms=0
 FIXTURE
 
   validate_script "$base"
-  for case_name in duplicate_image duplicate_up ansi_up assertion_after_contract contract_after_up worker_port no_cleanup late_trap defaults_reassign deadline_noop fixed_project reassign_project comment_api_port summary_or_true summary_rewrite brace_overwrite semicolon_down single_quoted_variable run_root_rebind; do
+  for case_name in duplicate_image duplicate_up ansi_up assertion_after_contract contract_after_up worker_port no_cleanup late_trap defaults_reassign exported_defaults_reassign deadline_noop fixed_project reassign_project comment_api_port summary_or_true summary_rewrite brace_overwrite semicolon_down single_quoted_variable run_root_rebind; do
     candidate="$fixture_root/$case_name.sh"
     cat "$base" >"$candidate"
     case "$case_name" in
@@ -248,7 +248,8 @@ FIXTURE
       worker_port) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("    environment:\n", "    ports:\n      - \"127.0.0.1:$worker_port:8080\"\n    environment:\n"))' "$candidate"; expected='Worker must not expose ports';;
       no_cleanup) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("  docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true", "  :"))' "$candidate"; expected='cleanup must remove only this Compose project';;
       late_trap) ruby -e 'p=ARGV[0]; s=File.read(p); t="trap cleanup EXIT HUP INT TERM\n"; File.write(p, s.sub(t, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{t}"))' "$candidate"; expected='immediately follow';;
-      defaults_reassign) ruby -e 'p=ARGV[0]; s=File.read(p); marker="[ \"$RUN_COUNT\" = \"500\" ] || exit 1\n"; injection="export RUN_COUNT=1\nexport RC_CAPACITY_DEADLINE_SECONDS=60\nvalidate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\"\n"; File.write(p, s.sub(marker, marker + injection))' "$candidate"; expected='defaults must be the only assignments';;
+      defaults_reassign) ruby -e 'p=ARGV[0]; s=File.read(p); marker="[ \"$RUN_COUNT\" = \"500\" ] || exit 1\n"; injection="RUN_COUNT=1\nRC_CAPACITY_DEADLINE_SECONDS=60\nvalidate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\"\n"; File.write(p, s.sub(marker, marker + injection))' "$candidate"; expected='defaults must be the only assignments';;
+      exported_defaults_reassign) ruby -e 'p=ARGV[0]; s=File.read(p); marker="[ \"$RUN_COUNT\" = \"500\" ] || exit 1\n"; injection="export   RUN_COUNT=1\nexport\tRC_CAPACITY_DEADLINE_SECONDS=60\nvalidate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\"\n"; File.write(p, s.sub(marker, marker + injection))' "$candidate"; expected='defaults must be the only assignments';;
       deadline_noop) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("exit 1 ;;", ": ;;"))' "$candidate"; expected='deadline must reject non-integers directly';;
       fixed_project) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("COMPOSE_PROJECT_NAME=\"agent_studio_rc_capacity_$$\"", "COMPOSE_PROJECT_NAME=\"fixed\" # $$"))' "$candidate"; expected='PID-derived';;
       reassign_project) printf '%s\n' 'COMPOSE_PROJECT_NAME="agent_studio_rc_capacity_$$"' >>"$candidate"; expected='assigned exactly once';;
