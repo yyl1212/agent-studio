@@ -349,6 +349,9 @@ end
 require_match(source, /UPGRADE_ROLLBACK_DEADLINE_SECONDS=\$\{UPGRADE_ROLLBACK_DEADLINE_SECONDS:-570\}/, "570-second internal deadline default missing")
 require_match(source, /UPGRADE_ROLLBACK_DEADLINE_SECONDS[^\n]*(?:60|\[ [^\]]+ -lt 60 \])/, "deadline minimum missing")
 require_match(source, /UPGRADE_ROLLBACK_DEADLINE_SECONDS[^\n]*(?:570|\[ [^\]]+ -gt 570 \])/, "deadline maximum missing")
+clean_tree_guard_call=source.index("\nassert_clean_source_tree\n") or abort "clean-tree guard invocation missing"
+run_root_creation=source.index('run_root=$(mktemp') or abort "run-root creation missing"
+abort "clean-tree guard must run before run-root creation" unless clean_tree_guard_call < run_root_creation
 cleanup=source[/^cleanup\(\)\s*\{\n(.*?)^\}/m,1] or abort "cleanup missing"
 abort "cleanup must use attempted compose state" unless cleanup.include?("compose_attempted")
 abort "cleanup must collect PostgreSQL logs before down" unless cleanup.index("collect_postgres_logs") && cleanup.index("docker compose") && cleanup.index("collect_postgres_logs") < cleanup.rindex("docker compose")
@@ -387,14 +390,31 @@ require_match(source, /run_bounded postgres_client docker compose -f .* exec -T 
 RUBY
 ruby "$review_validator" "$script"
 
+relocated_guard="$test_root/relocated-clean-tree-guard.sh"
+ruby -e '
+  source=File.read(ARGV.fetch(0))
+  invocation="assert_clean_source_tree\n"
+  abort "clean-tree guard invocation missing" unless source.scan(invocation).length == 1
+  source=source.sub(invocation, "")
+  trap_line="trap '\''cleanup $?'\'' EXIT\n"
+  abort "cleanup trap missing" unless source.include?(trap_line)
+  File.write(ARGV.fetch(1), source.sub(trap_line, trap_line + invocation))
+' "$script" "$relocated_guard"
+if ruby "$review_validator" "$relocated_guard" >"$test_root/relocated-guard.out" 2>&1; then
+  printf '%s\n' 'contract accepted a clean-tree guard relocated after run-root creation' >&2
+  exit 1
+fi
+
 clean_tree_fixture="$test_root/clean-tree-fixture"
 clean_tree_bin="$test_root/clean-tree-bin"
 mkdir -p "$clean_tree_fixture/scripts" "$clean_tree_bin"
 cp "$script" "$clean_tree_fixture/scripts/test-v05-upgrade-rollback-e2e.sh"
 printf '%s\n' tracked >"$clean_tree_fixture/tracked.txt"
+printf '%s\n' ignored-local >"$clean_tree_fixture/.gitignore"
 git -C "$clean_tree_fixture" init -q
-git -C "$clean_tree_fixture" add scripts/test-v05-upgrade-rollback-e2e.sh tracked.txt
+git -C "$clean_tree_fixture" add scripts/test-v05-upgrade-rollback-e2e.sh tracked.txt .gitignore
 git -C "$clean_tree_fixture" -c user.name=contract -c user.email=contract@example.invalid commit -qm fixture
+printf '%s\n' ignored >"$clean_tree_fixture/ignored-local"
 cat >"$clean_tree_bin/docker" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >>"$CLEAN_TREE_DOCKER_LOG"
