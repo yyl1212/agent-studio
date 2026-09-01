@@ -56,6 +56,7 @@ legacy_log="$run_root/legacy-api.log"
 current_api_log="$run_root/current-api.log"
 worker_log="$run_root/current-worker.log"
 postgres_log="$run_root/postgres.log"
+diagnostics_log="$run_root/database-diagnostics.log"
 summary_log="$run_root/failure-summary.json"
 completed_snapshot="$run_root/completed.snapshot"
 cancelling_snapshot="$run_root/cancelling.snapshot"
@@ -202,12 +203,37 @@ collect_postgres_logs() {
   run_cleanup_bounded "$postgres_logs_deadline_ms" compose_logs docker compose -f "$compose_file" logs --no-color db >"$postgres_log" 2>&1 || printf '%s\n' 'PostgreSQL log collection failed' >"$postgres_log"
 }
 
+postgres_cleanup_exec() {
+  postgres_cleanup_deadline_ms=$1
+  shift
+  run_cleanup_bounded "$postgres_cleanup_deadline_ms" postgres_client docker compose -f "$compose_file" exec -T db "$@"
+}
+
+collect_database_diagnostics() {
+  database_diagnostics_deadline_ms=$1
+  : >"$diagnostics_log"
+  for database_diagnostics_role in upgrade_source current rollback_target; do
+    printf 'role=%s\n' "$database_diagnostics_role" >>"$diagnostics_log"
+    case "$database_diagnostics_role" in
+      upgrade_source|current) database_diagnostics_database=upgrade_source ;;
+      rollback_target) database_diagnostics_database=rollback_target ;;
+    esac
+    database_diagnostics_part="$run_root/database-diagnostics-$database_diagnostics_role.part"
+    if [ "$compose_attempted" -eq 1 ] && postgres_cleanup_exec "$database_diagnostics_deadline_ms" psql --dbname="$(database_url "$database_diagnostics_database")" -X -v ON_ERROR_STOP=1 -Atc "SELECT 'migration_version=' || COALESCE((SELECT max(version)::text FROM schema_migrations),'none') UNION ALL SELECT 'run_status_counts=' || COALESCE((SELECT string_agg(status || ':' || status_count,',' ORDER BY status) FROM (SELECT status,count(*)::text AS status_count FROM runs GROUP BY status) counts),'none') UNION ALL SELECT 'tables=' || COALESCE((SELECT string_agg(table_name,',' ORDER BY table_name) FROM information_schema.tables WHERE table_schema='public'),'none')" >"$database_diagnostics_part" 2>/dev/null; then
+      run_cleanup_bounded "$database_diagnostics_deadline_ms" artifact_io sh -c 'printf "%s\n" status=available; cat "$1"' sh "$database_diagnostics_part" >>"$diagnostics_log" 2>/dev/null || printf '%s\n' 'status=unavailable_or_error' >>"$diagnostics_log"
+    else
+      printf '%s\n' 'status=unavailable_or_error' >>"$diagnostics_log"
+    fi
+    run_cleanup_bounded "$database_diagnostics_deadline_ms" artifact_io rm -f "$database_diagnostics_part" >/dev/null 2>&1 || true
+  done
+}
+
 capture_failure_artifacts() {
   failure_artifact_status=$1
   failure_artifact_deadline_ms=$2
   run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io mkdir -p "$artifact_dir" || return 0
   failure_artifact_unsafe=0
-  for failure_artifact_candidate in "$legacy_log" "$current_api_log" "$worker_log" "$postgres_log" "$restore_list"; do
+  for failure_artifact_candidate in "$legacy_log" "$current_api_log" "$worker_log" "$postgres_log" "$restore_list" "$diagnostics_log"; do
     [ ! -f "$failure_artifact_candidate" ] && continue
     if contains_sensitive_data "$failure_artifact_candidate" "$failure_artifact_deadline_ms"; then failure_artifact_scan_status=0; else failure_artifact_scan_status=$?; fi
     case "$failure_artifact_scan_status" in 1) :;; 0|*) failure_artifact_unsafe=1;; esac
@@ -219,24 +245,26 @@ capture_failure_artifacts() {
     failure_artifact_unsafe=1
     run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io jq '.logsWithheld=true' "$summary_log" >"$summary_log.safe" && run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io mv "$summary_log.safe" "$summary_log"
   fi
-  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io rm -f "$artifact_dir/runtime.log" "$artifact_dir/postgres.log" "$artifact_dir/restore-list.log" "$artifact_dir/summary.log" "$artifact_dir/withheld.log" "$artifact_dir/failure-summary.json" || true
+  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io rm -f "$artifact_dir/runtime.log" "$artifact_dir/postgres.log" "$artifact_dir/restore-list.log" "$artifact_dir/database-diagnostics.log" "$artifact_dir/summary.log" "$artifact_dir/withheld.log" "$artifact_dir/failure-summary.json" || true
   run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$summary_log" "$artifact_dir/failure-summary.json" || return 0
   if [ "$failure_artifact_unsafe" -eq 1 ]; then printf '%s\n' 'failure logs withheld after sensitive-data scan' >"$artifact_dir/withheld.log"; return 0; fi
   run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io sh -c 'cat "$1" "$2" "$3" >"$4"' sh "$legacy_log" "$current_api_log" "$worker_log" "$artifact_dir/runtime.log" || return 0
   run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$postgres_log" "$artifact_dir/postgres.log" || true
   [ ! -s "$restore_list" ] || run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$restore_list" "$artifact_dir/restore-list.log" || true
+  [ ! -s "$diagnostics_log" ] || run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$diagnostics_log" "$artifact_dir/database-diagnostics.log" || true
 }
 
 cleanup() {
   cleanup_status=$1
   trap - EXIT HUP INT TERM
   set +e
-  cleanup_started_ms=$(now_epoch_ms); cleanup_total_deadline_ms=$((cleanup_started_ms + 20000)); cleanup_stop_deadline_ms=$((cleanup_started_ms + 4000)); cleanup_logs_deadline_ms=$((cleanup_started_ms + 7000)); cleanup_artifact_deadline_ms=$((cleanup_started_ms + 10000)); cleanup_down_deadline_ms=$((cleanup_started_ms + 18000)); cleanup_remove_deadline_ms=$cleanup_total_deadline_ms
+  cleanup_started_ms=$(now_epoch_ms); cleanup_total_deadline_ms=$((cleanup_started_ms + 20000)); cleanup_stop_deadline_ms=$((cleanup_started_ms + 4000)); cleanup_logs_deadline_ms=$((cleanup_started_ms + 7000)); cleanup_diagnostics_deadline_ms=$((cleanup_started_ms + 9000)); cleanup_artifact_deadline_ms=$((cleanup_started_ms + 10000)); cleanup_down_deadline_ms=$((cleanup_started_ms + 18000)); cleanup_remove_deadline_ms=$cleanup_total_deadline_ms
   [ -z "$current_worker_pid" ] || stop_process "$current_worker_pid" "$cleanup_stop_deadline_ms"
   [ -z "$current_api_pid" ] || stop_process "$current_api_pid" "$cleanup_stop_deadline_ms"
   [ -z "$legacy_api_pid" ] || stop_process "$legacy_api_pid" "$cleanup_stop_deadline_ms"
   [ "$compose_attempted" -eq 0 ] || collect_postgres_logs "$cleanup_logs_deadline_ms"
   if [ "$cleanup_status" -ne 0 ]; then
+    collect_database_diagnostics "$cleanup_diagnostics_deadline_ms"
     capture_failure_artifacts "$cleanup_status" "$cleanup_artifact_deadline_ms"
   fi
   if [ "$compose_attempted" -eq 1 ]; then

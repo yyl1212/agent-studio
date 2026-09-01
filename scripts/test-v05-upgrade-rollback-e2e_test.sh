@@ -115,8 +115,8 @@ def validate_script(path)
   executable_lines(code).each_with_index do |line, index|
     client = line.index(/\b(?:psql|pg_dump|pg_restore)\b/)
     next unless client
-    wrapper = line.index(/\bpostgres_exec\b/)
-    reject!("PostgreSQL client bypasses postgres_exec at line #{index + 1}") unless wrapper && wrapper < client
+    wrapper = line.index(/\bpostgres_(?:cleanup_)?exec\b/)
+    reject!("PostgreSQL client bypasses a bounded postgres wrapper at line #{index + 1}") unless wrapper && wrapper < client
   end
   reject!("isolated PostgreSQL 18 marker missing") unless executable_lines(code).any? { |line| line == "postgres_image=postgres:18" }
   expected = [
@@ -343,7 +343,7 @@ source=File.read(ARGV.fetch(0))
 def require_match(source, pattern, message)
   abort message unless source.match?(pattern)
 end
-%w[now_epoch_ms remaining_budget_ms wait_bounded run_bounded run_cleanup_bounded assert_port_unused assert_process_identity sensitive_literals contains_sensitive_data collect_postgres_logs capture_failure_artifacts capture_legacy_snapshot].each do |name|
+%w[now_epoch_ms remaining_budget_ms wait_bounded run_bounded run_cleanup_bounded assert_port_unused assert_process_identity sensitive_literals contains_sensitive_data collect_postgres_logs postgres_cleanup_exec collect_database_diagnostics capture_failure_artifacts capture_legacy_snapshot].each do |name|
   require_match(source, /^#{Regexp.escape(name)}\(\)\s*\{/m, "#{name} helper missing")
 end
 require_match(source, /UPGRADE_ROLLBACK_DEADLINE_SECONDS=\$\{UPGRADE_ROLLBACK_DEADLINE_SECONDS:-570\}/, "570-second internal deadline default missing")
@@ -357,7 +357,8 @@ abort "cleanup must use attempted compose state" unless cleanup.include?("compos
 abort "cleanup must collect PostgreSQL logs before down" unless cleanup.index("collect_postgres_logs") && cleanup.index("docker compose") && cleanup.index("collect_postgres_logs") < cleanup.rindex("docker compose")
 abort "cleanup down must be independently bounded" unless cleanup.match?(/run_cleanup_bounded.*docker compose.*down --remove-orphans/m)
 abort "cleanup must not remove volumes" if cleanup.match?(/down[^\n]*(?:--volumes|\s-v(?:\s|$))/)
-%w[cleanup_total_deadline_ms cleanup_stop_deadline_ms cleanup_logs_deadline_ms cleanup_artifact_deadline_ms cleanup_down_deadline_ms cleanup_remove_deadline_ms].each { |name| abort "#{name} missing" unless cleanup.include?(name) }
+%w[cleanup_total_deadline_ms cleanup_stop_deadline_ms cleanup_logs_deadline_ms cleanup_diagnostics_deadline_ms cleanup_artifact_deadline_ms cleanup_down_deadline_ms cleanup_remove_deadline_ms].each { |name| abort "#{name} missing" unless cleanup.include?(name) }
+abort "cleanup must collect bounded database diagnostics before artifact capture" unless cleanup.index("collect_database_diagnostics") && cleanup.index("capture_failure_artifacts") && cleanup.index("collect_database_diagnostics") < cleanup.index("capture_failure_artifacts")
 abort "stop_process must accept a shared absolute deadline" unless source[/^stop_process\(\)\s*\{\n(.*?)^\}/m,1].include?('stop_process_deadline_ms=$2')
 up=source.index('docker compose -f "$compose_file" up -d db') or abort "compose up missing"
 attempt=source.rindex("compose_attempted=1",up) or abort "compose attempt must be marked before up"
@@ -377,6 +378,9 @@ scan=source[/^contains_sensitive_data\(\)\s*\{\n(.*?)^\}/m,1] or abort "sensitiv
 abort "scanner errors must be distinct" unless scan.include?('exit 2')
 artifacts=source[/^capture_failure_artifacts\(\)\s*\{\n(.*?)^\}/m,1] or abort "artifact capture missing"
 abort "artifact scan must fail closed" unless artifacts.match?(/case .*scan.* in/m) && artifacts.include?('failure_artifact_unsafe=1')
+diagnostics=source[/^collect_database_diagnostics\(\)\s*\{\n(.*?)^\}/m,1] or abort "database diagnostics missing"
+%w[upgrade_source current rollback_target migration_version run_status_counts tables unavailable_or_error].each { |marker| abort "database diagnostics #{marker} missing" unless diagnostics.include?(marker) }
+abort "database diagnostics must use bounded PostgreSQL execution" unless diagnostics.include?('postgres_cleanup_exec')
 rollback=source[/^assert_rollback_records\(\)\s*\{\n(.*?)^\}/m,1] or abort "rollback assertion missing"
 %w[completed_snapshot cancelling_snapshot running_snapshot run.started run.completed].each { |marker| abort "rollback #{marker} content assertion missing" unless rollback.include?(marker) }
 require_match(source, /elapsed_ms=.*now_epoch_ms.*start_epoch_ms/m, "elapsed measurement missing")
@@ -496,6 +500,8 @@ set -e
 [ "$fake_status" -ne 0 ]
 [ -f "$up_marker" ]
 [ -f "$down_marker" ]
+[ -f "$test_root/fake-artifacts/database-diagnostics.log" ]
+for diagnostic_role in upgrade_source current rollback_target; do grep -F "role=$diagnostic_role" "$test_root/fake-artifacts/database-diagnostics.log" >/dev/null; done
 fake_run_root=$(cat "$run_root_record")
 [ ! -e "$fake_run_root" ]
 
@@ -589,20 +595,53 @@ for literal in contract-key contract-idempotency legacy-public-fixture legacy-ru
   printf '%s\n' "\$literal" >"$test_root/sensitive.log"
   contains_sensitive_data "$test_root/sensitive.log" 9999999999999
 done
-artifact_dir="$test_root/safe-artifacts"; legacy_log="$test_root/sensitive.log"; current_api_log="$test_root/empty-api.log"; worker_log="$test_root/empty-worker.log"; postgres_log="$test_root/empty-postgres.log"; restore_list="$test_root/empty-restore.log"; summary_log="$test_root/failure-summary.json"
-: >"\$current_api_log"; : >"\$worker_log"; : >"\$postgres_log"; : >"\$restore_list"
+artifact_dir="$test_root/safe-artifacts"; legacy_log="$test_root/sensitive.log"; current_api_log="$test_root/empty-api.log"; worker_log="$test_root/empty-worker.log"; postgres_log="$test_root/empty-postgres.log"; restore_list="$test_root/empty-restore.log"; diagnostics_log="$test_root/database-diagnostics.log"; summary_log="$test_root/failure-summary.json"
+: >"\$current_api_log"; : >"\$worker_log"; : >"\$postgres_log"; : >"\$restore_list"; printf '%s\n' 'role=upgrade_source' 'status=available' 'migration_version=7' 'run_status_counts=completed:2' 'tables=run_events,runs,schema_migrations' >"\$diagnostics_log"
 for literal in contract-key contract-idempotency legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker; do printf '%s\n' "\$literal"; done >"\$legacy_log"
 current_phase=09_start_current_api; start_epoch_ms=0; old_commit=; dump_sha=; compose_project_id=contract01
 now_epoch_ms() { printf '%s\n' 1234; }
 capture_failure_artifacts 17 9999999999999
 summary="\$artifact_dir/failure-summary.json"; [ -f "\$summary" ]; jq -e '.phase=="09_start_current_api" and .exitCode==17 and .elapsedMs==1234 and .logsWithheld==true and .composeProjectId=="contract01" and (keys|sort)==["composeProjectId","elapsedMs","exitCode","logsWithheld","phase"]' "\$summary" >/dev/null
 for literal in contract-key contract-idempotency legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker 'sh -c' '--dbname'; do ! grep -F -- "\$literal" "\$summary" >/dev/null; done
-contains_sensitive_data() { [ "\${fake_scan_status:-1}" -eq 2 ] && return 2; [ "\$1" = "\$summary_log" ] && return 1; [ "\$1" = "\$legacy_log" ] && return "\$fake_scan_status"; return 1; }
-for scan_case in '2|true|no' '1|false|yes'; do fake_scan_status=\${scan_case%%|*}; scan_rest=\${scan_case#*|}; expected_withheld=\${scan_rest%%|*}; expected_runtime=\${scan_rest#*|}; artifact_dir="$test_root/scan-\$fake_scan_status"; summary_log="$test_root/summary-\$fake_scan_status.json"; printf safe-log >"\$legacy_log"; capture_failure_artifacts 17 9999999999999; jq -e --argjson expected "\$expected_withheld" '.logsWithheld==\$expected' "\$artifact_dir/failure-summary.json" >/dev/null; [ "\$expected_runtime" = yes ] && [ -f "\$artifact_dir/runtime.log" ] || [ ! -f "\$artifact_dir/runtime.log" ]; done
+contains_sensitive_data() { grep -F 'do-not-publish' "\$1" >/dev/null 2>&1 && return 0; [ "\${fake_scan_status:-1}" -eq 2 ] && return 2; [ "\$1" = "\$summary_log" ] && return 1; [ "\$1" = "\$legacy_log" ] && return "\$fake_scan_status"; return 1; }
+for scan_case in '2|true|no' '1|false|yes'; do fake_scan_status=\${scan_case%%|*}; scan_rest=\${scan_case#*|}; expected_withheld=\${scan_rest%%|*}; expected_runtime=\${scan_rest#*|}; artifact_dir="$test_root/scan-\$fake_scan_status"; summary_log="$test_root/summary-\$fake_scan_status.json"; printf safe-log >"\$legacy_log"; capture_failure_artifacts 17 9999999999999; jq -e --argjson expected "\$expected_withheld" '.logsWithheld==\$expected' "\$artifact_dir/failure-summary.json" >/dev/null; if [ "\$expected_runtime" = yes ]; then [ -f "\$artifact_dir/runtime.log" ] && [ -f "\$artifact_dir/database-diagnostics.log" ]; else [ ! -f "\$artifact_dir/runtime.log" ] && [ ! -f "\$artifact_dir/database-diagnostics.log" ]; fi; done
+artifact_dir="$test_root/unsafe-diagnostics"; summary_log="$test_root/unsafe-diagnostics-summary.json"; fake_scan_status=1; printf '%s\n' 'role=current' 'password=do-not-publish' >"\$diagnostics_log"; capture_failure_artifacts 17 9999999999999; [ -f "\$artifact_dir/withheld.log" ]; [ ! -e "\$artifact_dir/database-diagnostics.log" ]; ! grep -R -F 'do-not-publish' "\$artifact_dir" >/dev/null
 SH
 [ -s "$test_root/sensitive-harness.sh" ] || { printf '%s\n' 'sensitive harness generation failed' >&2; exit 1; }
 chmod +x "$test_root/sensitive-harness.sh"
 if ! sh "$test_root/sensitive-harness.sh"; then printf '%s\n' 'sensitive literal fixture failed' >&2; exit 1; fi
+
+diagnostics_functions="$test_root/diagnostics-functions.sh"
+extract_functions "$diagnostics_functions" database_name database_url collect_database_diagnostics
+cat >"$test_root/diagnostics-harness.sh" <<SH
+#!/bin/sh
+set -eu
+$(cat "$diagnostics_functions")
+db_port=41002; compose_attempted=1; diagnostics_log="$test_root/collected-diagnostics.log"; diagnostics_calls="$test_root/diagnostics-calls.log"
+postgres_cleanup_exec() {
+  printf '%s\n' "\$*" >>"\$diagnostics_calls"
+  case "\$*" in
+    *rollback_target*) return 17 ;;
+    *) printf '%s\n' 'migration_version=7' 'run_status_counts=cancelled:1,completed:2' 'tables=run_events,runs,schema_migrations' ;;
+  esac
+}
+collect_database_diagnostics 9999999999999
+grep -F 'role=upgrade_source' "\$diagnostics_log" >/dev/null
+grep -F 'role=current' "\$diagnostics_log" >/dev/null
+grep -A1 -F 'role=rollback_target' "\$diagnostics_log" | grep -F 'status=unavailable_or_error' >/dev/null
+grep -F 'migration_version=7' "\$diagnostics_log" >/dev/null
+grep -F 'run_status_counts=cancelled:1,completed:2' "\$diagnostics_log" >/dev/null
+grep -F 'tables=run_events,runs,schema_migrations' "\$diagnostics_log" >/dev/null
+grep -F 'schema_migrations' "\$diagnostics_calls" >/dev/null
+grep -F 'GROUP BY status' "\$diagnostics_calls" >/dev/null
+grep -F 'information_schema.tables' "\$diagnostics_calls" >/dev/null
+! grep -E 'payload|secret|ciphertext|password|postgres(ql)?://' "\$diagnostics_log" >/dev/null
+compose_attempted=0; diagnostics_log="$test_root/unavailable-diagnostics.log"; : >"\$diagnostics_calls"; collect_database_diagnostics 9999999999999
+[ "\$(grep -c '^status=unavailable_or_error$' "\$diagnostics_log")" -eq 3 ]
+[ ! -s "\$diagnostics_calls" ]
+SH
+chmod +x "$test_root/diagnostics-harness.sh"
+if ! sh "$test_root/diagnostics-harness.sh"; then printf '%s\n' 'database diagnostics fixture failed' >&2; exit 1; fi
 
 cleanup_functions="$test_root/cleanup-functions.sh"
 extract_functions "$cleanup_functions" now_epoch_ms remaining_budget_ms set_safe_command_label wait_bounded run_bounded_until run_cleanup_bounded stop_process collect_postgres_logs cleanup
