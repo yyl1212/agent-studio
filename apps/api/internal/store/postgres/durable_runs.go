@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	workflowservice "github.com/yyl1212/agent-studio/apps/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/internal/database"
 )
 
 func (store *Store) SubmitRun(ctx context.Context, submission workflowservice.RunSubmission) error {
@@ -104,6 +105,9 @@ func (store *Store) ClaimRun(ctx context.Context, owner string, duration time.Du
 		return workflowservice.ClaimedRun{}, false, fmt.Errorf("begin run claim: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := database.TrySharedTransaction(ctx, tx); err != nil {
+		return workflowservice.ClaimedRun{}, false, err
+	}
 	var runID string
 	err = tx.QueryRow(ctx, `SELECT id::text
 		FROM runs

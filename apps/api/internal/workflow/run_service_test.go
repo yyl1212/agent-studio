@@ -34,14 +34,6 @@ type terminalEchoEngine struct {
 
 type coordinatorContextKey struct{}
 
-type contextValueCoordinator struct {
-	released int
-}
-
-func (coordinator *contextValueCoordinator) Register(parent context.Context, _ string) (context.Context, func()) {
-	return context.WithValue(parent, coordinatorContextKey{}, "coordinated"), func() { coordinator.released++ }
-}
-
 type coordinatorAwareEngine struct {
 	sawValue bool
 }
@@ -57,15 +49,6 @@ func (runtime *coordinatorAwareEngine) Run(ctx context.Context, runID string, _ 
 
 func (runtime *coordinatorAwareEngine) RunWithScope(ctx context.Context, runID string, plan *engine.Plan, input map[string]any, observer engine.Observer, _ engine.ExecutionScope) (engine.RunResult, error) {
 	return runtime.Run(ctx, runID, plan, input, observer)
-}
-
-type contextValueObserver struct {
-	sawValue bool
-}
-
-func (observer *contextValueObserver) Observe(ctx context.Context, _ engine.Event) error {
-	observer.sawValue = ctx.Value(coordinatorContextKey{}) == "coordinated"
-	return nil
 }
 
 func (runtime terminalEchoEngine) Run(ctx context.Context, runID string, _ *engine.Plan, _ map[string]any, observer engine.Observer) (engine.RunResult, error) {
@@ -143,22 +126,6 @@ func TestPersistenceObserverCommitsRedactedEventBeforeDownstream(t *testing.T) {
 	}
 	if len(downstream.events) != 0 {
 		t.Fatalf("downstream observed uncommitted event=%+v", downstream.events)
-	}
-}
-
-func TestRunServiceBindsEngineAndObserversToCoordinatorContext(t *testing.T) {
-	store := newFakeStore(t)
-	const runID = "run-coordinated"
-	store.runs = append(store.runs, domain.Run{ID: runID, WorkflowID: store.workflow.ID, Status: domain.RunRunning})
-	coordinator := &contextValueCoordinator{}
-	runtime := &coordinatorAwareEngine{}
-	downstream := &contextValueObserver{}
-	service := NewRunService(store, nil, runtime, WithRunCoordinator(coordinator))
-	if _, err := service.Execute(context.Background(), &PreparedRun{RunID: runID, Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{}}}, downstream); err != nil {
-		t.Fatal(err)
-	}
-	if !runtime.sawValue || !downstream.sawValue || coordinator.released != 1 {
-		t.Fatalf("engine context=%v downstream context=%v releases=%d", runtime.sawValue, downstream.sawValue, coordinator.released)
 	}
 }
 

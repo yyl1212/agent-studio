@@ -40,13 +40,12 @@ type PreparedRun struct {
 }
 
 type RunService struct {
-	store       Store
-	compiler    Compiler
-	engine      Engine
-	logger      *slog.Logger
-	coordinator RunExecutionCoordinator
-	telemetry   *runTelemetry
-	submission  *RunSubmissionService
+	store      Store
+	compiler   Compiler
+	engine     Engine
+	logger     *slog.Logger
+	telemetry  *runTelemetry
+	submission *RunSubmissionService
 }
 
 type checkpointEngine interface {
@@ -62,12 +61,6 @@ func WithLogger(logger *slog.Logger) RunOption {
 		if logger != nil {
 			service.logger = logger
 		}
-	}
-}
-
-func WithRunCoordinator(coordinator RunExecutionCoordinator) RunOption {
-	return func(service *RunService) {
-		service.coordinator = coordinator
 	}
 }
 
@@ -325,11 +318,6 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	telemetryStatus := domain.RunFailed
 	telemetryCategory := observability.ErrorCategoryInternal
 	defer func() { finishTelemetry(telemetryStatus, telemetryCategory) }()
-	release := func() {}
-	if service.coordinator != nil {
-		executionContext, release = service.coordinator.Register(executionContext, prepared.RunID)
-	}
-	defer release()
 	persistence := &persistenceObserver{
 		store:      service.store,
 		prepared:   prepared,

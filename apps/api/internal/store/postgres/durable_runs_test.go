@@ -9,7 +9,31 @@ import (
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	workflowservice "github.com/yyl1212/agent-studio/apps/api/internal/workflow"
+	"github.com/yyl1212/agent-studio/internal/database"
 )
+
+func TestDurableRunClaimStopsDuringExclusiveMaintenance(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "durable-maintenance")
+	submission := durableSubmissionFixture(workflow)
+	if err := store.SubmitRun(context.Background(), submission); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := database.TryExclusive(context.Background(), store.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	if _, claimed, err := store.ClaimRun(context.Background(), "worker", time.Minute); !errors.Is(err, database.ErrMaintenanceBusy) || claimed {
+		t.Fatalf("claimed=%v error=%v", claimed, err)
+	}
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := store.ClaimRun(context.Background(), "worker", time.Minute); err != nil || !claimed {
+		t.Fatalf("claim after maintenance release=%v error=%v", claimed, err)
+	}
+}
 
 func TestDurableRunSubmissionIsAtomic(t *testing.T) {
 	store := migratedTestStore(t)
