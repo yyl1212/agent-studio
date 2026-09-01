@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -18,5 +19,15 @@ func TestWorkerOwnerIDIsUniqueAndContainsNoConfiguration(t *testing.T) {
 	}
 	if _, err := uuid.Parse(parts[2]); err != nil {
 		t.Fatalf("worker ID UUID=%q error=%v", parts[2], err)
+	}
+}
+
+func TestWorkerEntrypointUsesWorkerConfigLoader(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), "config.LoadWorker()") {
+		t.Fatal("worker entrypoint must use config.LoadWorker")
 	}
 }

@@ -135,13 +135,30 @@ func TestLoadUsesDurableWorkerDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresWorkerQueueSampleInterval(t *testing.T) {
+	for _, value := range []string{"bad", "0", "-1s", "999ms", "1m1s"} {
+		t.Run(value, func(t *testing.T) {
+			clearOTelEnv(t)
+			t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+			t.Setenv("WORKER_QUEUE_SAMPLE_INTERVAL", value)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.WorkerQueueSampleInterval != 5*time.Second {
+				t.Fatalf("WorkerQueueSampleInterval = %s, want 5s", cfg.WorkerQueueSampleInterval)
+			}
+		})
+	}
+}
+
 func TestLoadValidatesDurableWorkerBoundsAndRelationships(t *testing.T) {
 	tests := []struct{ key, value string }{
 		{"WORKER_MAX_ACTIVE_RUNS", "0"}, {"WORKER_MAX_ACTIVE_RUNS", "33"}, {"WORKER_MAX_ACTIVE_RUNS", "bad"},
 		{"WORKER_LEASE_DURATION", "14s"}, {"WORKER_LEASE_DURATION", "5m1s"},
 		{"WORKER_HEARTBEAT_INTERVAL", "0s"}, {"WORKER_HEARTBEAT_INTERVAL", "11s"},
 		{"WORKER_CLAIM_INTERVAL", "99ms"}, {"WORKER_CLAIM_INTERVAL", "5s1ms"},
-		{"WORKER_QUEUE_SAMPLE_INTERVAL", "999ms"}, {"WORKER_QUEUE_SAMPLE_INTERVAL", "1m1s"},
 		{"WORKER_SHUTDOWN_TIMEOUT", "999ms"}, {"WORKER_SHUTDOWN_TIMEOUT", "5m1s"},
 		{"RUN_EVENT_POLL_INTERVAL", "99ms"}, {"RUN_EVENT_POLL_INTERVAL", "2s1ms"},
 	}
@@ -157,6 +174,21 @@ func TestLoadValidatesDurableWorkerBoundsAndRelationships(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerValidatesQueueSampleInterval(t *testing.T) {
+	for _, value := range []string{"bad", "0", "-1s", "999ms", "1m1s"} {
+		t.Run(value, func(t *testing.T) {
+			clearOTelEnv(t)
+			t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+			t.Setenv("WORKER_QUEUE_SAMPLE_INTERVAL", value)
+
+			_, err := LoadWorker()
+			if err == nil || err.Error() != "WORKER_QUEUE_SAMPLE_INTERVAL must be a duration between 1s and 1m0s" {
+				t.Fatalf("LoadWorker() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadAcceptsDurableWorkerBoundaries(t *testing.T) {
 	clearOTelEnv(t)
 	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
@@ -164,11 +196,29 @@ func TestLoadAcceptsDurableWorkerBoundaries(t *testing.T) {
 	t.Setenv("WORKER_LEASE_DURATION", "15s")
 	t.Setenv("WORKER_HEARTBEAT_INTERVAL", "5s")
 	t.Setenv("WORKER_CLAIM_INTERVAL", "100ms")
-	t.Setenv("WORKER_QUEUE_SAMPLE_INTERVAL", "1m")
 	t.Setenv("WORKER_SHUTDOWN_TIMEOUT", "5m")
 	t.Setenv("RUN_EVENT_POLL_INTERVAL", "2s")
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadWorkerAcceptsQueueSampleIntervalBoundaries(t *testing.T) {
+	for _, value := range []string{"1s", "1m"} {
+		t.Run(value, func(t *testing.T) {
+			clearOTelEnv(t)
+			t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+			t.Setenv("WORKER_QUEUE_SAMPLE_INTERVAL", value)
+
+			cfg, err := LoadWorker()
+			if err != nil {
+				t.Fatalf("LoadWorker() error = %v", err)
+			}
+			want, _ := time.ParseDuration(value)
+			if cfg.WorkerQueueSampleInterval != want {
+				t.Fatalf("WorkerQueueSampleInterval = %s, want %s", cfg.WorkerQueueSampleInterval, want)
+			}
+		})
 	}
 }
 

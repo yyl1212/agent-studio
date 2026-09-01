@@ -82,10 +82,6 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	workerQueueSampleInterval, err := boundedDurationEnv("WORKER_QUEUE_SAMPLE_INTERVAL", 5*time.Second, time.Second, time.Minute)
-	if err != nil {
-		return Config{}, err
-	}
 	workerShutdownTimeout, err := boundedDurationEnv("WORKER_SHUTDOWN_TIMEOUT", 30*time.Second, time.Second, 5*time.Minute)
 	if err != nil {
 		return Config{}, err
@@ -139,7 +135,7 @@ func Load() (Config, error) {
 		WorkerLeaseDuration:       workerLeaseDuration,
 		WorkerHeartbeatInterval:   workerHeartbeatInterval,
 		WorkerClaimInterval:       workerClaimInterval,
-		WorkerQueueSampleInterval: workerQueueSampleInterval,
+		WorkerQueueSampleInterval: 5 * time.Second,
 		WorkerShutdownTimeout:     workerShutdownTimeout,
 		RunEventPollInterval:      runEventPollInterval,
 		OTelEndpoint:              otelEndpoint,
@@ -155,6 +151,21 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("MODEL_PROVIDER=openai-compatible requires OPENAI_BASE_URL")
 	}
 
+	return cfg, nil
+}
+
+// LoadWorker loads shared configuration and validates Worker-only settings.
+func LoadWorker() (Config, error) {
+	cfg, err := Load()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.WorkerQueueSampleInterval, err = boundedDurationEnv(
+		"WORKER_QUEUE_SAMPLE_INTERVAL", 5*time.Second, time.Second, time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 

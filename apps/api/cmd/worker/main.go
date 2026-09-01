@@ -29,7 +29,7 @@ func main() {
 }
 
 func run(processContext context.Context, logger *slog.Logger) error {
-	cfg, err := config.Load()
+	cfg, err := config.LoadWorker()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
