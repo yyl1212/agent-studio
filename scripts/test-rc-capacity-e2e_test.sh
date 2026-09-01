@@ -420,27 +420,31 @@ extract_request_submission_path() {
     start_match = source.match(/^  request_key=\$\(ruby -rsecurerandom.*$/)
     raise "production request key generation missing" unless start_match
     start = start_match.begin(0)
+    generation_end = source.index("\n", start)
+    raise "production request key generation boundary missing" unless generation_end
     finish_marker = "  before_deadline\n"
-    finish = source.index(finish_marker, start)
+    finish = source.index(finish_marker, generation_end + 1)
     raise "production request submission boundary missing" unless finish
-    STDOUT.write(source[start...(finish + finish_marker.length)])
-  ' "$1"
+    File.write(ARGV.fetch(1), source[start..generation_end])
+    File.write(ARGV.fetch(2), source[(generation_end + 1)...(finish + finish_marker.length)])
+  ' "$1" "$2" "$3"
 }
 
 assert_request_key_flow() {
   candidate=$1
   fixture_root=$2
   case_name=$3
-  request_path="$fixture_root/$case_name-request-path.sh"
-  extract_request_submission_path "$candidate" >"$request_path"
+  generation_path="$fixture_root/$case_name-generation.sh"
+  transmission_path="$fixture_root/$case_name-transmission.sh"
+  extract_request_submission_path "$candidate" "$generation_path" "$transmission_path"
   harness="$fixture_root/request-key-harness.sh"
   if [ ! -f "$harness" ]; then
     cat >"$harness" <<'HARNESS'
 #!/bin/sh
 set -eu
-request_path=$1
-case_root=$2
-generated_key='00000000-0000-4000-8000-000000000777'
+generation_path=$1
+transmission_path=$2
+case_root=$3
 generated_file="$case_root/generated"
 header_file="$case_root/header"
 request_keys_file="$case_root/request-keys"
@@ -453,10 +457,6 @@ workflow_version_id='00000000-0000-4000-8000-000000000888'
 deadline_epoch_ms=9999999999999
 base_url=http://127.0.0.1:1
 slug=fixture
-ruby() {
-  printf '%s\n' "$generated_key" >"$generated_file"
-  printf '%s\n' "$generated_key"
-}
 jq() {
   printf '%s\n' '{}'
 }
@@ -472,7 +472,14 @@ curl_with_deadline() {
   printf '%s\n' '{"runId":"00000000-0000-4000-8000-000000000999"}'
 }
 before_deadline() { :; }
-. "$request_path"
+. "$generation_path"
+generated_key=$request_key
+printf '%s\n' "$generated_key" >"$generated_file"
+if ! ruby -e 'exit(ARGV.fetch(0).match?(/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/) ? 0 : 1)' "$generated_key"; then
+  printf '%s\n' 'request key generator did not produce canonical UUID' >&2
+  exit 1
+fi
+. "$transmission_path"
 [ "$(cat "$generated_file")" = "$generated_key" ] || exit 1
 [ "$request_key" = "$generated_key" ] || {
   printf '%s\n' 'request key was changed after canonical generation' >&2
@@ -487,7 +494,7 @@ grep -Fqx -- "$generated_key" "$sensitive_values_file" || exit 1
 grep -Fqx -- 'capacity-private-input-7' "$sensitive_values_file" || exit 1
 HARNESS
   fi
-  sh "$harness" "$request_path" "$fixture_root/$case_name"
+  sh "$harness" "$generation_path" "$transmission_path" "$fixture_root/$case_name"
 }
 
 expect_request_key_flow_rejected() {
@@ -499,7 +506,7 @@ expect_request_key_flow_rejected() {
     exit 1
   fi
   case "$output" in
-    *'request key was changed after canonical generation'*|*'Idempotency-Key header did not preserve the generated canonical UUID'*) ;;
+    *'request key generator did not produce canonical UUID'*|*'request key was changed after canonical generation'*|*'Idempotency-Key header did not preserve the generated canonical UUID'*) ;;
     *) printf '%s\n' "request key mutation failed for the wrong reason ($case_name): $output" >&2; exit 1 ;;
   esac
 }
@@ -508,20 +515,25 @@ run_idempotency_key_semantics_test() {
   fixture_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-rc-capacity-idempotency.XXXXXX")
   trap 'rm -rf "$fixture_root"' EXIT HUP INT TERM
   assert_request_key_flow "$script" "$fixture_root" valid
-  for mutation_case in prefix suffix reassign; do
+  for mutation_case in prefix suffix reassign inline_prefix inline_suffix; do
     candidate="$fixture_root/$mutation_case.sh"
+    mutation_mode=insert
     case "$mutation_case" in
       prefix) mutation='request_key="prefix-$request_key"' ;;
       suffix) mutation='request_key="$request_key-suffix"' ;;
       reassign) mutation='request_key="11111111-1111-4111-8111-111111111111"' ;;
+      inline_prefix) mutation="request_key=\$(ruby -rsecurerandom -e 'puts \"capacity-private-key-#{SecureRandom.uuid}\"')"; mutation_mode=replace ;;
+      inline_suffix) mutation="request_key=\$(ruby -rsecurerandom -e 'puts \"#{SecureRandom.uuid}-suffix\"')"; mutation_mode=replace ;;
     esac
     ruby -e '
-      path, mutation = ARGV
+      path, mutation, mode = ARGV
       source = File.read(path)
-      changed = source.sub(/^  request_key=\$\(ruby -rsecurerandom.*\)\n/) { |line| line + "  #{mutation}\n" }
+      changed = source.sub(/^  request_key=\$\(ruby -rsecurerandom.*\)\n/) do |line|
+        mode == "replace" ? "  #{mutation}\n" : line + "  #{mutation}\n"
+      end
       raise "request key mutation failed" if changed == source
       STDOUT.write(changed)
-    ' "$script" "$mutation" >"$candidate"
+    ' "$script" "$mutation" "$mutation_mode" >"$candidate"
     expect_request_key_flow_rejected "$candidate" "$fixture_root" "$mutation_case"
   done
   trap - EXIT HUP INT TERM
