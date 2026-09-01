@@ -236,8 +236,13 @@ func (service *DebugService) validateCompleteHistory(run domain.Run, events []do
 					return nil, errIncompleteRunHistory
 				}
 				history.terminal = event
-			case "node.completed", "node.failed", "node.cancelled":
+			case "node.completed", "node.failed":
 				if history.started == nil || history.terminal != nil || history.confirmed {
+					return nil, errIncompleteRunHistory
+				}
+				history.terminal = event
+			case "node.cancelled":
+				if history.terminal != nil || history.confirmed {
 					return nil, errIncompleteRunHistory
 				}
 				history.terminal = event

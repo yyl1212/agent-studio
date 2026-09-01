@@ -129,6 +129,25 @@ func TestDebugHistoryAcceptsQueuedPrefixAndMultipleNodeAttempts(t *testing.T) {
 	}
 }
 
+func TestDebugHistoryAcceptsCancellationOfNodeThatNeverStarted(t *testing.T) {
+	store := newFakeStore(t)
+	now := time.Now().UTC()
+	run := domain.Run{ID: "failed-with-pending", Status: domain.RunFailed}
+	attempt := 1
+	store.runEvents = []domain.RunEvent{
+		{RunID: run.ID, Sequence: 1, Type: "run.queued", Timestamp: now},
+		{RunID: run.ID, Sequence: 2, Type: "run.started", Timestamp: now},
+		{RunID: run.ID, Sequence: 3, Type: "node.started", NodeID: "work", NodeAttempt: &attempt, Status: domain.NodeRunning, Timestamp: now},
+		{RunID: run.ID, Sequence: 4, Type: "node.failed", NodeID: "work", NodeAttempt: &attempt, Status: domain.NodeFailed, Timestamp: now},
+		{RunID: run.ID, Sequence: 5, Type: "node.cancelled", NodeID: "pending", NodeAttempt: &attempt, Status: domain.NodeCancelled, Timestamp: now},
+		{RunID: run.ID, Sequence: 6, Type: "run.failed", Timestamp: now},
+	}
+	events, err := NewDebugService(store, nil).loadCompleteHistory(context.Background(), run)
+	if err != nil || len(events) != 6 {
+		t.Fatalf("events=%v error=%v", events, err)
+	}
+}
+
 func TestDebugHistoryRejectsDuplicateRunStartAndAttemptTerminal(t *testing.T) {
 	now := time.Now().UTC()
 	attempt := 1

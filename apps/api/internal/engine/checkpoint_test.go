@@ -97,6 +97,29 @@ func TestEngineRunFromQueuedCheckpointEmitsRunStartedAfterQueuedSequence(t *test
 	}
 }
 
+func TestEngineRunFromQueuedCheckpointPreservesDebugScope(t *testing.T) {
+	plan, branch := compileJoinedRuntimeFixture(t, nil, false)
+	observer := &memoryObserver{}
+	result, err := New(Options{}).RunFromCheckpointWithScope(context.Background(), "debug-queued", plan, map[string]any{"in": []any{"edited"}}, observer,
+		Checkpoint{LastSequence: 1}, ExecutionScope{
+			EntryNodeID: "left",
+			ActiveNodeIDs: map[string]struct{}{
+				"left": {}, "join": {}, "end": {},
+			},
+			EntryNodeInputs: map[string][]any{"in": {"edited"}},
+			FrozenEdges:     map[string]FrozenEdge{"e4": {Active: true, Value: "historic-right"}},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "left+historic-right" || branch.completed("right") {
+		t.Fatalf("result=%+v right-completed=%v", result, branch.completed("right"))
+	}
+	if events := observer.Events(); len(events) == 0 || events[0].Sequence != 2 || events[0].Type != "run.started" {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
 func TestEngineNewRunStartsAtSequenceOneAndAttemptOne(t *testing.T) {
 	plan, _ := compileConditionalRuntimeFixture(t, nil)
 	observer := &memoryObserver{}

@@ -53,6 +53,18 @@ func (engine *Engine) RunFromCheckpoint(ctx context.Context, runID string, plan 
 	return engine.run(ctx, runID, plan, runInput, observer, nil, cloned)
 }
 
+func (engine *Engine) RunFromCheckpointWithScope(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer, checkpoint Checkpoint, scope ExecutionScope) (RunResult, error) {
+	clonedCheckpoint := cloneCheckpoint(checkpoint)
+	if err := clonedCheckpoint.Validate(plan); err != nil {
+		return RunResult{}, err
+	}
+	clonedScope := cloneExecutionScope(scope)
+	if err := clonedScope.Validate(plan); err != nil {
+		return RunResult{}, err
+	}
+	return engine.run(ctx, runID, plan, runInput, observer, &clonedScope, clonedCheckpoint)
+}
+
 func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer, scope *ExecutionScope, checkpoint Checkpoint) (RunResult, error) {
 	if observer == nil {
 		observer = discardObserver{}

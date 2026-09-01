@@ -52,6 +52,10 @@ type checkpointEngine interface {
 	RunFromCheckpoint(context.Context, string, *engine.Plan, map[string]any, engine.Observer, engine.Checkpoint) (engine.RunResult, error)
 }
 
+type scopedCheckpointEngine interface {
+	RunFromCheckpointWithScope(context.Context, string, *engine.Plan, map[string]any, engine.Observer, engine.Checkpoint, engine.ExecutionScope) (engine.RunResult, error)
+}
+
 var ErrRunExecutionInterrupted = errors.New("durable run execution interrupted")
 
 type RunOption func(*RunService)
@@ -299,6 +303,34 @@ func LoadPreparedExecution(ctx context.Context, store Store, compiler Compiler, 
 		WorkflowVersionID: cloneStringPointer(run.WorkflowVersionID), DraftRevision: cloneInt64Pointer(run.DraftRevision),
 		StartedAt: run.StartedAt, secretRedactor: redactor,
 	}
+	if run.Mode == domain.RunModeDebug {
+		if run.SourceRunID == nil || run.SourceNodeID == nil {
+			return nil, ErrRunSnapshotUnsupported
+		}
+		built, err := NewDebugService(store, compiler).buildRerun(ctx, *run.SourceRunID, *run.SourceNodeID)
+		if err != nil {
+			return nil, err
+		}
+		scope := built.scope
+		if *run.SourceNodeID == plan.StartNodeID {
+			schema, schemaErr := deriveInputSchema(plan.Graph)
+			if schemaErr != nil || validateInput(schema, input) != nil {
+				return nil, ErrRunEntryInputInvalid
+			}
+			scope.EntryRunInput = cloneAnyMap(input)
+			scope.EntryNodeInputs = map[string][]any{}
+		} else {
+			nodeInputs, inputErr := validateNodeEntryInput(plan.Nodes[*run.SourceNodeID].Ports.Inputs, input)
+			if inputErr != nil {
+				return nil, ErrRunEntryInputInvalid
+			}
+			scope.EntryRunInput = map[string]any{}
+			scope.EntryNodeInputs = nodeInputs
+		}
+		prepared.Scope = &scope
+		prepared.sourceRunID = *run.SourceRunID
+		prepared.sourceNodeID = *run.SourceNodeID
+	}
 	if run.Mode == domain.RunModePublished && run.WorkflowVersionID != nil {
 		workflow, err := store.GetWorkflow(ctx, run.WorkflowID)
 		if err != nil {
@@ -410,7 +442,17 @@ func (service *RunService) ExecuteLeased(ctx context.Context, prepared *Prepared
 	defer func() { finishTelemetry(telemetryStatus, telemetryCategory) }()
 	base := &persistenceObserver{store: service.store, prepared: prepared, downstream: observer, started: make(map[string]time.Time), lastSequence: checkpoint.LastSequence}
 	persistence := &leasedPersistenceObserver{store: service.store, base: base, lease: lease, cipher: cipher}
-	result, runErr := runtime.RunFromCheckpoint(executionContext, prepared.RunID, prepared.Plan, prepared.Input, persistence, checkpoint)
+	var result engine.RunResult
+	var runErr error
+	if prepared.Scope == nil {
+		result, runErr = runtime.RunFromCheckpoint(executionContext, prepared.RunID, prepared.Plan, prepared.Input, persistence, checkpoint)
+	} else {
+		scopedRuntime, supported := service.engine.(scopedCheckpointEngine)
+		if !supported {
+			return engine.RunResult{}, errors.New("leased scoped execution is unavailable")
+		}
+		result, runErr = scopedRuntime.RunFromCheckpointWithScope(executionContext, prepared.RunID, prepared.Plan, prepared.Input, persistence, checkpoint, *prepared.Scope)
+	}
 	if result.EndedAt.IsZero() {
 		result.EndedAt = time.Now().UTC()
 	}

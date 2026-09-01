@@ -159,6 +159,29 @@ func TestSubmitRerunQueuesAtomicallyWithoutLegacyCreate(t *testing.T) {
 	}
 }
 
+func TestLoadPreparedExecutionRebuildsDurableDebugScope(t *testing.T) {
+	service, store, _ := newRerunFixture(t)
+	original, run, err := service.buildPreparedRerun(context.Background(), "source-run", "left", RerunRequest{
+		EntryInput: map[string]any{"seed": []any{"edited"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadPreparedExecution(context.Background(), store, service.compiler, run, original.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Scope == nil || loaded.Scope.EntryNodeID != "left" {
+		t.Fatalf("scope=%+v", loaded.Scope)
+	}
+	if got := loaded.Scope.EntryNodeInputs["seed"]; len(got) != 1 || got[0] != "edited" {
+		t.Fatalf("entry inputs=%#v", loaded.Scope.EntryNodeInputs)
+	}
+	if frozen := loaded.Scope.FrozenEdges["right-join"]; !frozen.Active || frozen.Value != "R-old" {
+		t.Fatalf("frozen=%+v", frozen)
+	}
+}
+
 func TestPrepareRerunPersistsInputRedactedPaths(t *testing.T) {
 	service, store, _ := newRerunFixture(t)
 	prepared, err := service.PrepareRerun(context.Background(), "source-run", "start", RerunRequest{

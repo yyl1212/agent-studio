@@ -114,8 +114,14 @@ test('运行中的慢 Webhook 可协作取消并收敛为唯一终态', async ({
   await expect(runButton).toBeVisible()
   const runID = (await runButton.getAttribute('aria-label'))?.replace('查看运行 ', '')
   if (!runID) throw new Error('运行列表未提供 Run ID')
+  await expect.poll(async () => {
+    const response = await page.request.get(`http://127.0.0.1:8080/api/runs/${runID}`)
+    if (!response.ok()) return `http-${response.status()}`
+    const detail = await response.json() as { run: { status: string } }
+    return detail.run.status
+  }).toBe('running')
   await runButton.click()
-  await expect(page.getByText('运行中').first()).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '运行详情' })).toContainText('运行中')
   await page.getByRole('button', { name: '取消运行' }).click()
   await expect(page.getByText(/外部副作用可能无法撤回/)).toBeVisible()
   const cancellingResponse = page.waitForResponse((response) => response.url().endsWith(`/api/runs/${runID}/cancel`) && response.request().method() === 'POST')
