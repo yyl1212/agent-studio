@@ -145,7 +145,7 @@ func loadAgentRunVersion(ctx context.Context, queryer agentRunQueryer, run domai
 }
 
 func loadAgentRunEvents(ctx context.Context, queryer agentRunQueryer, runID string, afterSequence int64, limit int) ([]domain.RunEvent, bool, error) {
-	rows, err := queryer.Query(ctx, `SELECT run_id::text,sequence,type,node_id,status,input,output,
+	rows, err := queryer.Query(ctx, `SELECT run_id::text,sequence,type,node_id,node_attempt,status,input,output,
 		active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
 		FROM run_events WHERE run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3`, runID, afterSequence, limit+1)
 	if err != nil {

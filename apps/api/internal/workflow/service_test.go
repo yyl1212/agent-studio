@@ -18,6 +18,7 @@ import (
 )
 
 type fakeStore struct {
+	DurableRunStore
 	workflow                domain.Workflow
 	versions                map[string]domain.WorkflowVersion
 	currentID               string

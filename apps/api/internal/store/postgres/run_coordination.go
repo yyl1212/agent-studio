@@ -17,7 +17,7 @@ func (store *Store) HeartbeatRuns(ctx context.Context, ids []string) ([]string, 
 	}
 	rows, err := store.pool.Query(ctx, `WITH updated AS (
 		UPDATE runs SET heartbeat_at=clock_timestamp()
-		WHERE id=ANY($1::uuid[]) AND status IN ('running','cancelling')
+		WHERE id=ANY($1::uuid[]) AND execution_protocol=0 AND status IN ('running','cancelling')
 		RETURNING id,cancel_requested_at
 	) SELECT id::text FROM updated WHERE cancel_requested_at IS NOT NULL ORDER BY id`, ids)
 	if err != nil {
@@ -100,7 +100,7 @@ func (store *Store) FinalizeInterruptedRuns(ctx context.Context, staleAfterSecon
 	FROM runs r
 	LEFT JOIN workflow_versions version
 		ON version.id=r.workflow_version_id AND version.workflow_id=r.workflow_id
-	WHERE r.status IN ('running','cancelling')
+	WHERE r.execution_protocol=0 AND r.status IN ('running','cancelling')
 		AND COALESCE(r.heartbeat_at,r.started_at) < $1::timestamptz - make_interval(secs => $2)
 	ORDER BY r.started_at,r.id
 	FOR UPDATE OF r SKIP LOCKED
@@ -135,7 +135,7 @@ func (store *Store) FinalizeInterruptedRuns(ctx context.Context, staleAfterSecon
 				ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, Timestamp: databaseNow,
 			},
 			Budget: domain.RunEventBudget{MaxEvents: 2*nodeCount + 2, MaxTotalDataBytes: 16 << 20},
-		})
+		}, false)
 		if err != nil {
 			return 0, fmt.Errorf("finalize interrupted run %s: %w", candidate.id, err)
 		}
