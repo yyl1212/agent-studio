@@ -121,7 +121,3 @@ type RunManagementStore interface {
 	GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error)
 	CreateRetryRun(context.Context, domain.Run) (string, error)
 }
-
-type LocalRunCanceller interface {
-	CancelLocal(string) bool
-}

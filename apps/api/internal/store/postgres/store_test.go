@@ -1393,9 +1393,38 @@ func TestRequestAgentRunCancelIsIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	terminal, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID)
-	if err != nil || terminal.Run.Status != domain.RunCancelled || len(terminal.Events) != 1 {
-		t.Fatalf("terminal=%+v error=%v", terminal, err)
+	if _, err := store.RequestAgentRunCancel(context.Background(), workflow.Slug, run.ID); !errors.Is(err, workflowservice.ErrRunNotCancellable) {
+		t.Fatalf("terminal cancellation error=%v", err)
+	}
+}
+
+func TestRequestAgentRunCancelFinalizesRecoveryRequiredRun(t *testing.T) {
+	store := migratedTestStore(t)
+	workflowRecord := createWorkflowFixture(t, store, "agent-recovery-cancel")
+	version := publishFixture(t, store, workflowRecord)
+	requestKey := fixtureUUID()
+	submission := durableSubmissionFixture(workflowRecord)
+	submission.Run.Mode = domain.RunModePublished
+	submission.Run.DraftRevision = nil
+	submission.Run.GraphSnapshot = nil
+	submission.Run.WorkflowVersionID = &version.ID
+	submission.Run.AgentRequestKey = &requestKey
+	if err := store.SubmitRun(context.Background(), submission); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimRun(context.Background(), "worker", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("claimed=%v error=%v", ok, err)
+	}
+	recoveryAt := time.Now().UTC()
+	if err := store.RequireRunRecovery(context.Background(), claimed.Lease,
+		domain.RunEvent{RunID: submission.Run.ID, Sequence: 2, Type: "run.recovery_required", Timestamp: recoveryAt},
+		domain.RecoveryUncertainEffect, recoveryAt, domain.RunEventBudget{MaxEvents: 16, MaxTotalDataBytes: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.RequestAgentRunCancel(context.Background(), workflowRecord.Slug, submission.Run.ID)
+	if err != nil || record.Run.Status != domain.RunCancelled || record.Run.EndedAt == nil || len(record.Events) != 3 || record.Events[2].Type != "run.cancelled" {
+		t.Fatalf("record=%+v error=%v", record, err)
 	}
 }
 

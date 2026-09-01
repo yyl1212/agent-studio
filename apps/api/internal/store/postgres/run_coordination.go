@@ -20,14 +20,18 @@ func (store *Store) RequestRunCancel(ctx context.Context, runID string) (domain.
 		return domain.RunSummary{}, fmt.Errorf("lock run for cancellation: %w", mapNotFound(err))
 	}
 	switch status {
-	case domain.RunQueued:
+	case domain.RunQueued, domain.RunRecoveryRequired:
 		now := time.Now().UTC()
+		var nextSequence int64
+		if err := transaction.QueryRow(ctx, `SELECT COALESCE(max(sequence),0)+1 FROM run_events WHERE run_id=$1`, runID).Scan(&nextSequence); err != nil {
+			return domain.RunSummary{}, fmt.Errorf("read cancellation event sequence: %w", err)
+		}
 		if _, err := transaction.Exec(ctx, `UPDATE runs SET cancel_requested_at=$2 WHERE id=$1`, runID, now); err != nil {
-			return domain.RunSummary{}, fmt.Errorf("request queued run cancellation: %w", err)
+			return domain.RunSummary{}, fmt.Errorf("request inactive run cancellation: %w", err)
 		}
 		if _, err := store.finalizeRunTx(ctx, transaction, workflowservice.RunFinalization{
 			RunID: runID, Status: domain.RunCancelled, EndedAt: now,
-			TerminalEvent: domain.RunEvent{RunID: runID, Sequence: 2, Type: "run.cancelled", Timestamp: now},
+			TerminalEvent: domain.RunEvent{RunID: runID, Sequence: nextSequence, Type: "run.cancelled", Timestamp: now},
 			Budget:        domain.RunEventBudget{MaxEvents: 16, MaxTotalDataBytes: 32 << 20},
 		}, true); err != nil {
 			return domain.RunSummary{}, err

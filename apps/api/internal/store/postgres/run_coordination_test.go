@@ -63,6 +63,33 @@ func TestRequestRunCancelFinalizesQueuedDurableRun(t *testing.T) {
 	}
 }
 
+func TestRequestRunCancelFinalizesRecoveryRequiredRun(t *testing.T) {
+	store := migratedTestStore(t)
+	workflowRecord := createWorkflowFixture(t, store, "cancel-recovery")
+	submission := durableSubmissionFixture(workflowRecord)
+	if err := store.SubmitRun(context.Background(), submission); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimRun(context.Background(), "worker", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("claimed=%v error=%v", ok, err)
+	}
+	recoveryAt := time.Now().UTC()
+	if err := store.RequireRunRecovery(context.Background(), claimed.Lease,
+		domain.RunEvent{RunID: submission.Run.ID, Sequence: 2, Type: "run.recovery_required", Timestamp: recoveryAt},
+		domain.RecoveryUncertainEffect, recoveryAt, domain.RunEventBudget{MaxEvents: 16, MaxTotalDataBytes: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := store.RequestRunCancel(context.Background(), submission.Run.ID)
+	if err != nil || summary.Status != domain.RunCancelled || summary.EndedAt == nil {
+		t.Fatalf("summary=%+v error=%v", summary, err)
+	}
+	events, err := store.ListRunEvents(context.Background(), submission.Run.ID, 0, 10)
+	if err != nil || len(events) != 3 || events[2].Type != "run.cancelled" {
+		t.Fatalf("events=%+v error=%v", events, err)
+	}
+}
+
 func TestRequestRunCancelRacesLinearlyWithFinalize(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "cancel-race")

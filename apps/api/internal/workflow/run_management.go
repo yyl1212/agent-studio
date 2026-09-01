@@ -42,7 +42,6 @@ type runSummaryFilter struct {
 type RunManagementService struct {
 	store      RunManagementStore
 	compiler   Compiler
-	canceller  LocalRunCanceller
 	submission *RunSubmissionService
 }
 
@@ -50,8 +49,8 @@ func NewQueuedRunManagementService(store RunManagementStore, compiler Compiler, 
 	return &RunManagementService{store: store, compiler: compiler, submission: submission}
 }
 
-func NewRunManagementService(store RunManagementStore, compiler Compiler, canceller LocalRunCanceller) *RunManagementService {
-	return &RunManagementService{store: store, compiler: compiler, canceller: canceller}
+func NewRunManagementService(store RunManagementStore, compiler Compiler) *RunManagementService {
+	return &RunManagementService{store: store, compiler: compiler}
 }
 
 func (service *RunManagementService) Cancel(ctx context.Context, runID string) (domain.RunSummary, error) {
@@ -62,9 +61,6 @@ func (service *RunManagementService) Cancel(ctx context.Context, runID string) (
 	summary, err := service.store.RequestRunCancel(ctx, normalized)
 	if err != nil {
 		return domain.RunSummary{}, fmt.Errorf("request run cancel: %w", err)
-	}
-	if service.canceller != nil {
-		service.canceller.CancelLocal(normalized)
 	}
 	return cloneRunSummary(summary), nil
 }
