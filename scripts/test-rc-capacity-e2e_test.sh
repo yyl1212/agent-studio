@@ -65,7 +65,7 @@ validate_script() {
     commands = lines.flat_map { |line| split_commands(line) }
     code = lines.join("\n")
     require_marker = ->(marker) { raise "rc capacity scenario is missing: #{marker}" unless code.include?(marker) }
-    ["set -eu", "tmpfs:", "WORKER_MAX_ACTIVE_RUNS: \"4\"", "RUN_COUNT=${RUN_COUNT:-500}", "RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}", "refresh_metrics_strict()", "refresh_metrics_best_effort()", "validate_elapsed()", "--connect-timeout", "--max-time", "statement_timeout", "lock_timeout", "duplicateTerminalEvents", "remainingLeases", "remainingQueueDepth", "queueWaitP95Ms"].each { |marker| require_marker.call(marker) }
+    ["set -eu", "tmpfs:", "WORKER_MAX_ACTIVE_RUNS: \"4\"", "RUN_COUNT=${RUN_COUNT:-500}", "RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}", "--connect-timeout", "--max-time", "statement_timeout", "lock_timeout", "duplicateTerminalEvents", "remainingLeases", "remainingQueueDepth", "queueWaitP95Ms"].each { |marker| require_marker.call(marker) }
 
     project_assignments = lines.grep(/^COMPOSE_PROJECT_NAME=/)
     raise "COMPOSE_PROJECT_NAME must be assigned exactly once" unless project_assignments.length == 1
@@ -228,15 +228,6 @@ validate_deadline() {
   if [ "$RC_CAPACITY_DEADLINE_SECONDS" -gt 570 ]; then exit 1; fi
 }
 validate_deadline "$RC_CAPACITY_DEADLINE_SECONDS"
-refresh_metrics_strict() {
-  :
-}
-refresh_metrics_best_effort() {
-  :
-}
-validate_elapsed() {
-  [ "$elapsed_ms" -le "$((RC_CAPACITY_DEADLINE_SECONDS * 1000))" ]
-}
 curl_budget_probe() {
   curl --connect-timeout 1 --max-time 1 "$@"
 }
@@ -308,6 +299,234 @@ FIXTURE
   rm -rf "$fixture_root"
 }
 
+extract_production_functions() {
+  ruby -e '
+    source = File.read(ARGV.shift)
+
+    def extract_function(source, name)
+      match = source.match(/^#{Regexp.escape(name)}\(\) \{[[:space:]]*$/)
+      raise "production function missing: #{name}" unless match
+      start = match.begin(0)
+      depth = 0
+      quote = nil
+      escaped = false
+      comment = false
+      started = false
+      cursor = start
+      while cursor < source.length
+        character = source[cursor]
+        if comment
+          comment = false if character == "\n"
+        elsif quote
+          if quote == 34.chr && character == 92.chr && !escaped
+            escaped = true
+          elsif character == quote && !escaped
+            quote = nil
+          else
+            escaped = false
+          end
+        elsif character == 35.chr
+          comment = true
+        elsif character == 39.chr || character == 34.chr
+          quote = character
+          escaped = false
+        elsif character == "{"
+          depth += 1
+          started = true
+        elsif character == "}"
+          depth -= 1
+          return source[start..cursor] + "\n" if started && depth.zero?
+          raise "unbalanced production function: #{name}" if depth.negative?
+        end
+        cursor += 1
+      end
+      raise "unterminated production function: #{name}"
+    end
+
+    ARGV.each { |name| STDOUT.write(extract_function(source, name)) }
+  ' "$script" "$@"
+}
+
+extract_success_metrics_path() {
+  ruby -e '
+    source = File.read(ARGV.fetch(0))
+    match = source.match(/^wait_for_completion\n(refresh_metrics_(?:strict|best_effort))\n/)
+    raise "production success metrics path missing" unless match
+    puts "wait_for_completion"
+    puts match[1]
+  ' "$script"
+}
+
+run_failure_semantics_test() {
+  fixture_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-rc-capacity-semantics.XXXXXX")
+  trap 'rm -rf "$fixture_root"' EXIT HUP INT TERM
+  strict_definitions="$fixture_root/strict-definitions.sh"
+  deadline_definitions="$fixture_root/deadline-definitions.sh"
+  signal_definitions="$fixture_root/signal-definitions.sh"
+  success_path="$fixture_root/success-path.sh"
+  extract_production_functions refresh_metrics_strict >"$strict_definitions"
+  extract_production_functions validate_elapsed >"$deadline_definitions"
+  extract_production_functions cleanup on_hup on_int on_term >"$signal_definitions"
+  extract_success_metrics_path >"$success_path"
+
+  strict_harness="$fixture_root/strict-harness.sh"
+  cat >"$strict_harness" <<'HARNESS'
+#!/bin/sh
+set -eu
+. "$1"
+run_ids_sql="'00000000-0000-4000-8000-000000000001'"
+db_scalar() {
+  case "$1" in
+    *'lease_owner IS NOT NULL'*) return 42 ;;
+    *) printf '%s\n' 0 ;;
+  esac
+}
+set +e
+refresh_metrics_strict
+status=$?
+set -e
+[ "$status" -eq 42 ] || {
+  printf '%s\n' "strict metrics returned $status instead of propagating 42" >&2
+  exit 1
+}
+HARNESS
+  sh "$strict_harness" "$strict_definitions"
+
+  success_harness="$fixture_root/success-harness.sh"
+  cat >"$success_harness" <<'HARNESS'
+#!/bin/sh
+set -eu
+trace_file=$2
+wait_for_completion() { :; }
+refresh_metrics_strict() { printf '%s\n' strict >>"$trace_file"; }
+refresh_metrics_best_effort() { printf '%s\n' best-effort >>"$trace_file"; }
+. "$1"
+[ "$(cat "$trace_file")" = strict ] || {
+  printf '%s\n' 'production success path did not call strict metrics exclusively' >&2
+  exit 1
+}
+HARNESS
+  sh "$success_harness" "$success_path" "$fixture_root/success-trace"
+
+  deadline_harness="$fixture_root/deadline-harness.sh"
+  cat >"$deadline_harness" <<'HARNESS'
+#!/bin/sh
+set -eu
+. "$1"
+RC_CAPACITY_DEADLINE_SECONDS=570
+elapsed_ms=570000
+validate_elapsed || {
+  printf '%s\n' 'deadline rejected 570000ms' >&2
+  exit 1
+}
+elapsed_ms=570001
+if validate_elapsed; then
+  printf '%s\n' 'deadline accepted 570001ms' >&2
+  exit 1
+fi
+HARNESS
+  sh "$deadline_harness" "$deadline_definitions"
+
+  signal_harness="$fixture_root/signal-harness.sh"
+  cat >"$signal_harness" <<'HARNESS'
+#!/bin/sh
+set -eu
+. "$1"
+mode=$2
+cleanup_count_file=$3
+failure_marker=$4
+ready_marker=$5
+run_root=/fixture/run-root
+artifact_dir=/fixture/artifacts
+summary_file=/fixture/summary.json
+compose_file=/fixture/compose.yaml
+cleanup_in_progress=0
+summary_persisted=1
+compose_started=1
+started_workload=0
+run_ids_sql=
+refresh_metrics_best_effort() { :; }
+capture_failure_logs() { printf '%s\n' failure >"$failure_marker"; }
+docker() { :; }
+rm() { printf '%s\n' cleanup >>"$cleanup_count_file"; }
+case "$mode" in
+  term)
+    trap 'status=$?; cleanup "$status"' EXIT
+    trap on_hup HUP
+    trap on_int INT
+    trap on_term TERM
+    printf '%s\n' ready >"$ready_marker"
+    sleep 2
+    ;;
+  hup) on_hup ;;
+  int) on_int ;;
+  *) exit 2 ;;
+esac
+HARNESS
+
+  term_count="$fixture_root/term-count"
+  term_failure="$fixture_root/term-failure"
+  term_ready="$fixture_root/term-ready"
+  : >"$term_count"
+  sh "$signal_harness" "$signal_definitions" term "$term_count" "$term_failure" "$term_ready" &
+  signal_pid=$!
+  attempts=0
+  while [ ! -f "$term_ready" ] && [ "$attempts" -lt 50 ]; do
+    sleep 0.02
+    attempts=$((attempts + 1))
+  done
+  [ -f "$term_ready" ] || {
+    kill "$signal_pid" 2>/dev/null || true
+    wait "$signal_pid" 2>/dev/null || true
+    printf '%s\n' 'TERM fixture did not become ready' >&2
+    exit 1
+  }
+  kill -TERM "$signal_pid"
+  set +e
+  wait "$signal_pid"
+  signal_status=$?
+  set -e
+  [ "$signal_status" -eq 143 ] || {
+    printf '%s\n' "TERM fixture exited $signal_status instead of 143" >&2
+    exit 1
+  }
+  [ "$(wc -l <"$term_count" | tr -d ' ')" -eq 1 ] || {
+    printf '%s\n' 'TERM fixture cleanup count was not exactly one' >&2
+    exit 1
+  }
+  [ "$(cat "$term_failure")" = failure ] || {
+    printf '%s\n' 'TERM fixture did not persist failure evidence' >&2
+    exit 1
+  }
+
+  for signal_case in hup:129 int:130; do
+    signal_name=${signal_case%%:*}
+    expected_status=${signal_case##*:}
+    signal_count="$fixture_root/$signal_name-count"
+    signal_failure="$fixture_root/$signal_name-failure"
+    : >"$signal_count"
+    set +e
+    sh "$signal_harness" "$signal_definitions" "$signal_name" "$signal_count" "$signal_failure" "$fixture_root/$signal_name-ready"
+    signal_status=$?
+    set -e
+    [ "$signal_status" -eq "$expected_status" ] || {
+      printf '%s\n' "$signal_name fixture exited $signal_status instead of $expected_status" >&2
+      exit 1
+    }
+    [ "$(wc -l <"$signal_count" | tr -d ' ')" -eq 1 ] || {
+      printf '%s\n' "$signal_name fixture cleanup count was not exactly one" >&2
+      exit 1
+    }
+    [ "$(cat "$signal_failure")" = failure ] || {
+      printf '%s\n' "$signal_name fixture did not persist failure evidence" >&2
+      exit 1
+    }
+  done
+
+  trap - EXIT HUP INT TERM
+  rm -rf "$fixture_root"
+}
+
 [ -f "$workflow" ] || { printf '%s\n' "$workflow is missing" >&2; exit 1; }
 ruby -ryaml -e 'YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)' "$workflow"
 [ -f "$makefile" ] || { printf '%s\n' "$makefile is missing" >&2; exit 1; }
@@ -321,6 +540,7 @@ run_contract_self_test
 
 [ -f "$script" ] || { printf '%s\n' "$script is missing (Task 5 must add the 500-run capacity scenario)" >&2; exit 1; }
 validate_script "$script"
+run_failure_semantics_test
 
 ruby -ryaml -e '
   workflow = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
