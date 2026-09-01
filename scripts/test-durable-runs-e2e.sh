@@ -265,8 +265,10 @@ scenario_side_effect_recovery() {
 }
 
 scenario_stale_token_rejected() {
+  stop_worker
   TEST_DATABASE_URL="postgres://agent:agent@127.0.0.1:$db_port/agent_studio?sslmode=disable" CGO_ENABLED=0 \
     go test ./apps/api/internal/store/postgres -run '^TestDurableRunLeaseFencesAllWrites$' -count=1
+  start_worker
 }
 
 scenario_cancel_running() {

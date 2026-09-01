@@ -37,6 +37,16 @@ require_marker 'trap cleanup EXIT HUP INT TERM'
 require_marker 'COMPOSE_PROJECT_NAME'
 require_marker 'CGO_ENABLED=0'
 
+ruby -e '
+  script = File.read(ARGV.fetch(0))
+  scenario = script[/scenario_stale_token_rejected\(\) \{(?<body>.*?)\n\}/m, :body]
+  raise "stale-token scenario missing" unless scenario
+  stop = scenario.index("stop_worker")
+  test = scenario.index("TestDurableRunLeaseFencesAllWrites")
+  start = scenario.index("start_worker")
+  raise "stale-token database test must run with the worker stopped" unless stop && test && start && stop < test && test < start
+' "$script"
+
 ruby -ryaml -e '
   workflow = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
   job = workflow.fetch("jobs").fetch("durable-runs")
