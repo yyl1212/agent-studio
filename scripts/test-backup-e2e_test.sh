@@ -86,12 +86,26 @@ EOF
 chmod +x "$test_root/bin/docker"
 
 test_url='postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable'
+test_key='MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY='
 set +e
-output=$(PATH="$test_root/bin:$PATH" TEST_DATABASE_URL="$test_url" FAKE_GO_REPORT_ENV=1 FAKE_GO_STATUS=17 sh "$wrapper" 2>&1)
+output=$(env -u RUN_PAYLOAD_ENCRYPTION_KEY PATH="$test_root/bin:$PATH" TEST_DATABASE_URL="$test_url" sh "$wrapper" 2>&1)
+status=$?
+set -e
+[ "$status" -eq 2 ]
+case "$output" in
+  *"RUN_PAYLOAD_ENCRYPTION_KEY is required"*) ;;
+  *)
+    echo "wrapper did not report missing RUN_PAYLOAD_ENCRYPTION_KEY" >&2
+    exit 1
+    ;;
+esac
+
+set +e
+output=$(PATH="$test_root/bin:$PATH" TEST_DATABASE_URL="$test_url" RUN_PAYLOAD_ENCRYPTION_KEY="$test_key" FAKE_GO_REPORT_ENV=1 FAKE_GO_STATUS=17 sh "$wrapper" 2>&1)
 status=$?
 set -e
 [ "$status" -eq 17 ]
-expected_run='ARGS=test ./internal/backup -run ^(TestBackupRestoreE2E|TestCurrentRuntimeRestoresV1Alpha1GoldenArchive)$ -count=1 -v '
+expected_run='ARGS=test ./internal/backup -run ^(TestBackupRestoreE2E|TestCurrentRuntimeRestoresV1Alpha1GoldenArchive|TestCurrentRuntimeRestoresV1Alpha2GoldenArchive)$ -count=1 -v '
 case "$output" in
   *"BACKUP_E2E=1"*"TEST_DATABASE_URL=$test_url"*"CGO_ENABLED=0"*"$expected_run"*) ;;
   *)

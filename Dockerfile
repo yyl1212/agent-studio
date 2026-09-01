@@ -2,13 +2,14 @@
 
 FROM golang:1.26.5-alpine AS builder
 
+ARG GO_BUILD_TAGS
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/agent-studio-api ./apps/api/cmd/server
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/agent-studio-worker ./apps/api/cmd/worker
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/agent-studio ./cmd/agent-studio
+RUN CGO_ENABLED=0 GOOS=linux go build -tags="$GO_BUILD_TAGS" -trimpath -o /out/agent-studio-api ./apps/api/cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -tags="$GO_BUILD_TAGS" -trimpath -o /out/agent-studio-worker ./apps/api/cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux go build -tags="$GO_BUILD_TAGS" -trimpath -o /out/agent-studio ./cmd/agent-studio
 
 FROM alpine:3.23
 

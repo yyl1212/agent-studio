@@ -184,6 +184,20 @@ func TestRehydratorRejectsHistoryAndPayloadDamage(t *testing.T) {
 			t.Fatalf("result=%+v", result)
 		}
 	})
+	t.Run("wrong encryption key", func(t *testing.T) {
+		wrongCipher, err := runpayload.New("ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA=")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := NewRehydrator(nil, nil, wrongCipher).RehydrateLoaded(context.Background(), fixture.run,
+			[]domain.RunEvent{fixture.event(1, "run.queued", "", 0)}, []domain.RunPayload{fixture.inputPayload}, fixture.prepared)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Recovery.Required || result.Recovery.Reason != domain.RecoveryPayloadUnavailable {
+			t.Fatalf("result=%+v", result)
+		}
+	})
 	t.Run("unknown node", func(t *testing.T) {
 		events := []domain.RunEvent{fixture.event(1, "run.queued", "", 0), fixture.event(2, "run.started", "", 0), fixture.event(3, "node.started", "missing", 1)}
 		result := fixture.rehydrate(t, events, nil)
