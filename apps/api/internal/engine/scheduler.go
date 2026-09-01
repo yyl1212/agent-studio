@@ -20,10 +20,11 @@ const (
 )
 
 type workerResult struct {
-	nodeID string
-	input  any
-	result domain.NodeResult
-	err    error
+	nodeID  string
+	attempt int
+	input   any
+	result  domain.NodeResult
+	err     error
 }
 
 type readiness uint8
@@ -113,6 +114,10 @@ func descendantSet(plan *Plan, source string) map[string]bool {
 }
 
 func executeNode(ctx context.Context, plan *Plan, nodeID string, runInput map[string]any, inputs map[string][]any, eventInput any, telemetry *nodeTelemetry, results chan<- workerResult) {
+	executeNodeAttempt(ctx, plan, nodeID, 1, runInput, inputs, eventInput, telemetry, results)
+}
+
+func executeNodeAttempt(ctx context.Context, plan *Plan, nodeID string, attempt int, runInput map[string]any, inputs map[string][]any, eventInput any, telemetry *nodeTelemetry, results chan<- workerResult) {
 	compiled := plan.Nodes[nodeID]
 	nodeContext, finishTelemetry := telemetry.start(ctx, compiled)
 	var result domain.NodeResult
@@ -127,7 +132,7 @@ func executeNode(ctx context.Context, plan *Plan, nodeID string, runInput map[st
 			category = classifyNodeError(err)
 		}
 		finishTelemetry(nodeTelemetryStatus(err), category)
-		results <- workerResult{nodeID: nodeID, input: eventInput, result: result, err: err}
+		results <- workerResult{nodeID: nodeID, attempt: attempt, input: eventInput, result: result, err: err}
 	}()
 	result, err = compiled.Executor.Execute(nodeContext, domain.NodeRequest{
 		Inputs:   inputs,

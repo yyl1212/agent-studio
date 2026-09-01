@@ -34,7 +34,7 @@ func New(options Options) *Engine {
 }
 
 func (engine *Engine) Run(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer) (RunResult, error) {
-	return engine.run(ctx, runID, plan, runInput, observer, nil)
+	return engine.run(ctx, runID, plan, runInput, observer, nil, Checkpoint{})
 }
 
 func (engine *Engine) RunWithScope(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer, scope ExecutionScope) (RunResult, error) {
@@ -42,12 +42,29 @@ func (engine *Engine) RunWithScope(ctx context.Context, runID string, plan *Plan
 	if err := cloned.Validate(plan); err != nil {
 		return RunResult{}, err
 	}
-	return engine.run(ctx, runID, plan, runInput, observer, &cloned)
+	return engine.run(ctx, runID, plan, runInput, observer, &cloned, Checkpoint{})
 }
 
-func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer, scope *ExecutionScope) (RunResult, error) {
+func (engine *Engine) RunFromCheckpoint(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer, checkpoint Checkpoint) (RunResult, error) {
+	cloned := cloneCheckpoint(checkpoint)
+	if err := cloned.Validate(plan); err != nil {
+		return RunResult{}, err
+	}
+	return engine.run(ctx, runID, plan, runInput, observer, nil, cloned)
+}
+
+func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInput map[string]any, observer Observer, scope *ExecutionScope, checkpoint Checkpoint) (RunResult, error) {
 	if observer == nil {
 		observer = discardObserver{}
+	}
+	if checkpoint.NodeStatuses == nil {
+		checkpoint.NodeStatuses = map[string]domain.NodeStatus{}
+	}
+	if checkpoint.NodeAttempts == nil {
+		checkpoint.NodeAttempts = map[string]int{}
+	}
+	if checkpoint.FrozenEdges == nil {
+		checkpoint.FrozenEdges = map[string]FrozenEdge{}
 	}
 	runContext, cancel := context.WithTimeout(ctx, engine.timeout)
 	defer cancel()
@@ -64,10 +81,15 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 	}
 	statuses := make(map[string]domain.NodeStatus, len(activeNodeIDs))
 	for nodeID := range activeNodeIDs {
-		statuses[nodeID] = domain.NodePending
+		status, restored := checkpoint.NodeStatuses[nodeID]
+		if restored {
+			statuses[nodeID] = status
+		} else {
+			statuses[nodeID] = domain.NodePending
+		}
 	}
 	result := RunResult{RunID: runID, NodeStatuses: statuses, StartedAt: startedAt}
-	sequence := int64(0)
+	sequence := checkpoint.LastSequence
 	emit := func(event Event) error {
 		sequence++
 		event.Sequence = sequence
@@ -76,8 +98,10 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 		normalizeEventSlices(&event)
 		return observer.Observe(runContext, event)
 	}
-	if err := emit(Event{Type: "run.started"}); err != nil {
-		return finishResult(result), err
+	if !checkpoint.RunStarted {
+		if err := emit(Event{Type: "run.started"}); err != nil {
+			return finishResult(result), err
+		}
 	}
 
 	edgeStates := make(map[string]edgeActivation, len(plan.Graph.Edges))
@@ -92,9 +116,18 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 			}
 		}
 	}
+	for edgeID, frozen := range checkpoint.FrozenEdges {
+		if frozen.Active {
+			edgeStates[edgeID] = edgeActive
+			edgeValues[edgeID] = frozen.Value
+		} else {
+			edgeStates[edgeID] = edgeInactive
+		}
+	}
 	workerResults := make(chan workerResult, len(activeNodeIDs))
 	running := 0
-	terminal := 0
+	terminal := len(checkpoint.NodeStatuses)
+	attempts := checkpoint.NodeAttempts
 	var executionErr error
 
 	for terminal < len(activeNodeIDs) {
@@ -115,11 +148,16 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 			case nodeWaiting:
 				continue
 			case nodeShouldSkip:
+				attempt := attempts[nodeID] + 1
+				if attempt > maxNodeAttempts {
+					return finishResult(result), fmt.Errorf("node %q reached attempt limit", nodeID)
+				}
+				attempts[nodeID] = attempt
 				statuses[nodeID] = domain.NodeSkipped
 				terminal++
 				madeProgress = true
 				deactivateOutgoing(plan, nodeID, edgeStates)
-				if err := emit(Event{Type: "node.skipped", NodeID: nodeID, Status: domain.NodeSkipped, Input: inputs}); err != nil {
+				if err := emit(Event{Type: "node.skipped", NodeID: nodeID, NodeAttempt: attempt, Status: domain.NodeSkipped, Input: inputs}); err != nil {
 					cancel()
 					return finishResult(result), err
 				}
@@ -127,6 +165,11 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 				if running >= engine.maxParallel {
 					continue
 				}
+				attempt := attempts[nodeID] + 1
+				if attempt > maxNodeAttempts {
+					return finishResult(result), fmt.Errorf("node %q reached attempt limit", nodeID)
+				}
+				attempts[nodeID] = attempt
 				statuses[nodeID] = domain.NodeRunning
 				running++
 				madeProgress = true
@@ -138,11 +181,11 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 				if nodeID == plan.StartNodeID {
 					eventInput = effectiveRunInput
 				}
-				if err := emit(Event{Type: "node.started", NodeID: nodeID, Status: domain.NodeRunning, Input: eventInput}); err != nil {
+				if err := emit(Event{Type: "node.started", NodeID: nodeID, NodeAttempt: attempt, Status: domain.NodeRunning, Input: eventInput}); err != nil {
 					cancel()
 					return finishResult(result), err
 				}
-				go executeNode(runContext, plan, nodeID, effectiveRunInput, inputs, eventInput, engine.telemetry, workerResults)
+				go executeNodeAttempt(runContext, plan, nodeID, attempt, effectiveRunInput, inputs, eventInput, engine.telemetry, workerResults)
 			}
 		}
 
@@ -180,7 +223,7 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 				}
 				deactivateOutgoing(plan, worker.nodeID, edgeStates)
 				publicError := domain.NewPublicNodeError(worker.err, worker.nodeID, compiled.Node.Type, compiled.Node.TypeVersion)
-				if err := emit(Event{Type: "node.failed", NodeID: worker.nodeID, Status: domain.NodeFailed, Input: worker.input, Error: publicError}); err != nil {
+				if err := emit(Event{Type: "node.failed", NodeID: worker.nodeID, NodeAttempt: worker.attempt, Status: domain.NodeFailed, Input: worker.input, Error: publicError}); err != nil {
 					cancel()
 					return finishResult(result), err
 				}
@@ -190,9 +233,14 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 						continue
 					}
 					statuses[nodeID] = domain.NodeCancelled
+					attempt := attempts[nodeID] + 1
+					if attempt > maxNodeAttempts {
+						return finishResult(result), fmt.Errorf("node %q reached attempt limit", nodeID)
+					}
+					attempts[nodeID] = attempt
 					terminal++
 					deactivateOutgoing(plan, nodeID, edgeStates)
-					if err := emit(Event{Type: "node.cancelled", NodeID: nodeID, Status: domain.NodeCancelled}); err != nil {
+					if err := emit(Event{Type: "node.cancelled", NodeID: nodeID, NodeAttempt: attempt, Status: domain.NodeCancelled}); err != nil {
 						cancel()
 						return finishResult(result), err
 					}
@@ -203,7 +251,7 @@ func (engine *Engine) run(ctx context.Context, runID string, plan *Plan, runInpu
 			statuses[worker.nodeID] = domain.NodeCompleted
 			terminal++
 			applyNodeResult(plan, worker.nodeID, worker.result, edgeStates, edgeValues)
-			if err := emit(Event{Type: "node.completed", NodeID: worker.nodeID, Status: domain.NodeCompleted, Input: worker.input, Output: worker.result.Outputs, ActivePorts: append([]string(nil), worker.result.ActivePorts...)}); err != nil {
+			if err := emit(Event{Type: "node.completed", NodeID: worker.nodeID, NodeAttempt: worker.attempt, Status: domain.NodeCompleted, Input: worker.input, Output: worker.result.Outputs, ActivePorts: append([]string(nil), worker.result.ActivePorts...)}); err != nil {
 				cancel()
 				return finishResult(result), err
 			}
