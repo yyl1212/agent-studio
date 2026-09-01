@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	workflowservice "github.com/yyl1212/agent-studio/apps/api/internal/workflow"
 )
@@ -49,6 +50,13 @@ func (store *Store) SubmitRun(ctx context.Context, submission workflowservice.Ru
 		run.ExecutionProtocol, run.Input, inputPaths, nullableRaw(run.Output), errorJSON, run.CancelRequestedAt,
 		run.HeartbeatAt, run.StartedAt, run.EndedAt,
 	); err != nil {
+		_ = tx.Rollback(ctx)
+		if existing, duplicate, duplicateErr := store.loadDuplicateDurableSubmission(ctx, run, err); duplicate {
+			if duplicateErr != nil {
+				return duplicateErr
+			}
+			return &workflowservice.RunAlreadySubmittedError{Run: existing}
+		}
 		return fmt.Errorf("insert durable run: %w", err)
 	}
 	event := cloneStoredRunEvent(submission.QueuedEvent)
@@ -62,6 +70,29 @@ func (store *Store) SubmitRun(ctx context.Context, submission workflowservice.Ru
 		return fmt.Errorf("commit durable run submission: %w", err)
 	}
 	return nil
+}
+
+func (store *Store) loadDuplicateDurableSubmission(ctx context.Context, run domain.Run, insertErr error) (domain.Run, bool, error) {
+	var databaseError *pgconn.PgError
+	if !errors.As(insertErr, &databaseError) || databaseError.Code != "23505" {
+		return domain.Run{}, false, nil
+	}
+	var row pgx.Row
+	switch {
+	case databaseError.ConstraintName == "runs_agent_request_key_unique_idx" && run.AgentRequestKey != nil:
+		row = store.pool.QueryRow(ctx, `SELECT `+runSelectColumns+` FROM runs
+			WHERE workflow_id=$1 AND agent_request_key=$2 AND mode='published'`, run.WorkflowID, *run.AgentRequestKey)
+	case databaseError.ConstraintName == "runs_retry_key_unique_idx" && run.RetryOfRunID != nil && run.RetryKey != nil:
+		row = store.pool.QueryRow(ctx, `SELECT `+runSelectColumns+` FROM runs
+			WHERE retry_of_run_id=$1 AND retry_key=$2`, *run.RetryOfRunID, *run.RetryKey)
+	default:
+		return domain.Run{}, false, nil
+	}
+	existing, err := scanRun(row)
+	if err != nil {
+		return domain.Run{}, true, fmt.Errorf("load duplicate durable submission: %w", mapNotFound(err))
+	}
+	return existing, true, nil
 }
 
 func (store *Store) ClaimRun(ctx context.Context, owner string, duration time.Duration) (workflowservice.ClaimedRun, bool, error) {

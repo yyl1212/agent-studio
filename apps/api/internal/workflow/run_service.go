@@ -46,6 +46,7 @@ type RunService struct {
 	logger      *slog.Logger
 	coordinator RunExecutionCoordinator
 	telemetry   *runTelemetry
+	submission  *RunSubmissionService
 }
 
 type checkpointEngine interface {
@@ -76,6 +77,10 @@ func WithRunTelemetry(providers observability.Providers) RunOption {
 	}
 }
 
+func WithRunSubmission(submission *RunSubmissionService) RunOption {
+	return func(service *RunService) { service.submission = submission }
+}
+
 func NewRunService(store Store, compiler Compiler, runtime Engine, options ...RunOption) *RunService {
 	service := &RunService{
 		store:     store,
@@ -91,32 +96,54 @@ func NewRunService(store Store, compiler Compiler, runtime Engine, options ...Ru
 }
 
 func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, revision int64, input map[string]any) (*PreparedRun, error) {
-	workflow, err := service.store.GetWorkflow(ctx, workflowID)
+	prepared, run, err := service.prepareDraft(ctx, workflowID, revision, input)
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureWorkflowActive(workflow); err != nil {
+	if err := service.store.CreateRun(ctx, run); err != nil {
 		return nil, err
 	}
+	return prepared, nil
+}
+
+func (service *RunService) SubmitDraft(ctx context.Context, workflowID string, revision int64, input map[string]any) (SubmittedRun, error) {
+	if service.submission == nil {
+		return SubmittedRun{}, errors.New("run submission service is unavailable")
+	}
+	prepared, run, err := service.prepareDraft(ctx, workflowID, revision, input)
+	if err != nil {
+		return SubmittedRun{}, err
+	}
+	return service.submission.Submit(ctx, run, prepared.Input)
+}
+
+func (service *RunService) prepareDraft(ctx context.Context, workflowID string, revision int64, input map[string]any) (*PreparedRun, domain.Run, error) {
+	workflow, err := service.store.GetWorkflow(ctx, workflowID)
+	if err != nil {
+		return nil, domain.Run{}, err
+	}
+	if err := ensureWorkflowActive(workflow); err != nil {
+		return nil, domain.Run{}, err
+	}
 	if workflow.DraftRevision != revision {
-		return nil, domain.ErrRevisionConflict
+		return nil, domain.Run{}, domain.ErrRevisionConflict
 	}
 	graph, plan, err := compileRunGraph(service.compiler, workflow.DraftGraph)
 	if err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	inputSchema, err := deriveInputSchema(graph)
 	if err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	input = normalizeInput(input)
 	if err := validateInput(inputSchema, input); err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	runID := uuid.NewString()
 	inputJSON, inputPaths, secretRedactor, err := persistedRunInput(input)
 	if err != nil {
-		return nil, fmt.Errorf("encode run input: %w", err)
+		return nil, domain.Run{}, fmt.Errorf("encode run input: %w", err)
 	}
 	run := domain.Run{
 		ID:                 runID,
@@ -129,10 +156,7 @@ func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, 
 		InputRedactedPaths: inputPaths,
 		StartedAt:          time.Now().UTC(),
 	}
-	if err := service.store.CreateRun(ctx, run); err != nil {
-		return nil, err
-	}
-	return &PreparedRun{
+	prepared := &PreparedRun{
 		RunID:          runID,
 		Plan:           plan,
 		Input:          input,
@@ -140,7 +164,8 @@ func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, 
 		WorkflowID:     workflow.ID,
 		DraftRevision:  &revision,
 		secretRedactor: secretRedactor,
-	}, nil
+	}
+	return prepared, run, nil
 }
 
 func (service *RunService) PrepareAgent(ctx context.Context, slug, workflowVersionID string, input map[string]any) (*PreparedRun, error) {
@@ -152,6 +177,40 @@ func (service *RunService) PrepareAgent(ctx context.Context, slug, workflowVersi
 		return nil, err
 	}
 	return prepared, nil
+}
+
+func (service *RunService) SubmitAgent(ctx context.Context, slug, workflowVersionID string, input map[string]any) (SubmittedRun, error) {
+	if service.submission == nil {
+		return SubmittedRun{}, errors.New("run submission service is unavailable")
+	}
+	prepared, run, err := service.prepareAgent(ctx, slug, workflowVersionID, nil, input)
+	if err != nil {
+		return SubmittedRun{}, err
+	}
+	result, err := service.submission.Submit(ctx, run, prepared.Input)
+	result.WorkflowVersion = prepared.WorkflowVersion
+	return result, err
+}
+
+func (service *RunService) SubmitAgentOnce(ctx context.Context, slug, workflowVersionID, requestKey string, input map[string]any) (SubmittedRun, error) {
+	if service.submission == nil {
+		return SubmittedRun{}, errors.New("run submission service is unavailable")
+	}
+	prepared, run, err := service.prepareAgent(ctx, slug, workflowVersionID, &requestKey, input)
+	if err != nil {
+		return SubmittedRun{}, err
+	}
+	result, err := service.submission.Submit(ctx, run, prepared.Input)
+	if err == nil && !result.Created && result.WorkflowVersionID != nil {
+		_, existingVersion, loadErr := service.store.GetAgentVersion(ctx, slug, *result.WorkflowVersionID)
+		if loadErr != nil {
+			return SubmittedRun{}, loadErr
+		}
+		result.WorkflowVersion = existingVersion.Version
+	} else {
+		result.WorkflowVersion = prepared.WorkflowVersion
+	}
+	return result, err
 }
 
 func (service *RunService) PrepareAgentOnce(ctx context.Context, slug, workflowVersionID, requestKey string, input map[string]any) (*PreparedRun, bool, error) {

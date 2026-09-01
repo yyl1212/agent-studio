@@ -308,7 +308,8 @@ func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, final
 		}
 		return event, nil
 	}
-	if status != domain.RunRunning && status != domain.RunCancelling {
+	queuedCancellation := durableLeaseVerified && status == domain.RunQueued && finalization.Status == domain.RunCancelled
+	if status != domain.RunRunning && status != domain.RunCancelling && !queuedCancellation {
 		return domain.RunEvent{}, fmt.Errorf("invalid active run status %q", status)
 	}
 	terminal := cloneStoredRunEvent(finalization.TerminalEvent)

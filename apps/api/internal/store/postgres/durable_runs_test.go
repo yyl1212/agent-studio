@@ -61,6 +61,46 @@ func TestDurableRunSubmissionIsAtomic(t *testing.T) {
 	}
 }
 
+func TestDurableRunSubmissionReturnsExistingIdempotentAgentRun(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "durable-idempotent")
+	version := publishFixture(t, store, workflow)
+	key := fixtureUUID()
+	first := durableSubmissionFixture(workflow)
+	first.Run.Mode = domain.RunModePublished
+	first.Run.DraftRevision = nil
+	first.Run.GraphSnapshot = nil
+	first.Run.WorkflowVersionID = &version.ID
+	first.Run.AgentRequestKey = &key
+	if err := store.SubmitRun(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := durableSubmissionFixture(workflow)
+	duplicate.Run.Mode = domain.RunModePublished
+	duplicate.Run.DraftRevision = nil
+	duplicate.Run.GraphSnapshot = nil
+	duplicate.Run.WorkflowVersionID = &version.ID
+	duplicate.Run.AgentRequestKey = &key
+	err := store.SubmitRun(context.Background(), duplicate)
+	var existing *workflowservice.RunAlreadySubmittedError
+	if !errors.As(err, &existing) || existing.Run.ID != first.Run.ID {
+		t.Fatalf("duplicate error=%v existing=%+v", err, existing)
+	}
+	var runs, events, payloads int
+	if err := store.pool.QueryRow(context.Background(), `SELECT count(*) FROM runs WHERE workflow_id=$1 AND agent_request_key=$2`, workflow.ID, key).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(context.Background(), `SELECT count(*) FROM run_events WHERE run_id=$1`, first.Run.ID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(context.Background(), `SELECT count(*) FROM run_payloads WHERE run_id=$1`, first.Run.ID).Scan(&payloads); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 || events != 1 || payloads != 1 {
+		t.Fatalf("runs=%d events=%d payloads=%d", runs, events, payloads)
+	}
+}
+
 func TestRunQueueStatsReportsDepthAndOldestAge(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "queue-stats")

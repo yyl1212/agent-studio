@@ -45,6 +45,29 @@ func TestRequestRunCancelIsIdempotentAndRejectsTerminalRuns(t *testing.T) {
 	}
 }
 
+func TestRequestRunCancelFinalizesQueuedDurableRun(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "cancel-queued")
+	submission := durableSubmissionFixture(workflow)
+	if err := store.SubmitRun(context.Background(), submission); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := store.RequestRunCancel(context.Background(), submission.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Status != domain.RunCancelled || summary.EndedAt == nil || summary.CancelRequestedAt == nil {
+		t.Fatalf("summary=%+v", summary)
+	}
+	events, err := store.ListRunEvents(context.Background(), submission.Run.ID, 0, 10)
+	if err != nil || len(events) != 2 || events[1].Type != "run.cancelled" {
+		t.Fatalf("events=%+v error=%v", events, err)
+	}
+	if _, claimed, err := store.ClaimRun(context.Background(), "worker", time.Minute); err != nil || claimed {
+		t.Fatalf("cancelled queued run claimed=%v error=%v", claimed, err)
+	}
+}
+
 func TestRequestRunCancelRacesLinearlyWithFinalize(t *testing.T) {
 	store := migratedTestStore(t)
 	workflow := createWorkflowFixture(t, store, "cancel-race")

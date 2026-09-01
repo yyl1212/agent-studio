@@ -67,6 +67,10 @@ type AgentRunPreparer interface {
 	PrepareAgentOnce(context.Context, string, string, string, map[string]any) (*PreparedRun, bool, error)
 }
 
+type AgentRunSubmitter interface {
+	SubmitAgentOnce(context.Context, string, string, string, map[string]any) (SubmittedRun, error)
+}
+
 type AgentRunReservation interface {
 	Launch(context.Context, *PreparedRun)
 	Release()
@@ -81,6 +85,11 @@ type AgentRunService struct {
 	store     AgentRunStore
 	launcher  AgentRunLauncher
 	canceller LocalRunCanceller
+	submitter AgentRunSubmitter
+}
+
+func NewQueuedAgentRunService(submitter AgentRunSubmitter, store AgentRunStore) *AgentRunService {
+	return &AgentRunService{submitter: submitter, store: store}
 }
 
 func NewAgentRunService(preparer AgentRunPreparer, store AgentRunStore, launcher AgentRunLauncher, canceller LocalRunCanceller) *AgentRunService {
@@ -95,6 +104,16 @@ func (service *AgentRunService) Start(ctx context.Context, slug string, input St
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
 		return AgentRunPublicSummary{}, false, err
+	}
+	if service.submitter != nil {
+		submitted, err := service.submitter.SubmitAgentOnce(ctx, slug, input.WorkflowVersionID, input.RequestKey, input.Input)
+		if err != nil {
+			return AgentRunPublicSummary{}, false, err
+		}
+		return AgentRunPublicSummary{
+			RunID: submitted.RunID, WorkflowVersionID: valueOrEmpty(submitted.WorkflowVersionID), Version: submitted.WorkflowVersion,
+			Status: submitted.Status, StartedAt: submitted.StartedAt,
+		}, submitted.Created, nil
 	}
 	reservation, err := service.launcher.Reserve()
 	if err != nil {
@@ -127,6 +146,13 @@ func (service *AgentRunService) Start(ctx context.Context, slug string, input St
 		RunID: prepared.RunID, WorkflowVersionID: *prepared.WorkflowVersionID, Version: prepared.WorkflowVersion,
 		Status: domain.RunRunning, StartedAt: prepared.StartedAt,
 	}, true, nil
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (service *AgentRunService) View(ctx context.Context, slug, runID string, afterSequence int64) (AgentRunPublicView, error) {

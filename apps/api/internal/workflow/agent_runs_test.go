@@ -65,6 +65,17 @@ type fakeAgentRunPreparer struct {
 	calls    int
 }
 
+type fakeAgentRunSubmitter struct {
+	result SubmittedRun
+	err    error
+	calls  int
+}
+
+func (submitter *fakeAgentRunSubmitter) SubmitAgentOnce(context.Context, string, string, string, map[string]any) (SubmittedRun, error) {
+	submitter.calls++
+	return submitter.result, submitter.err
+}
+
 func (preparer *fakeAgentRunPreparer) PrepareAgentOnce(context.Context, string, string, string, map[string]any) (*PreparedRun, bool, error) {
 	preparer.calls++
 	return preparer.prepared, preparer.created, preparer.err
@@ -127,6 +138,20 @@ func TestAgentRunServiceReturnsDuplicateBeforeReservation(t *testing.T) {
 	})
 	if err != nil || created || accepted.RunID != record.Run.ID || launcher.reserveCalls != 0 {
 		t.Fatalf("accepted=%+v created=%v reserveCalls=%d error=%v", accepted, created, launcher.reserveCalls, err)
+	}
+}
+
+func TestQueuedAgentRunServiceSubmitsWithoutLaunchingGoroutine(t *testing.T) {
+	versionID := "version-1"
+	submitter := &fakeAgentRunSubmitter{result: SubmittedRun{
+		RunID: "queued-run", WorkflowVersionID: &versionID, WorkflowVersion: 2,
+		Status: domain.RunQueued, StartedAt: time.Now().UTC(), Created: true,
+	}}
+	store := &fakeAgentRunStore{findErr: domain.ErrNotFound}
+	service := NewQueuedAgentRunService(submitter, store)
+	summary, created, err := service.Start(context.Background(), "demo", StartAgentRunInput{WorkflowVersionID: versionID, RequestKey: "key", Input: map[string]any{}})
+	if err != nil || !created || submitter.calls != 1 || summary.RunID != "queued-run" || summary.Status != domain.RunQueued {
+		t.Fatalf("summary=%+v created=%v calls=%d error=%v", summary, created, submitter.calls, err)
 	}
 }
 

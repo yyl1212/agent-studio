@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -77,6 +78,22 @@ func (store *Store) RequestAgentRunCancel(ctx context.Context, slug, runID strin
 		return workflowservice.AgentRunRecord{}, mapNotFound(err)
 	}
 	switch run.Status {
+	case domain.RunQueued:
+		now := time.Now().UTC()
+		if _, err := transaction.Exec(ctx, `UPDATE runs SET cancel_requested_at=$2 WHERE id=$1`, run.ID, now); err != nil {
+			return workflowservice.AgentRunRecord{}, fmt.Errorf("request queued agent run cancellation: %w", err)
+		}
+		if _, err := store.finalizeRunTx(ctx, transaction, workflowservice.RunFinalization{
+			RunID: run.ID, Status: domain.RunCancelled, EndedAt: now,
+			TerminalEvent: domain.RunEvent{RunID: run.ID, Sequence: 2, Type: "run.cancelled", Timestamp: now},
+			Budget:        domain.RunEventBudget{MaxEvents: 16, MaxTotalDataBytes: 32 << 20},
+		}, true); err != nil {
+			return workflowservice.AgentRunRecord{}, err
+		}
+		run, err = scanRun(transaction.QueryRow(ctx, `SELECT `+runSelectColumns+` FROM runs WHERE id=$1`, run.ID))
+		if err != nil {
+			return workflowservice.AgentRunRecord{}, err
+		}
 	case domain.RunRunning:
 		run.Status = domain.RunCancelling
 		if err := transaction.QueryRow(ctx, `UPDATE runs SET status='cancelling',cancel_requested_at=clock_timestamp()

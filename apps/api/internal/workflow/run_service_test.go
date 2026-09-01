@@ -392,6 +392,26 @@ func TestLoadPreparedExecutionReusesExistingRunAndRebuildsRedactor(t *testing.T)
 	}
 }
 
+func TestSubmitDraftAndAgentUseAtomicDurableQueue(t *testing.T) {
+	_, store := newRunServiceFixture(t)
+	durable := &leasedDurableStore{}
+	store.DurableRunStore = durable
+	cipher, err := runpayload.New("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewRunService(store, newRealCompiler(t), nil, WithRunSubmission(NewRunSubmissionService(durable, cipher)))
+	draft, err := service.SubmitDraft(context.Background(), store.workflow.ID, store.workflow.DraftRevision, map[string]any{"topic": "Agent"})
+	if err != nil || draft.Status != domain.RunQueued || durable.submission.Run.Status != domain.RunQueued || len(store.runs) != 0 {
+		t.Fatalf("draft=%+v submission=%+v legacy runs=%d error=%v", draft, durable.submission, len(store.runs), err)
+	}
+	version := store.AddVersion(store.workflow.DraftGraph, json.RawMessage(`{"type":"object","additionalProperties":true}`))
+	agent, err := service.SubmitAgentOnce(context.Background(), store.workflow.Slug, version.ID, "00000000-0000-4000-8000-000000000999", map[string]any{"topic": "Agent"})
+	if err != nil || agent.Status != domain.RunQueued || agent.WorkflowVersion != version.Version || durable.submitCalls != 2 || len(store.runs) != 0 {
+		t.Fatalf("agent=%+v calls=%d legacy runs=%d error=%v", agent, durable.submitCalls, len(store.runs), err)
+	}
+}
+
 func TestExecuteLeasedPersistsPublicEventAndPrivatePayloadAtomically(t *testing.T) {
 	store := newFakeStore(t)
 	durable := &leasedDurableStore{}
@@ -508,9 +528,15 @@ type leasedWrite struct {
 type leasedDurableStore struct {
 	writes       []leasedWrite
 	finalization RunFinalization
+	submission   RunSubmission
+	submitCalls  int
 }
 
-func (*leasedDurableStore) SubmitRun(context.Context, RunSubmission) error { return nil }
+func (store *leasedDurableStore) SubmitRun(_ context.Context, submission RunSubmission) error {
+	store.submitCalls++
+	store.submission = submission
+	return nil
+}
 func (*leasedDurableStore) ClaimRun(context.Context, string, time.Duration) (ClaimedRun, bool, error) {
 	return ClaimedRun{}, false, nil
 }
