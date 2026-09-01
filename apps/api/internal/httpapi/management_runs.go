@@ -74,21 +74,12 @@ func (handler *handler) retryRun(writer http.ResponseWriter, request *http.Reque
 		writeRequestError(writer, request, errInvalidManagementRequest)
 		return
 	}
-	if handler.dependencies.RetrySubmissions != nil {
-		submitted, err := handler.dependencies.RetrySubmissions.SubmitRetry(request.Context(), runID, keys[0], body)
-		if err != nil {
-			writeError(writer, request, err)
-			return
-		}
-		handler.streamSubmittedRun(writer, request, submitted)
-		return
-	}
-	prepared, err := handler.dependencies.RunManagement.PrepareRetry(request.Context(), runID, keys[0], body)
+	submitted, err := handler.dependencies.RetrySubmissions.SubmitRetry(request.Context(), runID, keys[0], body)
 	if err != nil {
 		writeError(writer, request, err)
 		return
 	}
-	handler.streamRun(writer, request, prepared)
+	handler.streamSubmittedRun(writer, request, submitted)
 }
 
 func validRetrySecretValues(values map[string]any) bool {

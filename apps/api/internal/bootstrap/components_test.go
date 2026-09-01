@@ -16,6 +16,12 @@ func TestBuildCommonRejectsCipherBeforeExternalInitialization(t *testing.T) {
 	}
 }
 
+func TestBuildAPIRejectsIncompleteCommonDependencies(t *testing.T) {
+	if _, err := BuildAPI(&Common{}, slog.Default()); err == nil || err.Error() != "API bootstrap dependencies are incomplete" {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestBuildRegistryContainsCoreAndExtensionNodes(t *testing.T) {
 	registry, err := buildRegistry(config.Config{ModelProvider: "mock"}, buildinfo.Current())
 	if err != nil {

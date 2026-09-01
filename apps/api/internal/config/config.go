@@ -33,7 +33,6 @@ type Config struct {
 	HTTPNodeAllowPrivate     bool
 	NodeIndexCacheDir        string
 	MaxParallelNodes         int
-	MaxActiveAgentRuns       int
 	WorkflowTimeout          time.Duration
 	WorkerMaxActiveRuns      int
 	WorkerLeaseDuration      time.Duration
@@ -56,10 +55,6 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("RUN_PAYLOAD_ENCRYPTION_KEY is invalid: %w", err)
 	}
 	maxParallelNodes, err := intEnv("MAX_PARALLEL_NODES", 4)
-	if err != nil {
-		return Config{}, err
-	}
-	maxActiveAgentRuns, err := boundedIntEnv("MAX_ACTIVE_AGENT_RUNS", 8, 1, 128)
 	if err != nil {
 		return Config{}, err
 	}
@@ -134,7 +129,6 @@ func Load() (Config, error) {
 		HTTPNodeAllowPrivate:     allowPrivate,
 		NodeIndexCacheDir:        nodeIndexCacheDir,
 		MaxParallelNodes:         maxParallelNodes,
-		MaxActiveAgentRuns:       maxActiveAgentRuns,
 		WorkflowTimeout:          workflowTimeout,
 		WorkerMaxActiveRuns:      workerMaxActiveRuns,
 		WorkerLeaseDuration:      workerLeaseDuration,

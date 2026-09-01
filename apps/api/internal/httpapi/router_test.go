@@ -110,32 +110,32 @@ func (service *fixtureWorkflowService) ImportTemplate(_ context.Context, input w
 
 type fixtureRunner struct {
 	LastVersionID string
-	prepareErr    error
+	submitErr     error
 }
 
-func (runner *fixtureRunner) PrepareDraft(context.Context, string, int64, map[string]any) (*workflow.PreparedRun, error) {
-	if runner.prepareErr != nil {
-		return nil, runner.prepareErr
+func (runner *fixtureRunner) SubmitDraft(context.Context, string, int64, map[string]any) (workflow.SubmittedRun, error) {
+	if runner.submitErr != nil {
+		return workflow.SubmittedRun{}, runner.submitErr
 	}
-	return &workflow.PreparedRun{RunID: "run-1"}, nil
+	return workflow.SubmittedRun{RunID: "run-1", Created: true}, nil
 }
 
-func (runner *fixtureRunner) PrepareAgent(_ context.Context, _ string, versionID string, _ map[string]any) (*workflow.PreparedRun, error) {
+func (runner *fixtureRunner) SubmitAgent(_ context.Context, _ string, versionID string, _ map[string]any) (workflow.SubmittedRun, error) {
 	runner.LastVersionID = versionID
-	if runner.prepareErr != nil {
-		return nil, runner.prepareErr
+	if runner.submitErr != nil {
+		return workflow.SubmittedRun{}, runner.submitErr
 	}
-	return &workflow.PreparedRun{RunID: "run-1"}, nil
+	return workflow.SubmittedRun{RunID: "run-1", Created: true}, nil
 }
 
-func (*fixtureRunner) Execute(ctx context.Context, prepared *workflow.PreparedRun, observer engine.Observer) (engine.RunResult, error) {
-	if err := observer.Observe(ctx, engine.Event{Sequence: 1, Type: "run.started", RunID: prepared.RunID}); err != nil {
-		return engine.RunResult{}, err
+func (*fixtureRunner) Follow(ctx context.Context, runID string, observer engine.Observer) error {
+	if err := observer.Observe(ctx, engine.Event{Sequence: 1, Type: "run.started", RunID: runID}); err != nil {
+		return err
 	}
-	if err := observer.Observe(ctx, engine.Event{Sequence: 2, Type: "run.completed", RunID: prepared.RunID, Output: "ok"}); err != nil {
-		return engine.RunResult{}, err
+	if err := observer.Observe(ctx, engine.Event{Sequence: 2, Type: "run.completed", RunID: runID, Output: "ok"}); err != nil {
+		return err
 	}
-	return engine.RunResult{RunID: prepared.RunID, Output: "ok"}, nil
+	return nil
 }
 
 type fixtureRunReader struct{}
@@ -282,6 +282,14 @@ func (manager *fixtureRunManager) PrepareRetry(_ context.Context, runID, key str
 	return &workflow.PreparedRun{RunID: runID}, nil
 }
 
+func (manager *fixtureRunManager) SubmitRetry(_ context.Context, runID, key string, body workflow.RunRetryRequest) (workflow.SubmittedRun, error) {
+	manager.previewID, manager.retryKey, manager.retryBody = runID, key, body
+	if manager.err != nil {
+		return workflow.SubmittedRun{}, manager.err
+	}
+	return workflow.SubmittedRun{RunID: runID, Created: true}, nil
+}
+
 type fixtureDebugger struct {
 	overviewErr error
 	eventsErr   error
@@ -313,6 +321,14 @@ func (debugger *fixtureDebugger) PrepareRerun(_ context.Context, runID, nodeID s
 		return nil, debugger.prepareErr
 	}
 	return &workflow.PreparedRun{RunID: "debug-run"}, nil
+}
+
+func (debugger *fixtureDebugger) SubmitRerun(_ context.Context, runID, nodeID string, request workflow.RerunRequest) (workflow.SubmittedRun, error) {
+	debugger.lastRunID, debugger.lastNodeID, debugger.lastRequest = runID, nodeID, request
+	if debugger.prepareErr != nil {
+		return workflow.SubmittedRun{}, debugger.prepareErr
+	}
+	return workflow.SubmittedRun{RunID: "debug-run", Created: true}, nil
 }
 
 type fixtureReady struct{ err error }
@@ -376,10 +392,10 @@ func TestArchivedWorkflowUsesStableErrorAcrossValidationAndRunEntrypoints(t *tes
 			dependencies.Workflows.(*fixtureWorkflowService).manifestErr = domain.ErrWorkflowArchived
 		}},
 		{name: "draft run", method: http.MethodPost, path: "/api/workflows/w1/test-runs", body: `{"draftRevision":2,"input":{}}`, setup: func(dependencies Dependencies) {
-			dependencies.Runner.(*fixtureRunner).prepareErr = domain.ErrWorkflowArchived
+			dependencies.RunSubmissions.(*fixtureRunner).submitErr = domain.ErrWorkflowArchived
 		}},
 		{name: "agent run", method: http.MethodPost, path: "/api/agents/demo/runs", body: `{"workflowVersionId":"v1","input":{}}`, setup: func(dependencies Dependencies) {
-			dependencies.Runner.(*fixtureRunner).prepareErr = domain.ErrWorkflowArchived
+			dependencies.RunSubmissions.(*fixtureRunner).submitErr = domain.ErrWorkflowArchived
 		}},
 	}
 
@@ -1213,8 +1229,6 @@ func TestAgentRunAsyncMapsPublicErrors(t *testing.T) {
 		retryAfter string
 	}{
 		{err: workflow.ErrInputValidation, status: http.StatusUnprocessableEntity, code: "INPUT_VALIDATION_FAILED"},
-		{err: workflow.ErrAgentRunCapacity, status: http.StatusTooManyRequests, code: "RUN_CAPACITY_EXCEEDED", retryAfter: "2"},
-		{err: workflow.ErrAgentRunUnavailable, status: http.StatusServiceUnavailable, code: "RUN_START_UNAVAILABLE"},
 	}
 	for _, test := range tests {
 		dependencies := fixtureDeps()
@@ -1298,14 +1312,18 @@ func assertAgentPublicHeaders(t *testing.T, recorder *httptest.ResponseRecorder)
 
 func fixtureDeps() Dependencies {
 	registry := nodes.NewRegistry()
+	runner := &fixtureRunner{}
+	runManager := &fixtureRunManager{}
+	debugger := &fixtureDebugger{}
 	return Dependencies{
 		Registry: registry,
 		Workflows: &fixtureWorkflowService{
 			workflow:        domain.Workflow{ID: "w1", DraftRevision: 2},
 			templatePreview: workflowtemplate.Preview{Issues: []domain.ValidationIssue{}, Summary: workflowtemplate.Summary{InputSchema: json.RawMessage(`{}`), NodeTypes: []workflowtemplate.NodeTypeSummary{}}},
 		},
-		Runner: &fixtureRunner{},
-		Runs:   fixtureRunReader{},
+		RunSubmissions: runner,
+		RunFollower:    runner,
+		Runs:           fixtureRunReader{},
 		AgentRuns: &fixtureAgentRuns{
 			summary: workflow.AgentRunPublicSummary{RunID: "00000000-0000-4000-8000-000000000911", WorkflowVersionID: "00000000-0000-4000-8000-000000000910", Version: 4, Status: domain.RunRunning, StartedAt: time.Now().UTC()},
 			view:    workflow.AgentRunPublicView{Events: []workflow.AgentRunPublicEvent{}, NextSequence: 0, HasMore: false},
@@ -1314,8 +1332,10 @@ func fixtureDeps() Dependencies {
 			workflow: domain.Workflow{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Name: "演示"},
 		},
 		VersionGovernance: &fixtureVersionGovernance{},
-		RunManagement:     &fixtureRunManager{},
-		Debugger:          &fixtureDebugger{},
+		RunManagement:     runManager,
+		RetrySubmissions:  runManager,
+		Debugger:          debugger,
+		RerunSubmissions:  debugger,
 		Readiness:         fixtureReady{},
 		WebOrigin:         "http://localhost:5173",
 	}

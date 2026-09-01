@@ -32,12 +32,6 @@ type WorkflowService interface {
 	ImportTemplate(context.Context, workflow.ImportWorkflowTemplateInput) (domain.Workflow, error)
 }
 
-type Runner interface {
-	PrepareDraft(context.Context, string, int64, map[string]any) (*workflow.PreparedRun, error)
-	PrepareAgent(context.Context, string, string, map[string]any) (*workflow.PreparedRun, error)
-	Execute(context.Context, *workflow.PreparedRun, engine.Observer) (engine.RunResult, error)
-}
-
 type RunSubmitter interface {
 	SubmitDraft(context.Context, string, int64, map[string]any) (workflow.SubmittedRun, error)
 	SubmitAgent(context.Context, string, string, map[string]any) (workflow.SubmittedRun, error)
@@ -85,14 +79,12 @@ type RunManager interface {
 	List(context.Context, workflow.RunSummaryRequest) (workflow.RunSummaryPage, error)
 	Cancel(context.Context, string) (domain.RunSummary, error)
 	RetryPreview(context.Context, string) (workflow.RunRetryPreview, error)
-	PrepareRetry(context.Context, string, string, workflow.RunRetryRequest) (*workflow.PreparedRun, error)
 }
 
 type Debugger interface {
 	Overview(context.Context, string) (workflow.DebugOverview, error)
 	Events(context.Context, string, int64) (workflow.RunEventPage, error)
 	PreviewRerun(context.Context, string, string) (workflow.RerunPreview, error)
-	PrepareRerun(context.Context, string, string, workflow.RerunRequest) (*workflow.PreparedRun, error)
 }
 
 type Readiness interface {
@@ -110,7 +102,6 @@ type Dependencies struct {
 	Workflows          WorkflowService
 	WorkflowManagement WorkflowManager
 	VersionGovernance  VersionGovernance
-	Runner             Runner
 	RunSubmissions     RunSubmitter
 	RunFollower        RunFollower
 	Runs               RunReader

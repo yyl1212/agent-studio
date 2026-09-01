@@ -34,8 +34,8 @@ func TestAgentRunUsesBodyVersionIDAndStreamsNDJSON(t *testing.T) {
 	if !recorder.Flushed {
 		t.Fatal("stream was not flushed")
 	}
-	if dependencies.Runner.(*fixtureRunner).LastVersionID != "v1" {
-		t.Fatalf("version=%s", dependencies.Runner.(*fixtureRunner).LastVersionID)
+	if dependencies.RunSubmissions.(*fixtureRunner).LastVersionID != "v1" {
+		t.Fatalf("version=%s", dependencies.RunSubmissions.(*fixtureRunner).LastVersionID)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestRetryRunDuplicateReturnsOnlyExistingRunID(t *testing.T) {
 
 func TestPrepareErrorStaysJSONBeforeStreaming(t *testing.T) {
 	dependencies := fixtureDeps()
-	dependencies.Runner.(*fixtureRunner).prepareErr = domain.ErrNotFound
+	dependencies.RunSubmissions.(*fixtureRunner).submitErr = domain.ErrNotFound
 	recorder := performRequest(NewRouter(dependencies), http.MethodPost, "/api/agents/demo/runs", `{"workflowVersionId":"missing","input":{}}`)
 	assertJSONError(t, recorder, http.StatusNotFound, "NOT_FOUND")
 	if strings.Contains(recorder.Header().Get("Content-Type"), "ndjson") {
@@ -105,27 +105,19 @@ func TestStreamObserverEncodesOneJSONObjectPerLine(t *testing.T) {
 	}
 }
 
-type cancellationRunner struct {
-	executionContextCancelled bool
+type cancellationFollower struct {
+	followContextCancelled bool
 }
 
-func (*cancellationRunner) PrepareDraft(context.Context, string, int64, map[string]any) (*workflow.PreparedRun, error) {
-	return &workflow.PreparedRun{RunID: "run-1"}, nil
+func (follower *cancellationFollower) Follow(ctx context.Context, _ string, _ engine.Observer) error {
+	follower.followContextCancelled = ctx.Err() != nil
+	return ctx.Err()
 }
 
-func (*cancellationRunner) PrepareAgent(context.Context, string, string, map[string]any) (*workflow.PreparedRun, error) {
-	return &workflow.PreparedRun{RunID: "run-1"}, nil
-}
-
-func (runner *cancellationRunner) Execute(ctx context.Context, _ *workflow.PreparedRun, _ engine.Observer) (engine.RunResult, error) {
-	runner.executionContextCancelled = ctx.Err() != nil
-	return engine.RunResult{}, ctx.Err()
-}
-
-func TestRunUsesRequestContextForCancellation(t *testing.T) {
+func TestRunFollowerUsesRequestContextForDisconnect(t *testing.T) {
 	dependencies := fixtureDeps()
-	runner := &cancellationRunner{}
-	dependencies.Runner = runner
+	follower := &cancellationFollower{}
+	dependencies.RunFollower = follower
 	request := httptest.NewRequest(http.MethodPost, "/api/agents/demo/runs", strings.NewReader(`{"workflowVersionId":"v1","input":{}}`))
 	request.Header.Set("Content-Type", "application/json")
 	ctx, cancel := context.WithCancel(request.Context())
@@ -135,7 +127,7 @@ func TestRunUsesRequestContextForCancellation(t *testing.T) {
 
 	NewRouter(dependencies).ServeHTTP(recorder, request)
 
-	if !runner.executionContextCancelled {
-		t.Fatal("runner did not receive the cancelled request context")
+	if !follower.followContextCancelled {
+		t.Fatal("follower did not receive the cancelled request context")
 	}
 }

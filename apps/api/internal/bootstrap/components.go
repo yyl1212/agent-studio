@@ -14,6 +14,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/config"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/generated"
+	"github.com/yyl1212/agent-studio/apps/api/internal/httpapi"
 	"github.com/yyl1212/agent-studio/apps/api/internal/modelprovider"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
@@ -50,6 +51,16 @@ type WorkerComponents struct {
 	RunService *workflow.RunService
 	Rehydrator *workerprocess.Rehydrator
 	Worker     *workerprocess.Worker
+}
+
+type APIComponents struct {
+	Common        *Common
+	Submission    *workflow.RunSubmissionService
+	RunService    *workflow.RunService
+	RunManagement *workflow.RunManagementService
+	Debug         *workflow.DebugService
+	Follower      *workflow.RunEventFollower
+	Router        http.Handler
 }
 
 func BuildCommon(ctx context.Context, cfg config.Config, info buildinfo.Info, logger *slog.Logger) (_ *Common, err error) {
@@ -115,6 +126,35 @@ func BuildWorker(common *Common, ownerID string, logger *slog.Logger) (*WorkerCo
 		ClaimInterval: common.Config.WorkerClaimInterval, ShutdownTimeout: common.Config.WorkerShutdownTimeout,
 	}, common.Store, rehydrator, runService, common.Cipher, workerprocess.WithLogger(logger), workerprocess.WithTelemetry(providers))
 	return &WorkerComponents{Common: common, Engine: executionEngine, RunService: runService, Rehydrator: rehydrator, Worker: runner}, nil
+}
+
+func BuildAPI(common *Common, logger *slog.Logger) (*APIComponents, error) {
+	if common == nil || common.Store == nil || common.Compiler == nil || common.Cipher == nil || common.Telemetry == nil || common.Registry == nil || common.NodePackages == nil {
+		return nil, errors.New("API bootstrap dependencies are incomplete")
+	}
+	providers := common.Telemetry.Providers()
+	submission := workflow.NewRunSubmissionService(common.Store, common.Cipher)
+	runService := workflow.NewRunService(common.Store, common.Compiler, nil,
+		workflow.WithLogger(logger), workflow.WithRunTelemetry(providers), workflow.WithRunSubmission(submission))
+	runManagement := workflow.NewQueuedRunManagementService(common.Store, common.Compiler, submission)
+	debugService := workflow.NewQueuedDebugService(common.Store, common.Compiler, submission)
+	follower := workflow.NewRunEventFollower(common.Store, common.Config.RunEventPollInterval)
+	agentRuns := workflow.NewQueuedAgentRunService(runService, common.Store)
+	router := httpapi.NewRouter(httpapi.Dependencies{
+		Registry:           common.Registry,
+		Workflows:          workflow.NewService(common.Store, common.Compiler, common.Registry),
+		WorkflowManagement: workflow.NewWorkflowManagementService(common.Store),
+		VersionGovernance:  workflow.NewVersionGovernanceService(common.Store, common.Compiler, common.Registry),
+		RunSubmissions:     runService, RunFollower: follower, Runs: common.Store, AgentRuns: agentRuns,
+		RunManagement: runManagement, RetrySubmissions: runManagement,
+		Debugger: debugService, RerunSubmissions: debugService,
+		Readiness: common.Store, NodePackages: common.NodePackages, WebOrigin: common.Config.WebOrigin,
+		Logger: logger, Telemetry: providers,
+	})
+	return &APIComponents{
+		Common: common, Submission: submission, RunService: runService, RunManagement: runManagement,
+		Debug: debugService, Follower: follower, Router: router,
+	}, nil
 }
 
 func (common *Common) Close(ctx context.Context) error {

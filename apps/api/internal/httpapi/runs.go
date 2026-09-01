@@ -21,21 +21,12 @@ func (handler *handler) runDraft(writer http.ResponseWriter, request *http.Reque
 		writeRequestError(writer, request, err)
 		return
 	}
-	if handler.dependencies.RunSubmissions != nil {
-		submitted, err := handler.dependencies.RunSubmissions.SubmitDraft(request.Context(), chi.URLParam(request, "id"), body.DraftRevision, body.Input)
-		if err != nil {
-			writeError(writer, request, err)
-			return
-		}
-		handler.streamSubmittedRun(writer, request, submitted)
-		return
-	}
-	prepared, err := handler.dependencies.Runner.PrepareDraft(request.Context(), chi.URLParam(request, "id"), body.DraftRevision, body.Input)
+	submitted, err := handler.dependencies.RunSubmissions.SubmitDraft(request.Context(), chi.URLParam(request, "id"), body.DraftRevision, body.Input)
 	if err != nil {
 		writeError(writer, request, err)
 		return
 	}
-	handler.streamRun(writer, request, prepared)
+	handler.streamSubmittedRun(writer, request, submitted)
 }
 
 func (handler *handler) streamSubmittedRun(writer http.ResponseWriter, request *http.Request, submitted workflow.SubmittedRun) {
@@ -49,19 +40,6 @@ func (handler *handler) streamSubmittedRun(writer http.ResponseWriter, request *
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	observer := &streamObserver{writer: writer, flusher: flusher}
 	_ = handler.dependencies.RunFollower.Follow(request.Context(), submitted.RunID, observer)
-}
-
-func (handler *handler) streamRun(writer http.ResponseWriter, request *http.Request, prepared *workflow.PreparedRun) {
-	flusher, ok := writer.(http.Flusher)
-	if !ok {
-		writeError(writer, request, fmt.Errorf("streaming is not supported"))
-		return
-	}
-	writer.Header().Set("Content-Type", "application/x-ndjson")
-	writer.Header().Set("Cache-Control", "no-store")
-	writer.Header().Set("X-Content-Type-Options", "nosniff")
-	observer := &streamObserver{writer: writer, flusher: flusher}
-	_, _ = handler.dependencies.Runner.Execute(request.Context(), prepared, observer)
 }
 
 type streamObserver struct {

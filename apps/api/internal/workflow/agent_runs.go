@@ -63,37 +63,17 @@ type AgentRunPublicView struct {
 	HasMore      bool                     `json:"hasMore"`
 }
 
-type AgentRunPreparer interface {
-	PrepareAgentOnce(context.Context, string, string, string, map[string]any) (*PreparedRun, bool, error)
-}
-
 type AgentRunSubmitter interface {
 	SubmitAgentOnce(context.Context, string, string, string, map[string]any) (SubmittedRun, error)
 }
 
-type AgentRunReservation interface {
-	Launch(context.Context, *PreparedRun)
-	Release()
-}
-
-type AgentRunLauncher interface {
-	Reserve() (AgentRunReservation, error)
-}
-
 type AgentRunService struct {
-	preparer  AgentRunPreparer
-	store     AgentRunStore
-	launcher  AgentRunLauncher
-	canceller LocalRunCanceller
 	submitter AgentRunSubmitter
+	store     AgentRunStore
 }
 
 func NewQueuedAgentRunService(submitter AgentRunSubmitter, store AgentRunStore) *AgentRunService {
 	return &AgentRunService{submitter: submitter, store: store}
-}
-
-func NewAgentRunService(preparer AgentRunPreparer, store AgentRunStore, launcher AgentRunLauncher, canceller LocalRunCanceller) *AgentRunService {
-	return &AgentRunService{preparer: preparer, store: store, launcher: launcher, canceller: canceller}
 }
 
 func (service *AgentRunService) Start(ctx context.Context, slug string, input StartAgentRunInput) (summary AgentRunPublicSummary, created bool, err error) {
@@ -105,47 +85,17 @@ func (service *AgentRunService) Start(ctx context.Context, slug string, input St
 	if !errors.Is(err, domain.ErrNotFound) {
 		return AgentRunPublicSummary{}, false, err
 	}
-	if service.submitter != nil {
-		submitted, err := service.submitter.SubmitAgentOnce(ctx, slug, input.WorkflowVersionID, input.RequestKey, input.Input)
-		if err != nil {
-			return AgentRunPublicSummary{}, false, err
-		}
-		return AgentRunPublicSummary{
-			RunID: submitted.RunID, WorkflowVersionID: valueOrEmpty(submitted.WorkflowVersionID), Version: submitted.WorkflowVersion,
-			Status: submitted.Status, StartedAt: submitted.StartedAt,
-		}, submitted.Created, nil
+	if service.submitter == nil {
+		return AgentRunPublicSummary{}, false, errors.New("agent run submission service is unavailable")
 	}
-	reservation, err := service.launcher.Reserve()
+	submitted, err := service.submitter.SubmitAgentOnce(ctx, slug, input.WorkflowVersionID, input.RequestKey, input.Input)
 	if err != nil {
 		return AgentRunPublicSummary{}, false, err
 	}
-	launched := false
-	defer func() {
-		if !launched {
-			reservation.Release()
-		}
-	}()
-	prepared, created, err := service.preparer.PrepareAgentOnce(ctx, slug, input.WorkflowVersionID, input.RequestKey, input.Input)
-	if err != nil {
-		return AgentRunPublicSummary{}, false, err
-	}
-	if !created {
-		existing, err = service.store.FindAgentRunByRequestKey(ctx, slug, input.RequestKey)
-		if err != nil {
-			return AgentRunPublicSummary{}, false, err
-		}
-		summary, err = publicAgentRunSummary(existing)
-		return summary, false, err
-	}
-	if prepared == nil || prepared.WorkflowVersionID == nil {
-		return AgentRunPublicSummary{}, false, fmt.Errorf("created agent run has no prepared execution")
-	}
-	reservation.Launch(ctx, prepared)
-	launched = true
 	return AgentRunPublicSummary{
-		RunID: prepared.RunID, WorkflowVersionID: *prepared.WorkflowVersionID, Version: prepared.WorkflowVersion,
-		Status: domain.RunRunning, StartedAt: prepared.StartedAt,
-	}, true, nil
+		RunID: submitted.RunID, WorkflowVersionID: valueOrEmpty(submitted.WorkflowVersionID), Version: submitted.WorkflowVersion,
+		Status: submitted.Status, StartedAt: submitted.StartedAt,
+	}, submitted.Created, nil
 }
 
 func valueOrEmpty(value *string) string {
@@ -183,9 +133,6 @@ func (service *AgentRunService) Cancel(ctx context.Context, slug, runID string) 
 	record, err := service.store.RequestAgentRunCancel(ctx, slug, runID)
 	if err != nil {
 		return AgentRunPublicSummary{}, err
-	}
-	if service.canceller != nil {
-		service.canceller.CancelLocal(runID)
 	}
 	return publicAgentRunSummary(record)
 }

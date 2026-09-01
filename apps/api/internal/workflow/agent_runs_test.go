@@ -58,13 +58,6 @@ func (store *fakeAgentRunStore) RequestAgentRunCancel(context.Context, string, s
 	return store.cancelled, nil
 }
 
-type fakeAgentRunPreparer struct {
-	prepared *PreparedRun
-	created  bool
-	err      error
-	calls    int
-}
-
 type fakeAgentRunSubmitter struct {
 	result SubmittedRun
 	err    error
@@ -76,68 +69,18 @@ func (submitter *fakeAgentRunSubmitter) SubmitAgentOnce(context.Context, string,
 	return submitter.result, submitter.err
 }
 
-func (preparer *fakeAgentRunPreparer) PrepareAgentOnce(context.Context, string, string, string, map[string]any) (*PreparedRun, bool, error) {
-	preparer.calls++
-	return preparer.prepared, preparer.created, preparer.err
-}
-
-type fakeAgentRunReservation struct {
-	launched      *PreparedRun
-	launchContext context.Context
-	released      bool
-	panicOnLaunch bool
-}
-
-func (reservation *fakeAgentRunReservation) Launch(ctx context.Context, prepared *PreparedRun) {
-	if reservation.panicOnLaunch {
-		panic("launch panic")
-	}
-	reservation.launched = prepared
-	reservation.launchContext = ctx
-}
-
-func (reservation *fakeAgentRunReservation) Release() {
-	reservation.released = true
-}
-
-type fakeAgentRunLauncher struct {
-	reservation  *fakeAgentRunReservation
-	err          error
-	reserveCalls int
-}
-
-func (launcher *fakeAgentRunLauncher) Reserve() (AgentRunReservation, error) {
-	launcher.reserveCalls++
-	if launcher.err != nil {
-		return nil, launcher.err
-	}
-	if launcher.reservation == nil {
-		launcher.reservation = &fakeAgentRunReservation{}
-	}
-	return launcher.reservation, nil
-}
-
-type fakeAgentLocalRunCanceller struct {
-	runID string
-}
-
-func (canceller *fakeAgentLocalRunCanceller) CancelLocal(runID string) bool {
-	canceller.runID = runID
-	return true
-}
-
-func TestAgentRunServiceReturnsDuplicateBeforeReservation(t *testing.T) {
+func TestAgentRunServiceReturnsDuplicateBeforeSubmission(t *testing.T) {
 	record := agentRunRecordFixture(domain.RunRunning)
 	store := &fakeAgentRunStore{found: record}
-	launcher := &fakeAgentRunLauncher{}
-	service := NewAgentRunService(&fakeAgentRunPreparer{}, store, launcher, nil)
+	submitter := &fakeAgentRunSubmitter{}
+	service := NewQueuedAgentRunService(submitter, store)
 	accepted, created, err := service.Start(context.Background(), "demo", StartAgentRunInput{
 		WorkflowVersionID: record.Version.ID,
 		RequestKey:        "00000000-0000-4000-8000-000000000902",
 		Input:             map[string]any{"topic": "x"},
 	})
-	if err != nil || created || accepted.RunID != record.Run.ID || launcher.reserveCalls != 0 {
-		t.Fatalf("accepted=%+v created=%v reserveCalls=%d error=%v", accepted, created, launcher.reserveCalls, err)
+	if err != nil || created || accepted.RunID != record.Run.ID || submitter.calls != 0 {
+		t.Fatalf("accepted=%+v created=%v submitCalls=%d error=%v", accepted, created, submitter.calls, err)
 	}
 }
 
@@ -155,63 +98,13 @@ func TestQueuedAgentRunServiceSubmitsWithoutLaunchingGoroutine(t *testing.T) {
 	}
 }
 
-func TestAgentRunServiceReleasesReservationWhenPreparationLosesRace(t *testing.T) {
-	record := agentRunRecordFixture(domain.RunRunning)
-	store := &fakeAgentRunStore{findErr: domain.ErrNotFound, found: record}
-	preparer := &fakeAgentRunPreparer{created: false}
-	launcher := &fakeAgentRunLauncher{}
-	service := NewAgentRunService(preparer, store, launcher, nil)
-	accepted, created, err := service.Start(context.Background(), "demo", StartAgentRunInput{WorkflowVersionID: record.Version.ID, RequestKey: "key", Input: map[string]any{}})
-	if err != nil || created || accepted.RunID != record.Run.ID || !launcher.reservation.released || launcher.reservation.launched != nil {
-		t.Fatalf("accepted=%+v created=%v reservation=%+v error=%v", accepted, created, launcher.reservation, err)
-	}
-}
-
-func TestAgentRunServiceLaunchesOnlyCreatedRun(t *testing.T) {
-	record := agentRunRecordFixture(domain.RunRunning)
-	store := &fakeAgentRunStore{findErr: domain.ErrNotFound}
-	prepared := &PreparedRun{RunID: record.Run.ID, WorkflowVersionID: &record.Version.ID, WorkflowVersion: record.Version.Version}
-	preparer := &fakeAgentRunPreparer{prepared: prepared, created: true}
-	launcher := &fakeAgentRunLauncher{}
-	service := NewAgentRunService(preparer, store, launcher, nil)
-	type requestKey struct{}
-	requestContext := context.WithValue(context.Background(), requestKey{}, "request-value")
-	accepted, created, err := service.Start(requestContext, "demo", StartAgentRunInput{WorkflowVersionID: record.Version.ID, RequestKey: "key", Input: map[string]any{}})
-	if err != nil || !created || accepted.RunID != prepared.RunID || launcher.reservation.launched != prepared || launcher.reservation.launchContext != requestContext || launcher.reservation.released {
-		t.Fatalf("accepted=%+v created=%v reservation=%+v error=%v", accepted, created, launcher.reservation, err)
-	}
-}
-
-func TestAgentRunServiceReleasesReservationWhenLaunchPanics(t *testing.T) {
-	record := agentRunRecordFixture(domain.RunRunning)
-	prepared := &PreparedRun{RunID: record.Run.ID, WorkflowVersionID: &record.Version.ID, WorkflowVersion: record.Version.Version}
-	reservation := &fakeAgentRunReservation{panicOnLaunch: true}
-	service := NewAgentRunService(
-		&fakeAgentRunPreparer{prepared: prepared, created: true},
-		&fakeAgentRunStore{findErr: domain.ErrNotFound},
-		&fakeAgentRunLauncher{reservation: reservation},
-		nil,
-	)
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("expected launch panic")
-			}
-		}()
-		_, _, _ = service.Start(context.Background(), "demo", StartAgentRunInput{WorkflowVersionID: record.Version.ID, RequestKey: "key", Input: map[string]any{}})
-	}()
-	if !reservation.released {
-		t.Fatal("reservation was not released after panic")
-	}
-}
-
 func TestAgentRunViewStripsNodeAndPayloadData(t *testing.T) {
 	record := agentRunRecordFixture(domain.RunCompleted)
 	record.Run.Output = json.RawMessage(`{"answer":"safe"}`)
 	record.Run.Error = &domain.PublicError{Code: "NODE_EXECUTION_FAILED", Message: "节点执行失败", NodeID: "secret-node"}
 	record.Events = []domain.RunEvent{{Sequence: 1, Type: "node.completed", NodeID: "secret-node", Input: json.RawMessage(`{"token":"secret"}`), Output: json.RawMessage(`{"private":"value"}`), ActivePorts: []string{"secret"}, InputRedactedPaths: []string{"/token"}, Timestamp: time.Now().UTC()}}
 	store := &fakeAgentRunStore{view: record}
-	service := NewAgentRunService(&fakeAgentRunPreparer{}, store, &fakeAgentRunLauncher{}, nil)
+	service := NewQueuedAgentRunService(&fakeAgentRunSubmitter{}, store)
 	view, err := service.View(context.Background(), "demo", record.Run.ID, 0)
 	if err != nil || len(view.Events) != 1 || view.Events[0].Sequence != 1 || !reflect.DeepEqual(view.Presentation, record.Version.AgentPresentation) {
 		t.Fatalf("view=%+v error=%v", view, err)
@@ -232,7 +125,7 @@ func TestAgentRunViewHidesActiveOutputAndTracksCursor(t *testing.T) {
 	record.Run.Output = json.RawMessage(`{"premature":"secret"}`)
 	record.Events = []domain.RunEvent{{Sequence: 8, Type: "node.started", Timestamp: time.Now().UTC()}}
 	record.HasMore = true
-	service := NewAgentRunService(&fakeAgentRunPreparer{}, &fakeAgentRunStore{view: record}, &fakeAgentRunLauncher{}, nil)
+	service := NewQueuedAgentRunService(&fakeAgentRunSubmitter{}, &fakeAgentRunStore{view: record})
 	view, err := service.View(context.Background(), "demo", record.Run.ID, 4)
 	store := service.store.(*fakeAgentRunStore)
 	if err != nil || view.Run.Output != nil || view.NextSequence != 8 || !view.HasMore || store.afterSequence != 4 || store.limit != 200 {
@@ -242,19 +135,19 @@ func TestAgentRunViewHidesActiveOutputAndTracksCursor(t *testing.T) {
 
 func TestAgentRunViewRejectsNegativeCursorWithoutStoreCall(t *testing.T) {
 	store := &fakeAgentRunStore{}
-	service := NewAgentRunService(&fakeAgentRunPreparer{}, store, &fakeAgentRunLauncher{}, nil)
+	service := NewQueuedAgentRunService(&fakeAgentRunSubmitter{}, store)
 	if _, err := service.View(context.Background(), "demo", "run", -1); !errors.Is(err, ErrInvalidWorkflowInput) || store.viewCalls != 0 {
 		t.Fatalf("error=%v calls=%d", err, store.viewCalls)
 	}
 }
 
-func TestAgentRunCancelRequestsLocalCancellation(t *testing.T) {
+func TestAgentRunCancelPersistsCancellation(t *testing.T) {
 	record := agentRunRecordFixture(domain.RunCancelling)
-	canceller := &fakeAgentLocalRunCanceller{}
-	service := NewAgentRunService(&fakeAgentRunPreparer{}, &fakeAgentRunStore{cancelled: record}, &fakeAgentRunLauncher{}, canceller)
+	store := &fakeAgentRunStore{cancelled: record}
+	service := NewQueuedAgentRunService(&fakeAgentRunSubmitter{}, store)
 	summary, err := service.Cancel(context.Background(), "demo", record.Run.ID)
-	if err != nil || summary.Status != domain.RunCancelling || canceller.runID != record.Run.ID {
-		t.Fatalf("summary=%+v cancelled=%q error=%v", summary, canceller.runID, err)
+	if err != nil || summary.Status != domain.RunCancelling || store.cancelCalls != 1 {
+		t.Fatalf("summary=%+v cancelCalls=%d error=%v", summary, store.cancelCalls, err)
 	}
 }
 

@@ -25,7 +25,6 @@ func clearOTelEnv(t *testing.T) {
 		"WORKER_CLAIM_INTERVAL",
 		"WORKER_SHUTDOWN_TIMEOUT",
 		"RUN_EVENT_POLL_INTERVAL",
-		"MAX_ACTIVE_AGENT_RUNS",
 	} {
 		t.Setenv(key, "")
 	}
