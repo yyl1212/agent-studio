@@ -82,16 +82,21 @@ validate_script() {
     raise "PostgreSQL loopback port missing from Compose YAML" unless code.include?("127.0.0.1:$db_port:5432")
     raise "API loopback port missing from Compose YAML" unless code.include?("127.0.0.1:$api_port:8080")
 
-    { "api" => "agent-studio-api", "worker" => "agent-studio-worker" }.each do |role, executable|
-      binary = "#{role}_bin=\"$run_root/#{executable}\""
-      raise "#{role} binary declaration must be unique" unless lines.count(binary) == 1
-      token = "\"$#{role}_bin\""
-      launches = lines.each_index.select { |index| lines[index].split.include?(token) }
-      raise "#{role} binary must execute exactly once" unless launches.length == 1
-      launch_index = launches.first
-      raise "#{role} launch must run in background" unless lines[launch_index].end_with?("&")
-      raise "#{role} PID must bind immediately after its launch" unless lines[launch_index + 1] == "#{role}_pid=$!"
-    end
+    raise "test image must be non-empty and unique" unless lines.count("test_image=\"agent-studio:rc-capacity-e2e\"") == 1
+    docker_builds = commands.select { |command| command.delete("\"\x27").split[0, 2] == %w[docker build] }
+    raise "capacity image must be built exactly once" unless docker_builds == ["docker build -t \"$test_image\" \"$repo_root\""]
+    services_command = "actual_services=$(docker compose -f \"$compose_file\" config --services | sort | tr \x27\\n\x27 \x27 \x27)"
+    raise "Compose must define exactly db/api/worker services" unless lines.include?(services_command) && lines.include?("[ \"$actual_services\" = \"api db worker \" ] || exit 1")
+    raise "api and worker must use the same test image" unless lines.count("image: \"$test_image\"") == 2
+    api_index = lines.index("api:")
+    worker_index = lines.index("worker:")
+    raise "API and Worker services missing" unless api_index && worker_index && api_index < worker_index
+    raise "API must expose exactly the loopback port" unless lines[(api_index + 1)...worker_index].count("ports:") == 1
+    raise "Worker must not expose ports" if lines[(worker_index + 1)..].include?("ports:")
+    up = "docker compose -f \"$compose_file\" up -d db api worker"
+    raise "Compose must start db/api/worker exactly once" unless lines.count(up) == 1
+    raise "Compose scaling is forbidden" if code.match?(/--scale|scale:/)
+    raise "contract-only mode missing" unless code.include?("RC_CAPACITY_CONTRACT_ONLY")
 
     raise "RUN_COUNT must only accept 500" unless lines.include?("[ \"$RUN_COUNT\" = \"500\" ] || exit 1")
     deadline_start = lines.index("validate_deadline() {")
@@ -108,7 +113,9 @@ validate_script() {
     exact_summary_check = "jq -e \x27keys == #{JSON.generate(expected_keys)}\x27 \"$summary_file\" >/dev/null"
     summary_index = lines.index(exact_summary_check)
     raise "summary key validation must be one normalized jq command" unless summary_index
-    raise "summary cannot be rewritten after key validation" if lines[(summary_index + 1)..].any? { |line| line.include?("$summary_file") }
+    later_summary = lines[(summary_index + 1)..]
+    allowed_read = "cat \"$summary_file\""
+    raise "summary cannot be mutated after key validation" if later_summary.any? { |line| line.include?("$summary_file") && line != allowed_read }
 
     commands.each do |command|
       tokens = command.delete("\"\x27").split
@@ -134,7 +141,7 @@ expect_rejected() {
     printf '%s\n' "fixture unexpectedly passed: $candidate" >&2
     exit 1
   fi
-  case "$output" in *"$expected"*) ;; *) printf '%s\n' "fixture failed for the wrong reason: $output" >&2; exit 1;; esac
+  case "$output" in *"$expected"*) ;; *) printf '%s\n' "fixture failed for the wrong reason ($candidate): $output" >&2; exit 1;; esac
 }
 
 run_contract_self_test() {
@@ -159,12 +166,8 @@ validate_deadline() {
   if [ "$RC_CAPACITY_DEADLINE_SECONDS" -gt 570 ]; then exit 1; fi
 }
 validate_deadline "$RC_CAPACITY_DEADLINE_SECONDS"
-api_bin="$run_root/agent-studio-api"
-worker_bin="$run_root/agent-studio-worker"
-"$api_bin" >"$run_root/api.log" 2>&1 &
-api_pid=$!
-"$worker_bin" >"$run_root/worker.log" 2>&1 &
-worker_pid=$!
+test_image="agent-studio:rc-capacity-e2e"
+docker build -t "$test_image" "$repo_root"
 cat >"$compose_file" <<EOF
 services:
   db:
@@ -173,15 +176,23 @@ services:
     ports:
       - "127.0.0.1:$db_port:5432"
   api:
+    image: "$test_image"
     ports:
       - "127.0.0.1:$api_port:8080"
+  worker:
+    image: "$test_image"
 WORKER_MAX_ACTIVE_RUNS: "4"
 EOF
+actual_services=$(docker compose -f "$compose_file" config --services | sort | tr '\n' ' ')
+[ "$actual_services" = "api db worker " ] || exit 1
+if [ "${RC_CAPACITY_CONTRACT_ONLY:-}" = "1" ]; then exit 0; fi
+docker compose -f "$compose_file" up -d db api worker
 cleanup() { :; }
 trap cleanup EXIT HUP INT TERM
 summary_file="$run_root/summary.json"
 jq -n '{}' > "$summary_file"
 jq -e 'keys == ["completed","duplicateTerminalEvents","elapsedMs","nonCompleted","queueWaitP95Ms","remainingLeases","remainingQueueDepth","submitted","throughputPerSecond"]' "$summary_file" >/dev/null
+cat "$summary_file"
 duplicateTerminalEvents=0
 remainingLeases=0
 remainingQueueDepth=0
@@ -190,19 +201,18 @@ rm -rf "$run_root"
 FIXTURE
 
   validate_script "$base"
-  for case_name in extra_api extra_worker direct_api deadline_noop fixed_project reassign_project comment_api_port summary_or_true summary_rewrite semicolon_down single_quoted_variable run_root_rebind; do
+  for case_name in duplicate_image duplicate_up deadline_noop fixed_project reassign_project comment_api_port summary_or_true summary_rewrite semicolon_down single_quoted_variable run_root_rebind; do
     candidate="$fixture_root/$case_name.sh"
     cat "$base" >"$candidate"
     case "$case_name" in
-      extra_api) printf '%s\n' '"$api_bin" &' 'another_api_pid=$!' >>"$candidate"; expected='api binary must execute exactly once';;
-      extra_worker) printf '%s\n' '"$worker_bin" &' 'another_worker_pid=$!' >>"$candidate"; expected='worker binary must execute exactly once';;
-      direct_api) printf '%s\n' '"$api_bin"' >>"$candidate"; expected='api binary must execute exactly once';;
+      duplicate_image) printf '%s\n' 'docker build -t "$test_image" "$repo_root"' >>"$candidate"; expected='built exactly once';;
+      duplicate_up) printf '%s\n' 'docker compose -f "$compose_file" up -d db api worker' >>"$candidate"; expected='start db/api/worker exactly once';;
       deadline_noop) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("exit 1 ;;", ": ;;"))' "$candidate"; expected='deadline must reject non-integers directly';;
       fixed_project) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("COMPOSE_PROJECT_NAME=\"agent_studio_rc_capacity_$$\"", "COMPOSE_PROJECT_NAME=\"fixed\" # $$"))' "$candidate"; expected='PID-derived';;
       reassign_project) printf '%s\n' 'COMPOSE_PROJECT_NAME="agent_studio_rc_capacity_$$"' >>"$candidate"; expected='assigned exactly once';;
       comment_api_port) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("      - \"127.0.0.1:$api_port:8080\"", "      # 127.0.0.1:$api_port:8080"))' "$candidate"; expected='API loopback port missing';;
       summary_or_true) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub(" >/dev/null", " >/dev/null || true"))' "$candidate"; expected='one normalized jq command';;
-      summary_rewrite) printf '%s\n' 'jq -n "{}" > "$summary_file"' >>"$candidate"; expected='cannot be rewritten';;
+      summary_rewrite) printf '%s\n' 'jq -n "{}" > "$summary_file"' >>"$candidate"; expected='cannot be mutated';;
       semicolon_down) printf '%s\n' 'docker compose -f "$compose_file" down --volumes; true' >>"$candidate"; expected='destructive Compose volume cleanup';;
       single_quoted_variable) printf '%s\n' "RUN_PAYLOAD_ENCRYPTION_KEY='\$STATIC_LITERAL'" >>"$candidate"; expected='plaintext payload key';;
       run_root_rebind) printf '%s\n' 'run_root=/' >>"$candidate"; expected='assigned exactly once';;
