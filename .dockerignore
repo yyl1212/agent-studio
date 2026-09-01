@@ -1,0 +1,11 @@
+.git
+.worktrees
+.env
+.DS_Store
+.release-tools
+node_modules
+dist
+coverage
+playwright-report
+test-results
+*.out

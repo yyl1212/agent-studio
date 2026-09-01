@@ -1,4 +1,4 @@
-.PHONY: db-up db-down observability-up observability-down observability-check observability-verify dev-api dev-web generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e backup-create backup-inspect backup-restore-dry-run backup-restore test-backup-e2e verify-backup-docs verify-backup-fixture release-tools release-check release-snapshot release-preflight verify-workflows verify-release
+.PHONY: db-up db-down observability-up observability-down observability-check observability-verify dev-api dev-worker dev-web dev-stack generate check-generated test-api-integration verify verify-go-quick verify-web-quick verify-quick verify-node-index test-e2e test-sdk-e2e test-durable-runs-e2e backup-create backup-inspect backup-restore-dry-run backup-restore test-backup-e2e verify-backup-docs verify-backup-fixture release-tools release-check release-snapshot release-preflight verify-workflows verify-release
 
 TEST_DATABASE_URL ?= postgres://agent:agent@localhost:5432/agent_studio?sslmode=disable
 override TEST_DATABASE_URL := $(value TEST_DATABASE_URL)
@@ -36,8 +36,14 @@ observability-verify:
 dev-api:
 	set -a; [ ! -f .env ] || . ./.env; set +a; CGO_ENABLED=0 go run ./apps/api/cmd/server
 
+dev-worker:
+	set -a; [ ! -f .env ] || . ./.env; set +a; CGO_ENABLED=0 go run ./apps/api/cmd/worker
+
 dev-web:
 	corepack pnpm@10.34.5 dev:web
+
+dev-stack:
+	set -a; [ ! -f .env ] || . ./.env; set +a; docker compose up --build db api worker
 
 generate:
 	CGO_ENABLED=0 go run ./cmd/agent-studio generate
@@ -89,6 +95,9 @@ test-e2e: db-up
 test-sdk-e2e: db-up
 	CGO_ENABLED=0 go test ./internal/generatedtest -count=1 -v
 	corepack pnpm@10.34.5 --filter @agent-studio/web exec playwright test e2e/sdk-node.spec.ts
+
+test-durable-runs-e2e:
+	sh scripts/test-durable-runs-e2e.sh
 
 backup-create: db-up
 	@test -n "$$OUTPUT" || { printf '%s\n' 'usage: make backup-create OUTPUT=/path/file.asbak' >&2; exit 2; }
