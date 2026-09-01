@@ -1,11 +1,14 @@
 package config
 
 import (
+	"encoding/base64"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+var testRunPayloadEncryptionKey = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 
 func clearOTelEnv(t *testing.T) {
 	t.Helper()
@@ -18,6 +21,47 @@ func clearOTelEnv(t *testing.T) {
 		"OTEL_METRIC_EXPORT_INTERVAL",
 	} {
 		t.Setenv(key, "")
+	}
+	t.Setenv("RUN_PAYLOAD_ENCRYPTION_KEY", testRunPayloadEncryptionKey)
+}
+
+func TestLoadRequiresValidRunPayloadEncryptionKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "missing"},
+		{name: "invalid base64", key: "secret-not-base64"},
+		{name: "wrong length", key: base64.StdEncoding.EncodeToString(make([]byte, 31))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearOTelEnv(t)
+			t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+			t.Setenv("RUN_PAYLOAD_ENCRYPTION_KEY", tt.key)
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load() accepted invalid RUN_PAYLOAD_ENCRYPTION_KEY")
+			}
+			if !strings.Contains(err.Error(), "RUN_PAYLOAD_ENCRYPTION_KEY") {
+				t.Fatalf("Load() error lacks variable name: %v", err)
+			}
+			if tt.key != "" && strings.Contains(err.Error(), tt.key) {
+				t.Fatalf("Load() error disclosed encryption key: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadKeepsValidatedRunPayloadEncryptionKey(t *testing.T) {
+	clearOTelEnv(t)
+	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RunPayloadEncryptionKey != testRunPayloadEncryptionKey {
+		t.Fatalf("RunPayloadEncryptionKey was not preserved")
 	}
 }
 

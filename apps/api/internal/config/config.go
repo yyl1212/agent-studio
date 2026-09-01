@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yyl1212/agent-studio/apps/api/internal/runpayload"
 	"github.com/yyl1212/agent-studio/internal/nodeindex"
 )
 
@@ -40,9 +41,14 @@ type Config struct {
 	OTelExportTimeout        time.Duration
 	OTelCompression          string
 	OTelMetricExportInterval time.Duration
+	RunPayloadEncryptionKey  string
 }
 
 func Load() (Config, error) {
+	runPayloadEncryptionKey := os.Getenv("RUN_PAYLOAD_ENCRYPTION_KEY")
+	if _, err := runpayload.New(runPayloadEncryptionKey); err != nil {
+		return Config{}, fmt.Errorf("RUN_PAYLOAD_ENCRYPTION_KEY is invalid: %w", err)
+	}
 	maxParallelNodes, err := intEnv("MAX_PARALLEL_NODES", 4)
 	if err != nil {
 		return Config{}, err
@@ -103,6 +109,7 @@ func Load() (Config, error) {
 		OTelExportTimeout:        otelExportTimeout,
 		OTelCompression:          otelCompression,
 		OTelMetricExportInterval: otelMetricExportInterval,
+		RunPayloadEncryptionKey:  runPayloadEncryptionKey,
 	}
 
 	if cfg.ModelProvider == "openai-compatible" && cfg.OpenAIBaseURL == "" {
