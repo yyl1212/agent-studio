@@ -381,6 +381,9 @@ abort "artifact scan must fail closed" unless artifacts.match?(/case .*scan.* in
 diagnostics=source[/^collect_database_diagnostics\(\)\s*\{\n(.*?)^\}/m,1] or abort "database diagnostics missing"
 %w[upgrade_source current rollback_target migration_version run_status_counts tables unavailable_or_error].each { |marker| abort "database diagnostics #{marker} missing" unless diagnostics.include?(marker) }
 abort "database diagnostics must use bounded PostgreSQL execution" unless diagnostics.include?('postgres_cleanup_exec')
+abort "database diagnostics must read the maximum applied migration version" unless diagnostics.match?(/max\(version\)::text FROM schema_migrations/)
+abort "database diagnostics must aggregate run status counts from runs" unless diagnostics.match?(/FROM runs GROUP BY status/)
+abort "database diagnostics must list only public tables" unless diagnostics.match?(/information_schema\.tables WHERE table_schema='public'/)
 rollback=source[/^assert_rollback_records\(\)\s*\{\n(.*?)^\}/m,1] or abort "rollback assertion missing"
 %w[completed_snapshot cancelling_snapshot running_snapshot run.started run.completed].each { |marker| abort "rollback #{marker} content assertion missing" unless rollback.include?(marker) }
 require_match(source, /elapsed_ms=.*now_epoch_ms.*start_epoch_ms/m, "elapsed measurement missing")
@@ -408,6 +411,16 @@ if ruby "$review_validator" "$relocated_guard" >"$test_root/relocated-guard.out"
   printf '%s\n' 'contract accepted a clean-tree guard relocated after run-root creation' >&2
   exit 1
 fi
+
+wrong_migration_query="$test_root/wrong-diagnostics-migration.sh"
+replace "$wrong_migration_query" "$script" 'max(version)::text FROM schema_migrations' 'min(version)::text FROM schema_migrations'
+if ruby "$review_validator" "$wrong_migration_query" >/dev/null 2>&1; then printf '%s\n' 'contract accepted the wrong migration-version query' >&2; exit 1; fi
+wrong_status_query="$test_root/wrong-diagnostics-status.sh"
+replace "$wrong_status_query" "$script" 'FROM runs GROUP BY status' 'FROM workflows GROUP BY status'
+if ruby "$review_validator" "$wrong_status_query" >/dev/null 2>&1; then printf '%s\n' 'contract accepted run status counts from the wrong table' >&2; exit 1; fi
+wrong_namespace_query="$test_root/wrong-diagnostics-namespace.sh"
+replace "$wrong_namespace_query" "$script" "table_schema='public'" "table_schema='private' OR table_schema='public-never'"
+if ruby "$review_validator" "$wrong_namespace_query" >/dev/null 2>&1; then printf '%s\n' 'contract accepted a non-public table namespace query' >&2; exit 1; fi
 
 clean_tree_fixture="$test_root/clean-tree-fixture"
 clean_tree_bin="$test_root/clean-tree-bin"
@@ -494,7 +507,7 @@ chmod +x "$fake_bin/docker"
 set +e
 PATH="$fake_bin:$PATH" TMPDIR="$test_root/fake-tmp" FAKE_DOCKER_LOG="$fake_log" FAKE_UP_MARKER="$up_marker" FAKE_DOWN_MARKER="$down_marker" FAKE_RUN_ROOT_RECORD="$run_root_record" \
   RUN_PAYLOAD_ENCRYPTION_KEY=contract-test-key V04_UPGRADE_ROLLBACK_API_PORT=41001 V04_UPGRADE_ROLLBACK_DB_PORT=41002 \
-  V04_UPGRADE_ROLLBACK_ARTIFACT_DIR="$test_root/fake-artifacts" sh "$script" >"$test_root/fake-up.out" 2>&1
+  V04_UPGRADE_ROLLBACK_ARTIFACT_DIR="$test_root/fake-artifacts" sh "$clean_tree_fixture/scripts/test-v05-upgrade-rollback-e2e.sh" >"$test_root/fake-up.out" 2>&1
 fake_status=$?
 set -e
 [ "$fake_status" -ne 0 ]
@@ -617,7 +630,8 @@ cat >"$test_root/diagnostics-harness.sh" <<SH
 #!/bin/sh
 set -eu
 $(cat "$diagnostics_functions")
-db_port=41002; compose_attempted=1; diagnostics_log="$test_root/collected-diagnostics.log"; diagnostics_calls="$test_root/diagnostics-calls.log"
+db_port=41002; compose_attempted=1; run_root="$test_root/diagnostics-run-root"; mkdir "\$run_root"; diagnostics_log="$test_root/collected-diagnostics.log"; diagnostics_calls="$test_root/diagnostics-calls.log"
+run_cleanup_bounded() { shift 2; "\$@"; }
 postgres_cleanup_exec() {
   printf '%s\n' "\$*" >>"\$diagnostics_calls"
   case "\$*" in
@@ -635,6 +649,8 @@ grep -F 'tables=run_events,runs,schema_migrations' "\$diagnostics_log" >/dev/nul
 grep -F 'schema_migrations' "\$diagnostics_calls" >/dev/null
 grep -F 'GROUP BY status' "\$diagnostics_calls" >/dev/null
 grep -F 'information_schema.tables' "\$diagnostics_calls" >/dev/null
+[ "\$(grep -c '/upgrade_source?' "\$diagnostics_calls")" -eq 2 ]
+[ "\$(grep -c '/rollback_target?' "\$diagnostics_calls")" -eq 1 ]
 ! grep -E 'payload|secret|ciphertext|password|postgres(ql)?://' "\$diagnostics_log" >/dev/null
 compose_attempted=0; diagnostics_log="$test_root/unavailable-diagnostics.log"; : >"\$diagnostics_calls"; collect_database_diagnostics 9999999999999
 [ "\$(grep -c '^status=unavailable_or_error$' "\$diagnostics_log")" -eq 3 ]

@@ -248,8 +248,10 @@ capture_failure_artifacts() {
   run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io rm -f "$artifact_dir/runtime.log" "$artifact_dir/postgres.log" "$artifact_dir/restore-list.log" "$artifact_dir/database-diagnostics.log" "$artifact_dir/summary.log" "$artifact_dir/withheld.log" "$artifact_dir/failure-summary.json" || true
   run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$summary_log" "$artifact_dir/failure-summary.json" || return 0
   if [ "$failure_artifact_unsafe" -eq 1 ]; then printf '%s\n' 'failure logs withheld after sensitive-data scan' >"$artifact_dir/withheld.log"; return 0; fi
-  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io sh -c 'cat "$1" "$2" "$3" >"$4"' sh "$legacy_log" "$current_api_log" "$worker_log" "$artifact_dir/runtime.log" || return 0
-  run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$postgres_log" "$artifact_dir/postgres.log" || true
+  for failure_runtime_log in "$legacy_log" "$current_api_log" "$worker_log"; do
+    [ ! -f "$failure_runtime_log" ] || run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io sh -c 'cat "$1" >>"$2"' sh "$failure_runtime_log" "$artifact_dir/runtime.log" || true
+  done
+  [ ! -f "$postgres_log" ] || run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$postgres_log" "$artifact_dir/postgres.log" || true
   [ ! -s "$restore_list" ] || run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$restore_list" "$artifact_dir/restore-list.log" || true
   [ ! -s "$diagnostics_log" ] || run_cleanup_bounded "$failure_artifact_deadline_ms" artifact_io cp "$diagnostics_log" "$artifact_dir/database-diagnostics.log" || true
 }
