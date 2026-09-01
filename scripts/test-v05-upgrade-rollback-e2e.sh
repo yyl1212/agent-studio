@@ -1,6 +1,20 @@
 #!/bin/sh
 set -eu
 
+UPGRADE_ROLLBACK_DEADLINE_SECONDS=${UPGRADE_ROLLBACK_DEADLINE_SECONDS:-570}
+case "$UPGRADE_ROLLBACK_DEADLINE_SECONDS" in ''|*[!0-9]*) printf '%s\n' 'UPGRADE_ROLLBACK_DEADLINE_SECONDS must be between 60 and 570' >&2; exit 2;; esac
+[ "$UPGRADE_ROLLBACK_DEADLINE_SECONDS" -ge 60 ] && [ "$UPGRADE_ROLLBACK_DEADLINE_SECONDS" -le 570 ] || {
+  printf '%s\n' 'UPGRADE_ROLLBACK_DEADLINE_SECONDS must be between 60 and 570' >&2; exit 2;
+}
+now_epoch_ms() { ruby -e 'puts (Time.now.to_f*1000).to_i'; }
+start_epoch_ms=$(now_epoch_ms)
+deadline_epoch_ms=$((start_epoch_ms + UPGRADE_ROLLBACK_DEADLINE_SECONDS * 1000))
+curl_binary=$(command -v curl 2>/dev/null || true)
+go_binary=$(command -v go 2>/dev/null || true)
+git_binary=$(command -v git 2>/dev/null || true)
+grep_binary=$(command -v grep 2>/dev/null || true)
+tar_binary=$(command -v tar 2>/dev/null || true)
+
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$repo_root"
 
@@ -17,8 +31,9 @@ old_commit=
 dump_sha=
 current_run_id=
 current_request_key=
-phase=initializing
-compose_started=0
+current_phase=initializing
+last_safe_command_label=initializing
+compose_attempted=0
 
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-v04-upgrade-rollback.XXXXXX")
 chmod 700 "$run_root"
@@ -28,10 +43,14 @@ restore_list="$run_root/restore-list.log"
 legacy_log="$run_root/legacy-api.log"
 current_api_log="$run_root/current-api.log"
 worker_log="$run_root/current-worker.log"
+postgres_log="$run_root/postgres.log"
+summary_log="$run_root/failure-summary.json"
+completed_snapshot="$run_root/completed.snapshot"
+cancelling_snapshot="$run_root/cancelling.snapshot"
+running_snapshot="$run_root/running.snapshot"
 legacy_api="$run_root/agent-studio-api-v040"
 current_api="$run_root/agent-studio-api-current"
 current_worker="$run_root/agent-studio-worker-current"
-deadline_epoch=$(( $(date +%s) + 570 ))
 
 artifact_dir_value=${V04_UPGRADE_ROLLBACK_ARTIFACT_DIR:-artifacts/v04-upgrade-rollback}
 case "$artifact_dir_value" in
@@ -41,18 +60,35 @@ esac
 
 COMPOSE_PROJECT_NAME="agent_studio_v04_upgrade_rollback_$$"
 export COMPOSE_PROJECT_NAME
+compose_project_id=${COMPOSE_PROJECT_NAME##*_}
 
-before_deadline() {
-  [ "$(date +%s)" -lt "$deadline_epoch" ]
+remaining_budget_ms() { budget_target_ms=${1:-$deadline_epoch_ms}; budget_remaining_ms=$((budget_target_ms - $(now_epoch_ms))); [ "$budget_remaining_ms" -gt 0 ] || return 124; printf '%s\n' "$budget_remaining_ms"; }
+before_deadline() { remaining_budget_ms >/dev/null; }
+wait_bounded() { wait_bounded_pid=$1; if wait "$wait_bounded_pid"; then return 0; else wait_bounded_status=$?; return "$wait_bounded_status"; fi; }
+set_safe_command_label() { safe_command_label_candidate=$1; case "$safe_command_label_candidate" in initializing|compose_version|compose_config|compose_up|compose_logs|compose_down|postgres_client|http_request|legacy_build|current_build|repo_read|archive_extract|log_probe|port_probe|process_identity|artifact_io) last_safe_command_label=$safe_command_label_candidate;; *) return 2;; esac; }
+run_bounded_until() {
+  bounded_deadline_ms=$1; bounded_command_label=$2; shift 2
+  set_safe_command_label "$bounded_command_label" || return 2
+  bounded_command_budget_ms=$(remaining_budget_ms "$bounded_deadline_ms") || return 124
+  ruby -e 'budget=ARGV.shift.to_i; child=nil; stop=lambda{|sig| begin Process.kill(sig,-child) if child rescue Errno::ESRCH end}; child=Process.spawn(*ARGV,pgroup:true); %w[HUP INT TERM].each{|sig| Signal.trap(sig){stop.call("TERM"); sleep 0.1; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 143}}; deadline=Process.clock_gettime(Process::CLOCK_MONOTONIC)+budget/1000.0; loop do; waited=Process.waitpid(child,Process::WNOHANG); exit($?.exitstatus || 128+$?.termsig) if waited; if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline; stop.call("TERM"); grace=Process.clock_gettime(Process::CLOCK_MONOTONIC)+1; loop do; waited=Process.waitpid(child,Process::WNOHANG); exit 124 if waited; break if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=grace; sleep 0.05; end; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 124; end; sleep 0.05; end' "$bounded_command_budget_ms" "$@" <&0 &
+  bounded_supervisor_pid=$!
+  wait_bounded "$bounded_supervisor_pid"
 }
+run_bounded() { bounded_label=$1; shift; run_bounded_until "$deadline_epoch_ms" "$bounded_label" "$@"; }
+run_cleanup_bounded() { cleanup_label=$1; shift; run_bounded_until "$cleanup_deadline_ms" "$cleanup_label" "$@"; }
+curl() { run_bounded http_request "$curl_binary" "$@"; }
+go() { [ "$current_phase" = 02_legacy_build ] && go_build_label=legacy_build || go_build_label=current_build; run_bounded "$go_build_label" env CGO_ENABLED="${CGO_ENABLED:-}" "$go_binary" "$@"; }
+git() { run_bounded repo_read "$git_binary" "$@"; }
+grep() { run_bounded log_probe "$grep_binary" "$@"; }
+tar() { run_bounded archive_extract "$tar_binary" "$@"; }
 
 postgres_exec() {
-  docker compose -f "$compose_file" exec -T db "$@"
+  run_bounded postgres_client docker compose -f "$compose_file" exec -T db "$@"
 }
 
 database_name() {
-  role=$1
-  case "$role" in
+  database_role=$1
+  case "$database_role" in
     upgrade_source) printf '%s\n' upgrade_source ;;
     rollback_target) printf '%s\n' rollback_target ;;
     *) return 2 ;;
@@ -60,60 +96,75 @@ database_name() {
 }
 
 database_url() {
-  role=$1
-  name=$(database_name "$role")
-  printf 'postgres://agent:agent@127.0.0.1:%s/%s?sslmode=disable\n' "$db_port" "$name"
+  database_url_role=$1
+  database_url_name=$(database_name "$database_url_role")
+  printf 'postgres://agent:agent@127.0.0.1:%s/%s?sslmode=disable\n' "$db_port" "$database_url_name"
 }
 
 start_process() {
-  binary=$1
-  "$binary" >>"$process_log" 2>&1 &
+  process_binary=$1
+  "$process_binary" >>"$process_log" 2>&1 &
   started_pid=$!
 }
 
 stop_process() {
-  pid=$1
-  [ -n "$pid" ] || return 0
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" 2>/dev/null || true
-    stop_deadline=$(( $(date +%s) + 10 ))
-    while kill -0 "$pid" 2>/dev/null && [ "$(date +%s)" -lt "$stop_deadline" ] && before_deadline; do
+  stop_pid=$1
+  [ -n "$stop_pid" ] || return 0
+  if kill -0 "$stop_pid" 2>/dev/null; then
+    kill "$stop_pid" 2>/dev/null || true
+    stop_deadline_epoch=$(( $(date +%s) + 10 ))
+    while kill -0 "$stop_pid" 2>/dev/null && [ "$(date +%s)" -lt "$stop_deadline_epoch" ] && before_deadline; do
       sleep 1
     done
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
+    if kill -0 "$stop_pid" 2>/dev/null; then
+      kill -KILL "$stop_pid" 2>/dev/null || true
     fi
   fi
-  wait "$pid" 2>/dev/null || true
+  wait "$stop_pid" 2>/dev/null || true
 }
 
 wait_ready() {
-  target=$1
-  attempts=0
-  while [ "$attempts" -lt 60 ] && before_deadline; do
-    case "$target" in
+  ready_target=$1
+  ready_pid=$2
+  ready_attempts=0
+  while [ "$ready_attempts" -lt 60 ] && before_deadline; do
+    [ -z "$ready_pid" ] || kill -0 "$ready_pid" 2>/dev/null || return 1
+    case "$ready_target" in
       http://*)
-        curl --connect-timeout 1 --max-time 2 -fsS "$target" >/dev/null 2>&1 && return 0
+        curl --connect-timeout 1 --max-time 2 -fsS "$ready_target" >/dev/null 2>&1 && { [ -z "$ready_pid" ] || kill -0 "$ready_pid" 2>/dev/null; } && return 0
         ;;
       log:*)
-        grep -F '"msg":"worker ready"' "${target#log:}" >/dev/null 2>&1 && return 0
+        grep -F '"msg":"worker ready"' "${ready_target#log:}" >/dev/null 2>&1 && { [ -z "$ready_pid" ] || kill -0 "$ready_pid" 2>/dev/null; } && return 0
         ;;
       db:*)
         postgres_exec pg_isready -q -U agent -d postgres -p "$db_port" && return 0
         ;;
       *) return 2 ;;
     esac
-    attempts=$((attempts + 1))
+    ready_attempts=$((ready_attempts + 1))
     sleep 1
   done
   return 1
 }
 
+assert_port_unused() {
+  port_probe_port=$1
+  if run_bounded port_probe ruby -rsocket -e 'begin; socket=TCPSocket.new("127.0.0.1",ARGV.fetch(0).to_i); socket.close; exit 0; rescue Errno::ECONNREFUSED,Errno::EHOSTUNREACH; exit 1; end' "$port_probe_port"; then return 1; else port_probe_status=$?; [ "$port_probe_status" -eq 1 ]; fi
+}
+
+assert_process_identity() {
+  process_identity_pid=$1
+  process_identity_binary=$2
+  kill -0 "$process_identity_pid" 2>/dev/null
+  process_identity_command=$(run_bounded process_identity ps -p "$process_identity_pid" -o command=)
+  case "$process_identity_command" in *"$process_identity_binary"*) return 0;; *) return 1;; esac
+}
+
 assert_eq() {
-  actual=$1
-  expected=$2
-  label=$3
-  [ "$actual" = "$expected" ] || return 1
+  assert_actual=$1
+  assert_expected=$2
+  assert_label=$3
+  [ "$assert_actual" = "$assert_expected" ] || return 1
 }
 
 sha256_file() {
@@ -124,43 +175,52 @@ sha256_file() {
   fi
 }
 
+sensitive_literals() {
+  printf '%s\n' "$RUN_PAYLOAD_ENCRYPTION_KEY" "$current_request_key" legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker
+}
+
+contains_sensitive_data() {
+  sensitive_scan_file=$1
+  sensitive_literals | ruby -e 'data=File.binread(ARGV.fetch(0)); literals=STDIN.each_line(chomp:true).reject(&:empty?); exit 0 if literals.any?{|value| data.include?(value)} || data.match?(/postgres(?:ql)?:\/\/|authorization|ciphertext|password/i); exit 1' "$sensitive_scan_file"
+}
+
+collect_postgres_logs() {
+  run_cleanup_bounded compose_logs docker compose -f "$compose_file" logs --no-color db >"$postgres_log" 2>&1 || printf '%s\n' 'PostgreSQL log collection failed' >"$postgres_log"
+}
+
 capture_failure_artifacts() {
-  mkdir -p "$artifact_dir"
-  ruby -rfileutils -e '%w[runtime.log summary.log restore-list.log].each { |name| path=File.join(ARGV.fetch(0),name); File.delete(path) if File.file?(path) }' "$artifact_dir"
-  {
-    printf 'phase=%s\n' "$phase"
-    [ -z "$old_commit" ] || printf 'old_commit=%s\n' "$old_commit"
-    [ -z "$dump_sha" ] || printf 'dump_sha256=%s\n' "$dump_sha"
-  } >"$artifact_dir/summary.log"
-  ruby -e '
-    output=ARGV.shift
-    forbidden=[ENV.fetch("RUN_PAYLOAD_ENCRYPTION_KEY", ""), "legacy-public-fixture", "current-smoke-private", ENV.fetch("CURRENT_REQUEST_KEY", "")].reject(&:empty?)
-    data=ARGV.map { |path| File.file?(path) ? File.binread(path) : nil }.compact.join
-    unsafe=forbidden.any? { |value| data.include?(value) } || data.match?(/postgres(?:ql)?:\/\//i) || data.match?(/authorization|ciphertext|password/i)
-    File.binwrite(output, unsafe ? "runtime log withheld after sensitive-data scan\n" : data)
-  ' "$artifact_dir/runtime.log" "$legacy_log" "$current_api_log" "$worker_log"
-  if [ -s "$restore_list" ]; then
-    cp "$restore_list" "$artifact_dir/restore-list.log"
-  fi
+  failure_artifact_status=$1
+  run_cleanup_bounded artifact_io mkdir -p "$artifact_dir" || return 0
+  failure_artifact_unsafe=0
+  for failure_artifact_candidate in "$legacy_log" "$current_api_log" "$worker_log" "$postgres_log" "$restore_list"; do [ ! -f "$failure_artifact_candidate" ] || contains_sensitive_data "$failure_artifact_candidate" && failure_artifact_unsafe=1; done
+  failure_artifact_elapsed_ms=$(( $(now_epoch_ms) - start_epoch_ms ))
+  run_cleanup_bounded artifact_io jq -n --arg phase "$current_phase" --argjson exitCode "$failure_artifact_status" --argjson elapsedMs "$failure_artifact_elapsed_ms" --arg peeled "$old_commit" --arg dump "$dump_sha" --argjson logsWithheld "$([ "$failure_artifact_unsafe" -eq 1 ] && printf true || printf false)" --arg project "$compose_project_id" '{phase:$phase,exitCode:$exitCode,elapsedMs:$elapsedMs,logsWithheld:$logsWithheld,composeProjectId:$project}+(if $peeled=="" then {} else {peeledCommit:$peeled} end)+(if $dump=="" then {} else {dumpSha256:$dump} end)' >"$summary_log"
+  contains_sensitive_data "$summary_log" && return 1
+  run_cleanup_bounded artifact_io rm -f "$artifact_dir/runtime.log" "$artifact_dir/postgres.log" "$artifact_dir/restore-list.log" "$artifact_dir/summary.log" "$artifact_dir/withheld.log" "$artifact_dir/failure-summary.json" || true
+  run_cleanup_bounded artifact_io cp "$summary_log" "$artifact_dir/failure-summary.json" || return 0
+  if [ "$failure_artifact_unsafe" -eq 1 ]; then printf '%s\n' 'failure logs withheld after sensitive-data scan' >"$artifact_dir/withheld.log"; return 0; fi
+  run_cleanup_bounded artifact_io sh -c 'cat "$1" "$2" "$3" >"$4"' sh "$legacy_log" "$current_api_log" "$worker_log" "$artifact_dir/runtime.log" || return 0
+  run_cleanup_bounded artifact_io cp "$postgres_log" "$artifact_dir/postgres.log" || true
+  [ ! -s "$restore_list" ] || run_cleanup_bounded artifact_io cp "$restore_list" "$artifact_dir/restore-list.log" || true
 }
 
 cleanup() {
-  status=$1
+  cleanup_status=$1
   trap - EXIT HUP INT TERM
   set +e
+  cleanup_deadline_ms=$(( $(now_epoch_ms) + 20000 )); cleanup_total_deadline_ms=$((start_epoch_ms + 590000)); [ "$cleanup_deadline_ms" -le "$cleanup_total_deadline_ms" ] || cleanup_deadline_ms=$cleanup_total_deadline_ms
   [ -z "$current_worker_pid" ] || stop_process "$current_worker_pid"
   [ -z "$current_api_pid" ] || stop_process "$current_api_pid"
   [ -z "$legacy_api_pid" ] || stop_process "$legacy_api_pid"
-  if [ "$status" -ne 0 ]; then
-    CURRENT_REQUEST_KEY=$current_request_key
-    export CURRENT_REQUEST_KEY
-    capture_failure_artifacts
+  [ "$compose_attempted" -eq 0 ] || collect_postgres_logs
+  if [ "$cleanup_status" -ne 0 ]; then
+    capture_failure_artifacts "$cleanup_status"
   fi
-  if [ "$compose_started" -eq 1 ]; then
-    docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
+  if [ "$compose_attempted" -eq 1 ]; then
+    run_cleanup_bounded compose_down docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
   fi
-  rm -rf "$run_root"
-  exit "$status"
+  run_cleanup_bounded artifact_io rm -rf "$run_root" >/dev/null 2>&1 || true
+  exit "$cleanup_status"
 }
 
 trap 'cleanup $?' EXIT
@@ -185,30 +245,32 @@ build_legacy_api() {
 }
 
 create_database() {
-  role=$1
-  name=$(database_name "$role")
-  postgres_exec psql -U agent -p "$db_port" --dbname=postgres -X -v ON_ERROR_STOP=1 -c "CREATE DATABASE $name" >/dev/null
-  actual_tables=$(postgres_exec psql --dbname="$(database_url "$role")" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname='public'")
-  assert_eq "$actual_tables" 0 empty_database
+  create_database_role=$1
+  create_database_name=$(database_name "$create_database_role")
+  postgres_exec psql -U agent -p "$db_port" --dbname=postgres -X -v ON_ERROR_STOP=1 -c "CREATE DATABASE $create_database_name" >/dev/null
+  create_database_table_count=$(postgres_exec psql --dbname="$(database_url "$create_database_role")" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname='public'")
+  assert_eq "$create_database_table_count" 0 empty_database
 }
 
 start_legacy_api() {
-  role=$1
-  url=$(database_url "$role")
+  legacy_start_role=$1
+  legacy_start_url=$(database_url "$legacy_start_role")
+  assert_port_unused "$api_port"
   process_log=$legacy_log
   HTTP_ADDR="127.0.0.1:$api_port"
   MODEL_PROVIDER=mock
   export HTTP_ADDR MODEL_PROVIDER
-  DATABASE_URL="$url" start_process "$legacy_api"
+  DATABASE_URL="$legacy_start_url" start_process "$legacy_api"
   legacy_api_pid=$started_pid
-  wait_ready "$base_url/readyz"
+  wait_ready "$base_url/readyz" "$legacy_api_pid"
+  assert_process_identity "$legacy_api_pid" "$legacy_api"
 }
 
 assert_schema() {
-  role=$1
-  expected=$2
-  actual=$(postgres_exec psql --dbname="$(database_url "$role")" -X -v ON_ERROR_STOP=1 -Atc 'SELECT max(version) FROM schema_migrations')
-  assert_eq "$actual" "$expected" schema_version
+  schema_role=$1
+  schema_expected=$2
+  schema_actual=$(postgres_exec psql --dbname="$(database_url "$schema_role")" -X -v ON_ERROR_STOP=1 -Atc 'SELECT max(version) FROM schema_migrations')
+  assert_eq "$schema_actual" "$schema_expected" schema_version
 }
 
 seed_legacy_runs() {
@@ -239,21 +301,21 @@ UPDATE workflows
 SET published_version_id='50000000-0000-4000-8000-000000000002'
 WHERE id='50000000-0000-4000-8000-000000000001';
 INSERT INTO runs (id,workflow_id,workflow_version_id,mode,status,input,output,started_at,ended_at,cancel_requested_at,heartbeat_at)
-VALUES ('50000000-0000-4000-8000-000000000003','50000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000002','published','completed','{"value":"legacy-public-fixture"}'::jsonb,'{"result":"legacy-completed"}'::jsonb,clock_timestamp()-interval '3 minutes',clock_timestamp()-interval '2 minutes',NULL,NULL);
+VALUES ('50000000-0000-4000-8000-000000000003','50000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000002','published','completed','{"value":"legacy-public-fixture"}'::jsonb,'{"result":"legacy-completed"}'::jsonb,'2026-01-02T03:04:05Z','2026-01-02T03:05:05Z',NULL,NULL);
 INSERT INTO runs (id,workflow_id,draft_revision,graph_snapshot,mode,status,input,started_at,cancel_requested_at,heartbeat_at)
 SELECT fixture.id,w.id,1,w.draft_graph,'test',fixture.status,fixture.input,fixture.started_at,fixture.cancel_requested_at,clock_timestamp()
 FROM workflows w
 CROSS JOIN (VALUES
-  ('50000000-0000-4000-8000-000000000004'::uuid,'running','{"value":"legacy-running"}'::jsonb,clock_timestamp()-interval '2 minutes',NULL::timestamptz),
-  ('50000000-0000-4000-8000-000000000005'::uuid,'cancelling','{"value":"legacy-cancelling"}'::jsonb,clock_timestamp()-interval '1 minute',clock_timestamp())
+  ('50000000-0000-4000-8000-000000000004'::uuid,'running','{"value":"legacy-running"}'::jsonb,'2026-01-02T03:06:05Z'::timestamptz,NULL::timestamptz),
+  ('50000000-0000-4000-8000-000000000005'::uuid,'cancelling','{"value":"legacy-cancelling"}'::jsonb,'2026-01-02T03:07:05Z'::timestamptz,'2026-01-02T03:08:05Z'::timestamptz)
 ) AS fixture(id,status,input,started_at,cancel_requested_at)
 WHERE w.id='50000000-0000-4000-8000-000000000001';
 INSERT INTO run_events (run_id,sequence,type,status,input,output,data_bytes,timestamp)
 VALUES
-  ('50000000-0000-4000-8000-000000000003',1,'run.started','running','{}'::jsonb,NULL,0,clock_timestamp()-interval '3 minutes'),
-  ('50000000-0000-4000-8000-000000000003',2,'run.completed','completed',NULL,'{}'::jsonb,0,clock_timestamp()-interval '2 minutes'),
-  ('50000000-0000-4000-8000-000000000004',1,'run.started','running','{}'::jsonb,NULL,0,clock_timestamp()-interval '2 minutes'),
-  ('50000000-0000-4000-8000-000000000005',1,'run.started','running','{}'::jsonb,NULL,0,clock_timestamp()-interval '1 minute');
+  ('50000000-0000-4000-8000-000000000003',1,'run.started','running','{}'::jsonb,NULL,0,'2026-01-02T03:04:05Z'),
+  ('50000000-0000-4000-8000-000000000003',2,'run.completed','completed',NULL,'{}'::jsonb,0,'2026-01-02T03:05:05Z'),
+  ('50000000-0000-4000-8000-000000000004',1,'run.started','running','{}'::jsonb,NULL,0,'2026-01-02T03:06:05Z'),
+  ('50000000-0000-4000-8000-000000000005',1,'run.started','running','{}'::jsonb,NULL,0,'2026-01-02T03:07:05Z');
 COMMIT;
 SQL
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/readyz" >/dev/null
@@ -261,6 +323,18 @@ SQL
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$completed_run_id" | jq -e '.run.status == "completed"' >/dev/null
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$running_run_id" | jq -e '.run.status == "running"' >/dev/null
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$cancelling_run_id" | jq -e '.run.status == "cancelling" and .run.cancelRequestedAt != null' >/dev/null
+  capture_legacy_snapshot upgrade_source
+}
+
+capture_legacy_snapshot() {
+  snapshot_role=$1
+  snapshot_url=$(database_url "$snapshot_role")
+  postgres_exec psql --dbname="$snapshot_url" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT r.status,r.input->>'value',r.output->>'result',to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),to_char(r.ended_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=r.id) FROM runs r WHERE r.id='$completed_run_id'" >"$completed_snapshot"
+  postgres_exec psql --dbname="$snapshot_url" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT r.status,r.input->>'value',to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),to_char(r.cancel_requested_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=r.id) FROM runs r WHERE r.id='$cancelling_run_id'" >"$cancelling_snapshot"
+  postgres_exec psql --dbname="$snapshot_url" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT r.status,r.input->>'value',to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=r.id) FROM runs r WHERE r.id='$running_run_id'" >"$running_snapshot"
+  IFS= read -r snapshot_completed_before <"$completed_snapshot"; assert_eq "$snapshot_completed_before" 'completed|legacy-public-fixture|legacy-completed|2026-01-02T03:04:05Z|2026-01-02T03:05:05Z|run.started,run.completed' legacy_completed_snapshot
+  IFS= read -r snapshot_cancelling_before <"$cancelling_snapshot"; assert_eq "$snapshot_cancelling_before" 'cancelling|legacy-cancelling|2026-01-02T03:07:05Z|2026-01-02T03:08:05Z|run.started' legacy_cancelling_snapshot
+  IFS= read -r snapshot_running_before <"$running_snapshot"; assert_eq "$snapshot_running_before" 'running|legacy-running|2026-01-02T03:06:05Z|run.started' legacy_running_snapshot
 }
 
 stop_legacy_api() {
@@ -269,9 +343,9 @@ stop_legacy_api() {
 }
 
 dump_database() {
-  role=$1
-  [ "$role" = upgrade_source ]
-  postgres_exec pg_dump --format=custom --no-owner --no-privileges --dbname="$(database_url "$role")" >"$dump_file"
+  dump_role=$1
+  [ "$dump_role" = upgrade_source ]
+  postgres_exec pg_dump --format=custom --no-owner --no-privileges --dbname="$(database_url "$dump_role")" >"$dump_file"
   [ -s "$dump_file" ]
   postgres_exec pg_restore --list <"$dump_file" >"$restore_list"
   [ -s "$restore_list" ]
@@ -280,113 +354,132 @@ dump_database() {
 }
 
 start_current_api() {
-  role=$1
-  url=$(database_url "$role")
+  current_api_start_role=$1
+  current_api_start_url=$(database_url "$current_api_start_role")
+  assert_port_unused "$api_port"
   process_log=$current_api_log
   HTTP_ADDR="127.0.0.1:$api_port"
   MODEL_PROVIDER=mock
   export HTTP_ADDR MODEL_PROVIDER
-  DATABASE_URL="$url" start_process "$current_api"
+  DATABASE_URL="$current_api_start_url" start_process "$current_api"
   current_api_pid=$started_pid
-  wait_ready "$base_url/readyz"
+  wait_ready "$base_url/readyz" "$current_api_pid"
+  assert_process_identity "$current_api_pid" "$current_api"
 }
 
 assert_legacy_transition() {
-  status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$running_run_id'")
-  reason=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT recovery_reason FROM runs WHERE id='$running_run_id'")
-  cancelling=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$cancelling_run_id'")
-  cancelling_requested=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT cancel_requested_at IS NOT NULL FROM runs WHERE id='$cancelling_run_id'")
-  completed=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$completed_run_id'")
-  completed_terminal=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$completed_run_id' AND type='run.completed'")
-  legacy_protocol=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT execution_protocol FROM runs WHERE id='$running_run_id'")
-  legacy_lease=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT lease_owner IS NULL FROM runs WHERE id='$running_run_id'")
-  payload_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_payloads WHERE run_id IN ('$completed_run_id','$running_run_id','$cancelling_run_id')")
-  public_input=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT input->>'value' FROM runs WHERE id='$completed_run_id'")
-  assert_eq "$status" recovery_required legacy_status
-  assert_eq "$reason" legacy_active_run legacy_reason
-  assert_eq "$cancelling" cancelling cancelling_status
-  assert_eq "$cancelling_requested" t cancelling_intent
-  assert_eq "$completed" completed completed_status
-  assert_eq "$completed_terminal" 1 completed_terminal_event
-  assert_eq "$legacy_protocol" 0 legacy_protocol
-  assert_eq "$legacy_lease" t legacy_lease
-  assert_eq "$payload_count" 0 legacy_payloads
-  assert_eq "$public_input" legacy-public-fixture legacy_public_input
+  transition_status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$running_run_id'")
+  transition_reason=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT recovery_reason FROM runs WHERE id='$running_run_id'")
+  transition_cancelling=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$cancelling_run_id'")
+  transition_cancelling_requested=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT cancel_requested_at IS NOT NULL FROM runs WHERE id='$cancelling_run_id'")
+  transition_completed=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$completed_run_id'")
+  transition_completed_terminal=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$completed_run_id' AND type='run.completed'")
+  transition_legacy_protocol=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT execution_protocol FROM runs WHERE id='$running_run_id'")
+  transition_legacy_lease=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT lease_owner IS NULL FROM runs WHERE id='$running_run_id'")
+  transition_payload_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_payloads WHERE run_id IN ('$completed_run_id','$running_run_id','$cancelling_run_id')")
+  transition_public_input=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT input->>'value' FROM runs WHERE id='$completed_run_id'")
+  transition_completed_after=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT r.status,r.input->>'value',r.output->>'result',to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),to_char(r.ended_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=r.id) FROM runs r WHERE r.id='$completed_run_id'")
+  transition_cancelling_after=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT r.status,r.input->>'value',to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),to_char(r.cancel_requested_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=r.id) FROM runs r WHERE r.id='$cancelling_run_id'")
+  transition_running_content=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT input->>'value',to_char(started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=runs.id) FROM runs WHERE id='$running_run_id'")
+  IFS= read -r transition_completed_before <"$completed_snapshot"; IFS= read -r transition_cancelling_before <"$cancelling_snapshot"
+  assert_eq "$transition_status" recovery_required legacy_status
+  assert_eq "$transition_reason" legacy_active_run legacy_reason
+  assert_eq "$transition_cancelling" cancelling cancelling_status
+  assert_eq "$transition_cancelling_requested" t cancelling_intent
+  assert_eq "$transition_completed" completed completed_status
+  assert_eq "$transition_completed_terminal" 1 completed_terminal_event
+  assert_eq "$transition_legacy_protocol" 0 legacy_protocol
+  assert_eq "$transition_legacy_lease" t legacy_lease
+  assert_eq "$transition_payload_count" 0 legacy_payloads
+  assert_eq "$transition_public_input" legacy-public-fixture legacy_public_input
+  assert_eq "$transition_completed_after" "$transition_completed_before" completed_snapshot_unchanged
+  assert_eq "$transition_completed_after" 'completed|legacy-public-fixture|legacy-completed|2026-01-02T03:04:05Z|2026-01-02T03:05:05Z|run.started,run.completed' completed_snapshot_exact
+  assert_eq "$transition_cancelling_after" "$transition_cancelling_before" cancelling_snapshot_unchanged
+  assert_eq "$transition_running_content" 'legacy-running|2026-01-02T03:06:05Z|run.started' running_snapshot_content
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$completed_run_id" | jq -e '.run.input.value == "legacy-public-fixture" and .run.status == "completed"' >/dev/null
 }
 
 start_current_worker() {
-  role=$1
-  url=$(database_url "$role")
+  current_worker_start_role=$1
+  current_worker_start_url=$(database_url "$current_worker_start_role")
   process_log=$worker_log
   MODEL_PROVIDER=mock
   WORKER_CLAIM_INTERVAL=100ms
   WORKER_QUEUE_SAMPLE_INTERVAL=1s
   export MODEL_PROVIDER WORKER_CLAIM_INTERVAL WORKER_QUEUE_SAMPLE_INTERVAL
-  DATABASE_URL="$url" start_process "$current_worker"
+  DATABASE_URL="$current_worker_start_url" start_process "$current_worker"
   current_worker_pid=$started_pid
-  wait_ready "log:$worker_log"
+  wait_ready "log:$worker_log" "$current_worker_pid"
+  assert_process_identity "$current_worker_pid" "$current_worker"
 }
 
 assert_cancelling_cancelled() {
-  status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$cancelling_run_id'")
-  attempts=0
-  while [ "$status" != cancelled ] && [ "$attempts" -lt 60 ] && before_deadline; do
+  worker_assert_status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$cancelling_run_id'")
+  worker_assert_attempts=0
+  while [ "$worker_assert_status" != cancelled ] && [ "$worker_assert_attempts" -lt 60 ] && before_deadline; do
     sleep 1
-    status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$cancelling_run_id'")
-    attempts=$((attempts + 1))
+    worker_assert_status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$cancelling_run_id'")
+    worker_assert_attempts=$((worker_assert_attempts + 1))
   done
-  node_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM node_runs WHERE run_id='$cancelling_run_id'")
-  terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$cancelling_run_id' AND type IN ('run.completed','run.failed','run.cancelled')")
-  cancelled_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$cancelling_run_id' AND type='run.cancelled'")
-  running_status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$running_run_id'")
-  running_reason=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT recovery_reason FROM runs WHERE id='$running_run_id'")
-  running_lease=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT lease_owner IS NULL FROM runs WHERE id='$running_run_id'")
-  assert_eq "$status" cancelled cancelling_status
-  assert_eq "$node_count" 0 cancelling_node_runs
-  assert_eq "$terminal_count" 1 cancelling_terminal_events
-  assert_eq "$cancelled_count" 1 cancelling_cancelled_events
-  assert_eq "$running_status" recovery_required legacy_running_status
-  assert_eq "$running_reason" legacy_active_run legacy_running_reason
-  assert_eq "$running_lease" t legacy_running_lease
+  worker_assert_node_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM node_runs WHERE run_id='$cancelling_run_id'")
+  worker_assert_terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$cancelling_run_id' AND type IN ('run.completed','run.failed','run.cancelled')")
+  worker_assert_cancelled_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$cancelling_run_id' AND type='run.cancelled'")
+  worker_assert_running_status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT status FROM runs WHERE id='$running_run_id'")
+  worker_assert_running_reason=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT recovery_reason FROM runs WHERE id='$running_run_id'")
+  worker_assert_running_lease=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT lease_owner IS NULL FROM runs WHERE id='$running_run_id'")
+  worker_assert_lease_token=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT lease_token FROM runs WHERE id='$running_run_id'")
+  worker_assert_running_node_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM node_runs WHERE run_id='$running_run_id'")
+  worker_assert_running_event_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$running_run_id'")
+  worker_assert_running_terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$running_run_id' AND type<>'run.started'")
+  assert_eq "$worker_assert_status" cancelled cancelling_status
+  assert_eq "$worker_assert_node_count" 0 cancelling_node_runs
+  assert_eq "$worker_assert_terminal_count" 1 cancelling_terminal_events
+  assert_eq "$worker_assert_cancelled_count" 1 cancelling_cancelled_events
+  assert_eq "$worker_assert_running_status" recovery_required legacy_running_status
+  assert_eq "$worker_assert_running_reason" legacy_active_run legacy_running_reason
+  assert_eq "$worker_assert_running_lease" t legacy_running_lease
+  assert_eq "$worker_assert_lease_token" 0 legacy_running_lease_token
+  assert_eq "$worker_assert_running_node_count" 0 legacy_running_nodes
+  assert_eq "$worker_assert_running_event_count" 1 legacy_running_started_event
+  assert_eq "$worker_assert_running_terminal_count" 0 legacy_running_other_events
 }
 
 smoke_current_run() {
-  slug="v05-upgrade-smoke-$$"
-  created=$(jq -nc --arg slug "$slug" '{name:"v0.5 upgrade smoke",slug:$slug,description:"upgrade smoke"}' |
+  smoke_slug="v05-upgrade-smoke-$$"
+  smoke_created=$(jq -nc --arg slug "$smoke_slug" '{name:"v0.5 upgrade smoke",slug:$slug,description:"upgrade smoke"}' |
     curl --connect-timeout 1 --max-time 5 -fsS -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows")
-  smoke_workflow_id=$(printf '%s' "$created" | jq -er '.id')
-  revision=$(printf '%s' "$created" | jq -er '.draftRevision')
-  graph=$(jq -nc '{schemaVersion:1,nodes:[
+  smoke_workflow_id=$(printf '%s' "$smoke_created" | jq -er '.id')
+  smoke_revision=$(printf '%s' "$smoke_created" | jq -er '.draftRevision')
+  smoke_graph=$(jq -nc '{schemaVersion:1,nodes:[
     {id:"start",type:"start",typeVersion:"1",position:{x:0,y:0},config:{fields:[{key:"value",label:"Value",type:"text",required:true}]}},
     {id:"end",type:"end",typeVersion:"1",position:{x:300,y:0},config:{}}
   ],edges:[
     {id:"start-end",source:"start",sourcePort:"value",target:"end",targetPort:"result"}
   ]}')
-  saved=$(jq -nc --argjson revision "$revision" --argjson graph "$graph" '{draftRevision:$revision,graph:$graph}' |
+  smoke_saved=$(jq -nc --argjson revision "$smoke_revision" --argjson graph "$smoke_graph" '{draftRevision:$revision,graph:$graph}' |
     curl --connect-timeout 1 --max-time 5 -fsS -X PUT -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows/$smoke_workflow_id")
-  revision=$(printf '%s' "$saved" | jq -er '.draftRevision')
-  published=$(jq -nc --argjson revision "$revision" '{draftRevision:$revision}' |
+  smoke_revision=$(printf '%s' "$smoke_saved" | jq -er '.draftRevision')
+  smoke_published=$(jq -nc --argjson revision "$smoke_revision" '{draftRevision:$revision}' |
     curl --connect-timeout 1 --max-time 5 -fsS -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows/$smoke_workflow_id/publish")
-  smoke_version_id=$(printf '%s' "$published" | jq -er '.id')
+  smoke_version_id=$(printf '%s' "$smoke_published" | jq -er '.id')
   current_request_key=$(ruby -rsecurerandom -e 'puts SecureRandom.uuid')
-  response=$(jq -nc --arg version "$smoke_version_id" '{workflowVersionId:$version,input:{value:"current-smoke-private"}}' |
-    curl --connect-timeout 1 --max-time 5 -fsS -H 'Content-Type: application/json' -H 'Prefer: respond-async' -H "Idempotency-Key: $current_request_key" --data-binary @- "$base_url/api/agents/$slug/runs")
-  current_run_id=$(printf '%s' "$response" | jq -er '.runId')
-  run_status=$(curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$current_run_id" | jq -er '.run.status')
-  attempts=0
-  while [ "$run_status" != completed ] && [ "$attempts" -lt 60 ] && before_deadline; do
+  smoke_response=$(jq -nc --arg version "$smoke_version_id" '{workflowVersionId:$version,input:{value:"current-smoke-private"}}' |
+    curl --connect-timeout 1 --max-time 5 -fsS -H 'Content-Type: application/json' -H 'Prefer: respond-async' -H "Idempotency-Key: $current_request_key" --data-binary @- "$base_url/api/agents/$smoke_slug/runs")
+  current_run_id=$(printf '%s' "$smoke_response" | jq -er '.runId')
+  smoke_run_status=$(curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$current_run_id" | jq -er '.run.status')
+  smoke_attempts=0
+  while [ "$smoke_run_status" != completed ] && [ "$smoke_attempts" -lt 60 ] && before_deadline; do
     sleep 1
-    run_status=$(curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$current_run_id" | jq -er '.run.status')
-    attempts=$((attempts + 1))
+    smoke_run_status=$(curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$current_run_id" | jq -er '.run.status')
+    smoke_attempts=$((smoke_attempts + 1))
   done
-  terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$current_run_id' AND type IN ('run.completed','run.failed','run.cancelled')")
-  lease_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM runs WHERE id='$current_run_id' AND (lease_owner IS NOT NULL OR lease_expires_at IS NOT NULL)")
-  protocol=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT execution_protocol FROM runs WHERE id='$current_run_id'")
-  assert_eq "$run_status" completed current_run_status
-  assert_eq "$terminal_count" 1 current_terminal_events
-  assert_eq "$lease_count" 0 current_leases
-  assert_eq "$protocol" 1 current_protocol
+  smoke_terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM run_events WHERE run_id='$current_run_id' AND type IN ('run.completed','run.failed','run.cancelled')")
+  smoke_lease_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM runs WHERE id='$current_run_id' AND (lease_owner IS NOT NULL OR lease_expires_at IS NOT NULL)")
+  smoke_protocol=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -X -v ON_ERROR_STOP=1 -Atc "SELECT execution_protocol FROM runs WHERE id='$current_run_id'")
+  assert_eq "$smoke_run_status" completed current_run_status
+  assert_eq "$smoke_terminal_count" 1 current_terminal_events
+  assert_eq "$smoke_lease_count" 0 current_leases
+  assert_eq "$smoke_protocol" 1 current_protocol
   if grep -F "$RUN_PAYLOAD_ENCRYPTION_KEY" "$current_api_log" "$worker_log" >/dev/null 2>&1; then return 1; fi
   if grep -F 'current-smoke-private' "$current_api_log" "$worker_log" >/dev/null 2>&1; then return 1; fi
   if grep -F "$current_request_key" "$current_api_log" "$worker_log" >/dev/null 2>&1; then return 1; fi
@@ -400,60 +493,69 @@ stop_current_runtime() {
 }
 
 restore_database() {
-  role=$1
-  [ "$role" = rollback_target ]
-  postgres_exec pg_restore --exit-on-error --no-owner --no-privileges --dbname="$(database_url "$role")" <"$dump_file"
+  restore_role=$1
+  [ "$restore_role" = rollback_target ]
+  postgres_exec pg_restore --exit-on-error --no-owner --no-privileges --dbname="$(database_url "$restore_role")" <"$dump_file"
 }
 
 assert_rollback_records() {
-  schema=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc 'SELECT max(version) FROM schema_migrations')
-  payload_table=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc "SELECT to_regclass('public.run_payloads') IS NULL")
-  legacy_count=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM runs WHERE id IN ('$completed_run_id','$running_run_id','$cancelling_run_id')")
-  workflow_count=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM workflows WHERE id='$workflow_id' AND published_version_id='$workflow_version_id'")
-  current_count=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM runs WHERE id='$current_run_id'")
-  assert_eq "$schema" 6 rollback_schema
-  assert_eq "$payload_table" t no_run_payloads
-  assert_eq "$legacy_count" 3 rollback_records
-  assert_eq "$workflow_count" 1 rollback_workflow
-  assert_eq "$current_count" 0 rollback_current_run
+  rollback_schema=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc 'SELECT max(version) FROM schema_migrations')
+  rollback_payload_table=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc "SELECT to_regclass('public.run_payloads') IS NULL")
+  rollback_legacy_count=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM runs WHERE id IN ('$completed_run_id','$running_run_id','$cancelling_run_id')")
+  rollback_workflow_count=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM workflows WHERE id='$workflow_id' AND published_version_id='$workflow_version_id'")
+  rollback_current_count=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM runs WHERE id='$current_run_id'")
+  rollback_completed_after=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT r.status,r.input->>'value',r.output->>'result',to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),to_char(r.ended_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=r.id) FROM runs r WHERE r.id='$completed_run_id'")
+  rollback_cancelling_after=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT r.status,r.input->>'value',to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),to_char(r.cancel_requested_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=r.id) FROM runs r WHERE r.id='$cancelling_run_id'")
+  rollback_running_after=$(postgres_exec psql --dbname="$(database_url rollback_target)" -X -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT r.status,r.input->>'value',to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),(SELECT string_agg(e.type,',' ORDER BY e.sequence) FROM run_events e WHERE e.run_id=r.id) FROM runs r WHERE r.id='$running_run_id'")
+  IFS= read -r rollback_completed_before <"$completed_snapshot"; IFS= read -r rollback_cancelling_before <"$cancelling_snapshot"; IFS= read -r rollback_running_before <"$running_snapshot"
+  assert_eq "$rollback_schema" 6 rollback_schema
+  assert_eq "$rollback_payload_table" t no_run_payloads
+  assert_eq "$rollback_legacy_count" 3 rollback_records
+  assert_eq "$rollback_workflow_count" 1 rollback_workflow
+  assert_eq "$rollback_current_count" 0 rollback_current_run
+  assert_eq "$rollback_completed_after" "$rollback_completed_before" rollback_completed_snapshot
+  assert_eq "$rollback_cancelling_after" "$rollback_cancelling_before" rollback_cancelling_snapshot
+  assert_eq "$rollback_running_after" "$rollback_running_before" rollback_running_snapshot
+  assert_eq "$rollback_completed_after" 'completed|legacy-public-fixture|legacy-completed|2026-01-02T03:04:05Z|2026-01-02T03:05:05Z|run.started,run.completed' rollback_completed_exact
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/workflows/$workflow_id" | jq -e --arg id "$workflow_id" '.id == $id' >/dev/null
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$completed_run_id" | jq -e '.run.status == "completed"' >/dev/null
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$running_run_id" | jq -e '.run.status == "running"' >/dev/null
   curl --connect-timeout 1 --max-time 3 -fsS "$base_url/api/runs/$cancelling_run_id" | jq -e '.run.status == "cancelling"' >/dev/null
-  missing_code=$(curl --connect-timeout 1 --max-time 3 -sS -o /dev/null -w '%{http_code}' "$base_url/api/runs/$current_run_id")
-  assert_eq "$missing_code" 404 rollback_current_run_http
+  rollback_missing_code=$(curl --connect-timeout 1 --max-time 3 -sS -o /dev/null -w '%{http_code}' "$base_url/api/runs/$current_run_id")
+  assert_eq "$rollback_missing_code" 404 rollback_current_run_http
 }
 
 run_upgrade_rollback() {
-  assert_annotated_v040
-  build_legacy_api
-  create_database upgrade_source
-  start_legacy_api upgrade_source
-  assert_schema upgrade_source 6
-  seed_legacy_runs
-  stop_legacy_api
-  dump_database upgrade_source
-  start_current_api upgrade_source
-  assert_schema upgrade_source 7
-  assert_legacy_transition
-  start_current_worker upgrade_source
-  assert_cancelling_cancelled
-  smoke_current_run
-  stop_current_runtime
-  create_database rollback_target
-  restore_database rollback_target
-  start_legacy_api rollback_target
-  assert_schema rollback_target 6
-  assert_rollback_records
+  current_phase=01_annotated_tag; assert_annotated_v040
+  current_phase=02_legacy_build; build_legacy_api
+  current_phase=03_create_upgrade_source; create_database upgrade_source
+  current_phase=04_start_legacy_source; start_legacy_api upgrade_source
+  current_phase=05_schema6_source; assert_schema upgrade_source 6
+  current_phase=06_seed_legacy; seed_legacy_runs
+  current_phase=07_stop_legacy; stop_legacy_api
+  current_phase=08_dump_source; dump_database upgrade_source
+  current_phase=09_start_current_api; start_current_api upgrade_source
+  current_phase=10_schema7_source; assert_schema upgrade_source 7
+  current_phase=11_assert_transition; assert_legacy_transition
+  current_phase=12_start_current_worker; start_current_worker upgrade_source
+  current_phase=13_assert_worker; assert_cancelling_cancelled
+  current_phase=14_current_smoke; smoke_current_run
+  current_phase=15_stop_current; stop_current_runtime
+  current_phase=16_create_rollback_target; create_database rollback_target
+  current_phase=17_restore_target; restore_database rollback_target
+  current_phase=18_start_legacy_target; start_legacy_api rollback_target
+  current_phase=19_schema6_target; assert_schema rollback_target 6
+  current_phase=20_assert_rollback; assert_rollback_records
 }
 
-for command in docker curl jq ruby go git tar awk; do
+for command in docker jq ruby awk; do
   command -v "$command" >/dev/null 2>&1 || {
     printf '%s is required\n' "$command" >&2
     exit 2
   }
 done
-docker compose version >/dev/null
+for binary in "$curl_binary" "$go_binary" "$git_binary" "$grep_binary" "$tar_binary"; do [ -n "$binary" ] || { printf '%s\n' 'required command is missing' >&2; exit 2; }; done
+run_bounded compose_version docker compose version >/dev/null
 [ -n "${RUN_PAYLOAD_ENCRYPTION_KEY:-}" ] || {
   printf '%s\n' 'RUN_PAYLOAD_ENCRYPTION_KEY is required' >&2
   exit 2
@@ -473,7 +575,7 @@ esac
 [ "$api_port" -ne "$db_port" ]
 base_url="http://127.0.0.1:$api_port"
 
-ruby -rfileutils -e 'FileUtils.mkdir_p(ARGV.fetch(0)); %w[runtime.log summary.log restore-list.log].each { |name| path=File.join(ARGV.fetch(0),name); File.delete(path) if File.file?(path) }' "$artifact_dir"
+run_bounded artifact_io ruby -rfileutils -e 'FileUtils.mkdir_p(ARGV.fetch(0)); %w[runtime.log postgres.log summary.log restore-list.log withheld.log failure-summary.json].each { |name| path=File.join(ARGV.fetch(0),name); File.delete(path) if File.file?(path) }' "$artifact_dir"
 
 cat >"$compose_file" <<YAML
 services:
@@ -490,23 +592,25 @@ services:
       - /var/lib/postgresql
 YAML
 
-actual_services=$(docker compose -f "$compose_file" config --services)
+current_phase=compose_config
+actual_services=$(run_bounded compose_config docker compose -f "$compose_file" config --services)
 assert_eq "$actual_services" db compose_services
 if [ "${V04_UPGRADE_ROLLBACK_CONTRACT_ONLY:-}" = 1 ]; then
   printf '%s\n' 'v0.4 upgrade/rollback lightweight contract passed'
   exit 0
 fi
 
-phase=database_start
-docker compose -f "$compose_file" up -d db >/dev/null
-compose_started=1
-wait_ready "db:$db_port"
+current_phase=database_start
+compose_attempted=1
+run_bounded compose_up docker compose -f "$compose_file" up -d db >/dev/null
+wait_ready "db:$db_port" ""
 
-phase=upgrade_and_rollback
 run_upgrade_rollback
 stop_legacy_api
 
-phase=complete
+current_phase=complete
+elapsed_ms=$(( $(now_epoch_ms) - start_epoch_ms ))
+[ "$elapsed_ms" -le 570000 ]
 printf 'v0.4.0 peeled commit: %s\n' "$old_commit"
 printf 'pre-upgrade dump sha256: %s\n' "$dump_sha"
 printf '%s\n' 'v0.4 migration 6 upgrade, current smoke, and second-database rollback passed'

@@ -80,36 +80,36 @@ def validate_script(path)
     reject!("database_name must map the two roles to distinct fixed database names")
   end
   database_url = function_body(code, "database_url")
-  require_body(database_url, [/\Arole=\$1\z/, /\Aname=\$\(database_name ["']\$role["']\)\z/, /\Aprintf\b.*\$name/], "database_url must consume database_name and construct its URL")
+  require_body(database_url, [/\Adatabase_url_role=\$1\z/, /\Adatabase_url_name=\$\(database_name ["']\$database_url_role["']\)\z/, /\Aprintf\b.*\$database_url_name/], "database_url must consume database_name and construct its URL")
   start_lines = executable_lines(function_body(code, "start_process"))
-  launch = start_lines.index { |line| line.match?(/\A(?:[A-Z_][A-Z0-9_]*=\S+\s+)*["']\$binary["'].*&\z/) }
+  launch = start_lines.index { |line| line.match?(/\A(?:[A-Z_][A-Z0-9_]*=\S+\s+)*["']\$process_binary["'].*&\z/) }
   reject!("start_process must launch the binary then capture its pid") unless launch && start_lines[launch + 1] == 'started_pid=$!'
-  require_body(function_body(code, "stop_process"), [/\Apid=\$1\z/, /\Akill\s+["']\$pid["'](?:\s|\z)/, /\Await\s+["']\$pid["'](?:\s|\z)/], "stop_process must execute kill and wait")
-  require_body(function_body(code, "wait_ready"), [/\Atarget=\$1\z/, /\A(?:while|for)\b/, /\A(?:curl|grep)\b/, /\Areturn\s+1\z/], "wait_ready must loop on a real readiness command")
+  require_body(function_body(code, "stop_process"), [/\Astop_pid=\$1\z/, /\Akill\s+["']\$stop_pid["'](?:\s|\z)/, /\Await\s+["']\$stop_pid["'](?:\s|\z)/], "stop_process must execute kill and wait")
+  require_body(function_body(code, "wait_ready"), [/\Aready_target=\$1\z/, /\A(?:while|for)\b/, /\A(?:curl|grep)\b/, /\Areturn\s+1\z/], "wait_ready must loop on a real readiness command")
   assert_eq = function_body(code, "assert_eq")
-  require_body(assert_eq, [/\Aactual=\$1\z/, /\Aexpected=\$2\z/, /\Alabel=\$3\z/, /\A\[ ["']\$actual["'] = ["']\$expected["'] \] \|\| (?:return|exit) 1\z/], "assert_eq must execute an actual/expected comparison")
+  require_body(assert_eq, [/\Aassert_actual=\$1\z/, /\Aassert_expected=\$2\z/, /\Aassert_label=\$3\z/, /\A\[ ["']\$assert_actual["'] = ["']\$assert_expected["'] \] \|\| (?:return|exit) 1\z/], "assert_eq must execute an actual/expected comparison")
   legacy = function_body(code, "start_legacy_api")
-  require_body(legacy, [/\Arole=\$1\z/, /\Aurl=\$\(database_url ["']\$role["']\)\z/, /\ADATABASE_URL=["']\$url["'] start_process ["']\$legacy_api["']\z/, /\Alegacy_api_pid=\$started_pid\z/, /\Await_ready\b/], "start_legacy_api must execute role resolution, start and wait")
-  reject!("legacy API must resolve its role exactly once") unless legacy.scan(/database_url\s+["']?\$role["']?/).length == 1
+  require_body(legacy, [/\Alegacy_start_role=\$1\z/, /\Alegacy_start_url=\$\(database_url ["']\$legacy_start_role["']\)\z/, /\ADATABASE_URL=["']\$legacy_start_url["'] start_process ["']\$legacy_api["']\z/, /\Alegacy_api_pid=\$started_pid\z/, /\Await_ready\b/], "start_legacy_api must execute role resolution, start and wait")
+  reject!("legacy API must resolve its role exactly once") unless legacy.scan(/database_url\s+["']?\$legacy_start_role["']?/).length == 1
   current_api = function_body(code, "start_current_api")
-  require_body(current_api, [/\Arole=\$1\z/, /\Aurl=\$\(database_url ["']\$role["']\)\z/, /\ADATABASE_URL=["']\$url["'] start_process ["']\$current_api["']\z/, /\Acurrent_api_pid=\$started_pid\z/, /\Await_ready\b/], "start_current_api must execute role resolution, start and wait")
+  require_body(current_api, [/\Acurrent_api_start_role=\$1\z/, /\Acurrent_api_start_url=\$\(database_url ["']\$current_api_start_role["']\)\z/, /\ADATABASE_URL=["']\$current_api_start_url["'] start_process ["']\$current_api["']\z/, /\Acurrent_api_pid=\$started_pid\z/, /\Await_ready\b/], "start_current_api must execute role resolution, start and wait")
   worker = function_body(code, "start_current_worker")
-  require_body(worker, [/\Arole=\$1\z/, /\Aurl=\$\(database_url ["']\$role["']\)\z/, /\ADATABASE_URL=["']\$url["'] start_process ["']\$current_worker["']\z/, /\Acurrent_worker_pid=\$started_pid\z/, /\Await_ready\b/], "start_current_worker must execute role resolution, start and wait")
+  require_body(worker, [/\Acurrent_worker_start_role=\$1\z/, /\Acurrent_worker_start_url=\$\(database_url ["']\$current_worker_start_role["']\)\z/, /\ADATABASE_URL=["']\$current_worker_start_url["'] start_process ["']\$current_worker["']\z/, /\Acurrent_worker_pid=\$started_pid\z/, /\Await_ready\b/], "start_current_worker must execute role resolution, start and wait")
   require_body(function_body(code, "stop_legacy_api"), [/\Astop_process ["']\$legacy_api_pid["']\z/, /\Alegacy_api_pid=\z/], "stop_legacy_api must stop and clear its pid")
   require_body(function_body(code, "stop_current_runtime"), [/\Astop_process ["']\$current_worker_pid["']\z/, /\Astop_process ["']\$current_api_pid["']\z/, /\Acurrent_worker_pid=\z/, /\Acurrent_api_pid=\z/], "stop_current_runtime must stop and clear both pids")
   create = function_body(code, "create_database")
-  require_body(create, [/\Arole=\$1\z/, /\Aname=\$\(database_name ["']\$role["']\)\z/, /\Apostgres_exec\s+psql\b.*CREATE DATABASE.*\$name/, /\Aactual_tables=\$\(postgres_exec\s+psql\b.*database_url ["']\$role["']/, /\Aassert_eq ["']\$actual_tables["'] 0 empty_database\z/], "create_database must execute mapped creation and empty assertion")
+  require_body(create, [/\Acreate_database_role=\$1\z/, /\Acreate_database_name=\$\(database_name ["']\$create_database_role["']\)\z/, /\Apostgres_exec\s+psql\b.*CREATE DATABASE.*\$create_database_name/, /\Acreate_database_table_count=\$\(postgres_exec\s+psql\b.*database_url ["']\$create_database_role["']/, /\Aassert_eq ["']\$create_database_table_count["'] 0 empty_database\z/], "create_database must execute mapped creation and empty assertion")
   dump = function_body(code, "dump_database")
-  require_body(dump, [/["']?\$role["']?\s+=\s+upgrade_source/, /postgres_exec\s+pg_dump\s+--format=custom/, /--dbname=["']?\$\(database_url ["']?\$role["']?\)/], "dump_database must custom-dump upgrade_source in the container")
+  require_body(dump, [/["']?\$dump_role["']?\s+=\s+upgrade_source/, /postgres_exec\s+pg_dump\s+--format=custom/, /--dbname=["']?\$\(database_url ["']?\$dump_role["']?\)/], "dump_database must custom-dump upgrade_source in the container")
   restore = function_body(code, "restore_database")
-  require_body(restore, [/["']?\$role["']?\s+=\s+rollback_target/, /postgres_exec\s+pg_restore\s+--exit-on-error/, /--dbname=["']?\$\(database_url ["']?\$role["']?\)/], "restore_database must restore only rollback_target in the container")
+  require_body(restore, [/["']?\$restore_role["']?\s+=\s+rollback_target/, /postgres_exec\s+pg_restore\s+--exit-on-error/, /--dbname=["']?\$\(database_url ["']?\$restore_role["']?\)/], "restore_database must restore only rollback_target in the container")
   assertion_contracts = {
-    "assert_schema" => [/\Aactual=\$\(postgres_exec\s+psql\b/, /schema_migrations/, /\Aexpected=\$2\z/, /\Aassert_eq ["']\$actual["'] ["']\$expected["'] schema_version\z/],
+    "assert_schema" => [/\Aschema_actual=\$\(postgres_exec\s+psql\b/, /schema_migrations/, /\Aschema_expected=\$2\z/, /\Aassert_eq ["']\$schema_actual["'] ["']\$schema_expected["'] schema_version\z/],
     "seed_legacy_runs" => [/postgres_exec\s+psql\b/, /INSERT/i, /running/, /cancelling/],
-    "assert_legacy_transition" => [/\Astatus=\$\(postgres_exec\s+psql/, /\Areason=\$\(postgres_exec\s+psql/, /\Acancelling=\$\(postgres_exec\s+psql/, /\Aassert_eq ["']\$status["'] recovery_required/, /\Aassert_eq ["']\$reason["'] legacy_active_run/, /\Aassert_eq ["']\$cancelling["'] cancelling/],
-    "assert_cancelling_cancelled" => [/\Astatus=\$\(postgres_exec\s+psql/, /\Anode_count=\$\(postgres_exec\s+psql/, /\Aassert_eq ["']\$status["'] cancelled/, /\Aassert_eq ["']\$node_count["'] 0/],
-    "smoke_current_run" => [/\Arun_status=\$\(curl\b/, /\Aterminal_count=\$\(postgres_exec\s+psql/, /\Alease_count=\$\(postgres_exec\s+psql/, /\Aassert_eq ["']\$run_status["'] completed/, /\Aassert_eq ["']\$terminal_count["'] 1/, /\Aassert_eq ["']\$lease_count["'] 0/],
-    "assert_rollback_records" => [/\Aschema=\$\(postgres_exec\s+psql/, /\Apayload_table=\$\(postgres_exec\s+psql/, /\Alegacy_count=\$\(postgres_exec\s+psql/, /\Aassert_eq ["']\$schema["'] 6/, /\Aassert_eq ["']\$payload_table["'] t/, /\Aassert_eq ["']\$legacy_count["'] 3/],
+    "assert_legacy_transition" => [/\Atransition_status=\$\(postgres_exec\s+psql/, /\Atransition_reason=\$\(postgres_exec\s+psql/, /\Atransition_cancelling=\$\(postgres_exec\s+psql/, /\Aassert_eq ["']\$transition_status["'] recovery_required/, /\Aassert_eq ["']\$transition_reason["'] legacy_active_run/, /\Aassert_eq ["']\$transition_cancelling["'] cancelling/],
+    "assert_cancelling_cancelled" => [/\Aworker_assert_status=\$\(postgres_exec\s+psql/, /\Aworker_assert_node_count=\$\(postgres_exec\s+psql/, /\Aassert_eq ["']\$worker_assert_status["'] cancelled/, /\Aassert_eq ["']\$worker_assert_node_count["'] 0/],
+    "smoke_current_run" => [/\Asmoke_run_status=\$\(curl\b/, /\Asmoke_terminal_count=\$\(postgres_exec\s+psql/, /\Asmoke_lease_count=\$\(postgres_exec\s+psql/, /\Aassert_eq ["']\$smoke_run_status["'] completed/, /\Aassert_eq ["']\$smoke_terminal_count["'] 1/, /\Aassert_eq ["']\$smoke_lease_count["'] 0/],
+    "assert_rollback_records" => [/\Arollback_schema=\$\(postgres_exec\s+psql/, /\Arollback_payload_table=\$\(postgres_exec\s+psql/, /\Arollback_legacy_count=\$\(postgres_exec\s+psql/, /\Aassert_eq ["']\$rollback_schema["'] 6/, /\Aassert_eq ["']\$rollback_payload_table["'] t/, /\Aassert_eq ["']\$rollback_legacy_count["'] 3/],
   }
   assertion_contracts.each { |name, markers| require_body(function_body(code, name), markers, "#{name} must query actual values and call assert_eq") }
   executable_lines(code).each_with_index do |line, index|
@@ -171,35 +171,35 @@ postgres_exec() {
   docker compose -f "$compose_file" exec -T db "$@"
 }
 database_name() {
-  role=$1
-  case "$role" in
+  database_role=$1
+  case "$database_role" in
     upgrade_source) printf '%s\n' upgrade_source ;;
     rollback_target) printf '%s\n' rollback_target ;;
     *) return 2 ;;
   esac
 }
 database_url() {
-  role=$1; name=$(database_name "$role"); printf 'postgresql://agent:agent@localhost/%s?sslmode=disable\n' "$name"
+  database_url_role=$1; database_url_name=$(database_name "$database_url_role"); printf 'postgresql://agent:agent@localhost/%s?sslmode=disable\n' "$database_url_name"
 }
 start_process() {
-  binary=$1
-  "$binary" >>"$process_log" 2>&1 &
+  process_binary=$1
+  "$process_binary" >>"$process_log" 2>&1 &
   started_pid=$!
 }
 stop_process() {
-  pid=$1; kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+  stop_pid=$1; kill "$stop_pid" 2>/dev/null || true; wait "$stop_pid" 2>/dev/null || true
 }
 wait_ready() {
-  target=$1
-  attempts=0
-  while [ "$attempts" -lt 30 ]; do
-    curl -fsS "$target" && return 0
-    attempts=$((attempts + 1))
+  ready_target=$1
+  ready_attempts=0
+  while [ "$ready_attempts" -lt 30 ]; do
+    curl -fsS "$ready_target" && return 0
+    ready_attempts=$((ready_attempts + 1))
   done
   return 1
 }
 assert_eq() {
-  actual=$1; expected=$2; label=$3; [ "$actual" = "$expected" ] || return 1
+  assert_actual=$1; assert_expected=$2; assert_label=$3; [ "$assert_actual" = "$assert_expected" ] || return 1
 }
 assert_annotated_v040() {
   [ "$(git cat-file -t v0.4.0)" = tag ]; old_commit=$(git rev-parse 'v0.4.0^{}'); [ "$(git cat-file -t "$old_commit")" = commit ]
@@ -208,13 +208,13 @@ build_legacy_api() {
   mkdir -m 700 "$run_root/v040"; git archive v0.4.0 | tar -x -C "$run_root/v040"; (cd "$run_root/v040" && CGO_ENABLED=0 go build -o "$legacy_api" ./apps/api/cmd/server)
 }
 create_database() {
-  role=$1; name=$(database_name "$role"); postgres_exec psql --dbname=postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $name"; actual_tables=$(postgres_exec psql --dbname="$(database_url "$role")" -Atc 'SELECT count(*) FROM pg_catalog.pg_tables'); assert_eq "$actual_tables" 0 empty_database
+  create_database_role=$1; create_database_name=$(database_name "$create_database_role"); postgres_exec psql --dbname=postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $create_database_name"; create_database_table_count=$(postgres_exec psql --dbname="$(database_url "$create_database_role")" -Atc 'SELECT count(*) FROM pg_catalog.pg_tables'); assert_eq "$create_database_table_count" 0 empty_database
 }
 start_legacy_api() {
-  role=$1; url=$(database_url "$role"); DATABASE_URL="$url" start_process "$legacy_api"; legacy_api_pid=$started_pid; wait_ready "$legacy_api_url/readyz"
+  legacy_start_role=$1; legacy_start_url=$(database_url "$legacy_start_role"); DATABASE_URL="$legacy_start_url" start_process "$legacy_api"; legacy_api_pid=$started_pid; wait_ready "$legacy_api_url/readyz"
 }
 assert_schema() {
-  role=$1; expected=$2; actual=$(postgres_exec psql --dbname="$(database_url "$role")" -Atc 'SELECT max(version) FROM schema_migrations'); assert_eq "$actual" "$expected" schema_version
+  schema_role=$1; schema_expected=$2; schema_actual=$(postgres_exec psql --dbname="$(database_url "$schema_role")" -Atc 'SELECT max(version) FROM schema_migrations'); assert_eq "$schema_actual" "$schema_expected" schema_version
 }
 seed_legacy_runs() {
   postgres_exec psql --dbname="$(database_url upgrade_source)" -c "INSERT INTO runs(status) VALUES ('running'), ('cancelling')"
@@ -223,31 +223,31 @@ stop_legacy_api() {
   stop_process "$legacy_api_pid"; legacy_api_pid=
 }
 dump_database() {
-  role=$1; [ "$role" = upgrade_source ]; postgres_exec pg_dump --format=custom --dbname="$(database_url "$role")" --file="$run_root/v040.dump"
+  dump_role=$1; [ "$dump_role" = upgrade_source ]; postgres_exec pg_dump --format=custom --dbname="$(database_url "$dump_role")" --file="$run_root/v040.dump"
 }
 start_current_api() {
-  role=$1; url=$(database_url "$role"); DATABASE_URL="$url" start_process "$current_api"; current_api_pid=$started_pid; wait_ready "$current_api_url/readyz"
+  current_api_start_role=$1; current_api_start_url=$(database_url "$current_api_start_role"); DATABASE_URL="$current_api_start_url" start_process "$current_api"; current_api_pid=$started_pid; wait_ready "$current_api_url/readyz"
 }
 assert_legacy_transition() {
-  status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT status FROM runs WHERE id = legacy_running'); reason=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT recovery_reason FROM runs WHERE id = legacy_running'); cancelling=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT status FROM runs WHERE id = legacy_cancelling'); assert_eq "$status" recovery_required legacy_status; assert_eq "$reason" legacy_active_run legacy_reason; assert_eq "$cancelling" cancelling cancelling_status
+  transition_status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT status FROM runs WHERE id = legacy_running'); transition_reason=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT recovery_reason FROM runs WHERE id = legacy_running'); transition_cancelling=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT status FROM runs WHERE id = legacy_cancelling'); assert_eq "$transition_status" recovery_required legacy_status; assert_eq "$transition_reason" legacy_active_run legacy_reason; assert_eq "$transition_cancelling" cancelling cancelling_status
 }
 start_current_worker() {
-  role=$1; url=$(database_url "$role"); DATABASE_URL="$url" start_process "$current_worker"; current_worker_pid=$started_pid; wait_ready "$worker_log"
+  current_worker_start_role=$1; current_worker_start_url=$(database_url "$current_worker_start_role"); DATABASE_URL="$current_worker_start_url" start_process "$current_worker"; current_worker_pid=$started_pid; wait_ready "$worker_log"
 }
 assert_cancelling_cancelled() {
-  status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT status FROM runs WHERE id = legacy_cancelling'); node_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT count(*) FROM node_runs WHERE run_id = legacy_cancelling'); assert_eq "$status" cancelled cancelling_status; assert_eq "$node_count" 0 cancelling_node_runs
+  worker_assert_status=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT status FROM runs WHERE id = legacy_cancelling'); worker_assert_node_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT count(*) FROM node_runs WHERE run_id = legacy_cancelling'); assert_eq "$worker_assert_status" cancelled cancelling_status; assert_eq "$worker_assert_node_count" 0 cancelling_node_runs
 }
 smoke_current_run() {
-  run_status=$(curl -fsS "$current_api_url/api/runs/current" | jq -r .status); terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT count(*) FROM run_events WHERE terminal'); lease_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT count(*) FROM runs WHERE lease_owner IS NOT NULL'); assert_eq "$run_status" completed current_run_status; assert_eq "$terminal_count" 1 current_terminal_events; assert_eq "$lease_count" 0 current_leases
+  smoke_run_status=$(curl -fsS "$current_api_url/api/runs/current" | jq -r .status); smoke_terminal_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT count(*) FROM run_events WHERE terminal'); smoke_lease_count=$(postgres_exec psql --dbname="$(database_url upgrade_source)" -Atc 'SELECT count(*) FROM runs WHERE lease_owner IS NOT NULL'); assert_eq "$smoke_run_status" completed current_run_status; assert_eq "$smoke_terminal_count" 1 current_terminal_events; assert_eq "$smoke_lease_count" 0 current_leases
 }
 stop_current_runtime() {
   stop_process "$current_worker_pid"; current_worker_pid=; stop_process "$current_api_pid"; current_api_pid=
 }
 restore_database() {
-  role=$1; [ "$role" = rollback_target ]; postgres_exec pg_restore --exit-on-error --dbname="$(database_url "$role")" "$run_root/v040.dump"
+  restore_role=$1; [ "$restore_role" = rollback_target ]; postgres_exec pg_restore --exit-on-error --dbname="$(database_url "$restore_role")" "$run_root/v040.dump"
 }
 assert_rollback_records() {
-  schema=$(postgres_exec psql --dbname="$(database_url rollback_target)" -Atc 'SELECT max(version) FROM schema_migrations'); payload_table=$(postgres_exec psql --dbname="$(database_url rollback_target)" -Atc "SELECT to_regclass('run_payloads') IS NULL"); legacy_count=$(postgres_exec psql --dbname="$(database_url rollback_target)" -Atc 'SELECT count(*) FROM runs'); assert_eq "$schema" 6 rollback_schema; assert_eq "$payload_table" t no_run_payloads; assert_eq "$legacy_count" 3 rollback_records
+  rollback_schema=$(postgres_exec psql --dbname="$(database_url rollback_target)" -Atc 'SELECT max(version) FROM schema_migrations'); rollback_payload_table=$(postgres_exec psql --dbname="$(database_url rollback_target)" -Atc "SELECT to_regclass('run_payloads') IS NULL"); rollback_legacy_count=$(postgres_exec psql --dbname="$(database_url rollback_target)" -Atc 'SELECT count(*) FROM runs'); assert_eq "$rollback_schema" 6 rollback_schema; assert_eq "$rollback_payload_table" t no_run_payloads; assert_eq "$rollback_legacy_count" 3 rollback_records
 }
 run_upgrade_rollback() {
   assert_annotated_v040
@@ -316,12 +316,12 @@ wrong_legacy="$test_root/wrong-legacy.sh"; replace "$wrong_legacy" "$valid_scrip
 for helper in start_process stop_process wait_ready start_current_worker; do noop="$test_root/noop-$helper.sh"; noop_helper "$noop" "$valid_script" "$helper"; sh -n "$noop"; expect_rejected script "$noop" "$helper"; done
 for spec in 'start_process|  : "binary=$1"; : "\"$binary\" &"; : "started_pid=$!"' 'stop_process|  : "pid=$1"; : "kill \"$pid\""; : "wait \"$pid\""' 'wait_ready|  : "target=$1"; : "while curl; return 1"' 'start_current_worker|  : "role=$1"; : "url=$(database_url \"$role\")"; : "start_process wait_ready"'; do helper=${spec%%|*}; body=${spec#*|}; inert="$test_root/inert-$helper.sh"; noop_helper "$inert" "$valid_script" "$helper" "$body"; sh -n "$inert"; expect_rejected script "$inert" "$helper"; done
 inert_assert="$test_root/inert-assert.sh"; noop_helper "$inert_assert" "$valid_script" assert_eq '  : "actual=$1"; : "expected=$2"; : "label=$3"; : "[ \"$actual\" = \"$expected\" ] || return 1"'; sh -n "$inert_assert"; expect_rejected script "$inert_assert" "assert_eq must execute"
-missing_assert="$test_root/missing-assert.sh"; replace "$missing_assert" "$valid_script" 'assert_eq "$reason" legacy_active_run legacy_reason' ':'; sh -n "$missing_assert"; expect_rejected script "$missing_assert" "assert_legacy_transition"
-noop_compare="$test_root/noop-compare.sh"; replace "$noop_compare" "$valid_script" '[ "$actual" = "$expected" ] || return 1' '[ 0 = 0 ] || return 1'; sh -n "$noop_compare"; expect_rejected script "$noop_compare" "assert_eq must execute"
-hardcoded_database="$test_root/hardcoded-database.sh"; replace "$hardcoded_database" "$valid_script" 'role=$1; name=$(database_name "$role"); postgres_exec psql' 'role=$1; name=upgrade_source; postgres_exec psql'; sh -n "$hardcoded_database"; expect_rejected script "$hardcoded_database" "create_database must execute"
-ignored_name="$test_root/ignored-name.sh"; replace "$ignored_name" "$valid_script" "printf 'postgresql://agent:agent@localhost/%s?sslmode=disable\\n' \"\$name\"" ": \"\$name\"; printf 'postgresql://agent:agent@localhost/upgrade_source?sslmode=disable\\n'"; sh -n "$ignored_name"; expect_rejected script "$ignored_name" "database_url must consume"
-inert_create="$test_root/inert-create.sh"; replace "$inert_create" "$valid_script" 'postgres_exec psql --dbname=postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $name"' ': "postgres_exec psql CREATE DATABASE $name"'; sh -n "$inert_create"; expect_rejected script "$inert_create" "create_database must execute"
-missing_cancelling="$test_root/missing-cancelling.sh"; replace "$missing_cancelling" "$valid_script" 'assert_eq "$cancelling" cancelling cancelling_status' ':'; sh -n "$missing_cancelling"; expect_rejected script "$missing_cancelling" "assert_legacy_transition"
+missing_assert="$test_root/missing-assert.sh"; replace "$missing_assert" "$valid_script" 'assert_eq "$transition_reason" legacy_active_run legacy_reason' ':'; sh -n "$missing_assert"; expect_rejected script "$missing_assert" "assert_legacy_transition"
+noop_compare="$test_root/noop-compare.sh"; replace "$noop_compare" "$valid_script" '[ "$assert_actual" = "$assert_expected" ] || return 1' '[ 0 = 0 ] || return 1'; sh -n "$noop_compare"; expect_rejected script "$noop_compare" "assert_eq must execute"
+hardcoded_database="$test_root/hardcoded-database.sh"; replace "$hardcoded_database" "$valid_script" 'create_database_role=$1; create_database_name=$(database_name "$create_database_role"); postgres_exec psql' 'create_database_role=$1; create_database_name=upgrade_source; postgres_exec psql'; sh -n "$hardcoded_database"; expect_rejected script "$hardcoded_database" "create_database must execute"
+ignored_name="$test_root/ignored-name.sh"; replace "$ignored_name" "$valid_script" "printf 'postgresql://agent:agent@localhost/%s?sslmode=disable\\n' \"\$database_url_name\"" ": \"\$database_url_name\"; printf 'postgresql://agent:agent@localhost/upgrade_source?sslmode=disable\\n'"; sh -n "$ignored_name"; expect_rejected script "$ignored_name" "database_url must consume"
+inert_create="$test_root/inert-create.sh"; replace "$inert_create" "$valid_script" 'postgres_exec psql --dbname=postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $create_database_name"' ': "postgres_exec psql CREATE DATABASE $create_database_name"'; sh -n "$inert_create"; expect_rejected script "$inert_create" "create_database must execute"
+missing_cancelling="$test_root/missing-cancelling.sh"; replace "$missing_cancelling" "$valid_script" 'assert_eq "$transition_cancelling" cancelling cancelling_status' ':'; sh -n "$missing_cancelling"; expect_rejected script "$missing_cancelling" "assert_legacy_transition"
 dangerous="$test_root/dangerous.sh"; cp "$valid_script" "$dangerous"; printf '%s\n' "postgres_exec psql -c 'ALTER TABLE runs DROP COLUMN status'" >>"$dangerous"; sh -n "$dangerous"; expect_rejected script "$dangerous" "forbidden inverse"
 unsafe_artifact="$test_root/unsafe-artifact.yml"; replace "$unsafe_artifact" "$valid_workflow" 'name: v04-upgrade-rollback-logs' 'name: unsafe-database-artifact'; expect_rejected workflow "$unsafe_artifact" "exact safe log contract"
 dump_upload="$test_root/dump-upload.yml"; replace "$dump_upload" "$valid_workflow" 'artifacts/v04-upgrade-rollback/*.log' 'artifacts/v04-upgrade-rollback/*.dump'; expect_rejected workflow "$dump_upload" "never upload a database dump"
@@ -334,4 +334,192 @@ if [ ! -f "$script" ]; then printf '%s\n' "$script is missing" >&2; failures=1
 elif ! sh -n "$script" || ! ruby -ryaml "$validator" script "$script"; then failures=1; fi
 if ! ruby -ryaml "$validator" workflow .github/workflows/ci.yml; then failures=1; fi
 [ "$failures" -eq 0 ] || exit 1
+
+review_validator="$test_root/review-validator.rb"
+cat >"$review_validator" <<'RUBY'
+source=File.read(ARGV.fetch(0))
+def require_match(source, pattern, message)
+  abort message unless source.match?(pattern)
+end
+%w[now_epoch_ms remaining_budget_ms wait_bounded run_bounded run_cleanup_bounded assert_port_unused assert_process_identity sensitive_literals contains_sensitive_data collect_postgres_logs capture_failure_artifacts capture_legacy_snapshot].each do |name|
+  require_match(source, /^#{Regexp.escape(name)}\(\)\s*\{/m, "#{name} helper missing")
+end
+require_match(source, /UPGRADE_ROLLBACK_DEADLINE_SECONDS=\$\{UPGRADE_ROLLBACK_DEADLINE_SECONDS:-570\}/, "570-second internal deadline default missing")
+require_match(source, /UPGRADE_ROLLBACK_DEADLINE_SECONDS[^\n]*(?:60|\[ [^\]]+ -lt 60 \])/, "deadline minimum missing")
+require_match(source, /UPGRADE_ROLLBACK_DEADLINE_SECONDS[^\n]*(?:570|\[ [^\]]+ -gt 570 \])/, "deadline maximum missing")
+cleanup=source[/^cleanup\(\)\s*\{\n(.*?)^\}/m,1] or abort "cleanup missing"
+abort "cleanup must use attempted compose state" unless cleanup.include?("compose_attempted")
+abort "cleanup must collect PostgreSQL logs before down" unless cleanup.index("collect_postgres_logs") && cleanup.index("docker compose") && cleanup.index("collect_postgres_logs") < cleanup.rindex("docker compose")
+abort "cleanup down must be independently bounded" unless cleanup.match?(/run_cleanup_bounded.*docker compose.*down --remove-orphans/m)
+abort "cleanup must not remove volumes" if cleanup.match?(/down[^\n]*(?:--volumes|\s-v(?:\s|$))/)
+up=source.index('docker compose -f "$compose_file" up -d db') or abort "compose up missing"
+attempt=source.rindex("compose_attempted=1",up) or abort "compose attempt must be marked before up"
+abort "compose attempt marker too early to bind up" if source[attempt...up].include?("compose_attempted=0")
+wait=source[/^wait_ready\(\)\s*\{\n(.*?)^\}/m,1] or abort "wait_ready missing"
+abort "wait_ready pid missing" unless wait.match?(/^\s*(?:pid|ready_pid)=\$2$/)
+wait_pid_probe=wait.index('kill -0 "$ready_pid"')
+abort "wait_ready must check pid before readiness" unless wait_pid_probe && (wait.index("bounded_curl") || wait.index("curl")) && wait_pid_probe < (wait.index("bounded_curl") || wait.index("curl"))
+%w[2026-01-02T03:04:05Z 2026-01-02T03:05:05Z 2026-01-02T03:06:05Z 2026-01-02T03:07:05Z 2026-01-02T03:08:05Z].each { |stamp| abort "fixed UTC timestamp #{stamp} missing" unless source.include?(stamp) }
+sensitive=source[/^sensitive_literals\(\)\s*\{\n(.*?)^\}/m,1] or abort "sensitive_literals missing"
+%w[legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker].each { |literal| abort "sensitive literal #{literal} missing" unless sensitive.include?(literal) }
+transition=source[/^assert_legacy_transition\(\)\s*\{\n(.*?)^\}/m,1] or abort "transition assertion missing"
+%w[completed_snapshot cancelling_snapshot run.started run.completed].each { |marker| abort "transition #{marker} assertion missing" unless transition.include?(marker) }
+cancelled=source[/^assert_cancelling_cancelled\(\)\s*\{\n(.*?)^\}/m,1] or abort "worker assertion missing"
+%w[lease_token running_node_count running_event_count running_terminal_count].each { |marker| abort "legacy unclaimed #{marker} assertion missing" unless cancelled.include?(marker) }
+rollback=source[/^assert_rollback_records\(\)\s*\{\n(.*?)^\}/m,1] or abort "rollback assertion missing"
+%w[completed_snapshot cancelling_snapshot running_snapshot run.started run.completed].each { |marker| abort "rollback #{marker} content assertion missing" unless rollback.include?(marker) }
+require_match(source, /elapsed_ms=.*now_epoch_ms.*start_epoch_ms/m, "elapsed measurement missing")
+require_match(source, /\[ ["']?\$elapsed_ms["']? -le 570000 \]/, "570000ms success assertion missing")
+require_match(source, /last_safe_command_label=/, "safe command label state missing")
+require_match(source, /set_safe_command_label\(\).*case.*compose_up.*postgres_client.*legacy_build/m, "safe command labels must be enumerated")
+%w[01_annotated_tag 02_legacy_build 03_create_upgrade_source 04_start_legacy_source 05_schema6_source 06_seed_legacy 07_stop_legacy 08_dump_source 09_start_current_api 10_schema7_source 11_assert_transition 12_start_current_worker 13_assert_worker 14_current_smoke 15_stop_current 16_create_rollback_target 17_restore_target 18_start_legacy_target 19_schema6_target 20_assert_rollback].each { |phase| abort "fixed phase #{phase} missing" unless source.include?("current_phase=#{phase}") }
+require_match(source, /Process\.spawn\(\*ARGV,pgroup:true\)/, "bounded supervisor must pass an argv array and own a process group")
+require_match(source, /go\(\).*legacy_build.*run_bounded.*env CGO_ENABLED=.*\$go_binary.*\$@/, "legacy build environment or argv forwarding missing")
+require_match(source, /run_bounded postgres_client docker compose -f .* exec -T db .*\$@/, "PostgreSQL argv forwarding missing")
+RUBY
+ruby "$review_validator" "$script"
+
+fake_bin="$test_root/fake-bin"
+mkdir -p "$fake_bin" "$test_root/fake-tmp"
+fake_log="$test_root/fake-docker.log"
+up_marker="$test_root/up.marker"
+down_marker="$test_root/down.marker"
+run_root_record="$test_root/run-root"
+cat >"$fake_bin/docker" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
+case "$*" in
+  "compose version") exit 0 ;;
+  *"config --services"*) printf '%s\n' db; exit 0 ;;
+  *"up -d db"*)
+    compose_path=
+    previous=
+    for argument in "$@"; do
+      if [ "$previous" = -f ]; then compose_path=$argument; break; fi
+      previous=$argument
+    done
+    dirname "$compose_path" >"$FAKE_RUN_ROOT_RECORD"
+    : >"$FAKE_UP_MARKER"
+    exit 17
+    ;;
+  *"logs --no-color db"*) printf '%s\n' 'safe fake postgres log'; exit 0 ;;
+  *"down --remove-orphans"*) : >"$FAKE_DOWN_MARKER"; exit 0 ;;
+esac
+exit 0
+SH
+chmod +x "$fake_bin/docker"
+set +e
+PATH="$fake_bin:$PATH" TMPDIR="$test_root/fake-tmp" FAKE_DOCKER_LOG="$fake_log" FAKE_UP_MARKER="$up_marker" FAKE_DOWN_MARKER="$down_marker" FAKE_RUN_ROOT_RECORD="$run_root_record" \
+  RUN_PAYLOAD_ENCRYPTION_KEY=contract-test-key V04_UPGRADE_ROLLBACK_API_PORT=41001 V04_UPGRADE_ROLLBACK_DB_PORT=41002 \
+  V04_UPGRADE_ROLLBACK_ARTIFACT_DIR="$test_root/fake-artifacts" sh "$script" >"$test_root/fake-up.out" 2>&1
+fake_status=$?
+set -e
+[ "$fake_status" -ne 0 ]
+[ -f "$up_marker" ]
+[ -f "$down_marker" ]
+fake_run_root=$(cat "$run_root_record")
+[ ! -e "$fake_run_root" ]
+
+set +e
+deadline_output=$(UPGRADE_ROLLBACK_DEADLINE_SECONDS=570001 sh "$script" 2>&1)
+deadline_status=$?
+set -e
+[ "$deadline_status" -ne 0 ]
+case "$deadline_output" in *'UPGRADE_ROLLBACK_DEADLINE_SECONDS must be between 60 and 570'*) ;; *) printf '%s\n' '570001 deadline was not rejected explicitly' >&2; exit 1;; esac
+
+extract_functions() {
+  output=$1
+  shift
+  ruby -e '
+    source=File.read(ARGV.shift)
+    output=ARGV.shift
+    names=ARGV
+    bodies=names.map do |name|
+      source[/^#{Regexp.escape(name)}\(\)\s*\{[^\n]*\}\s*$/] ||
+        source[/^#{Regexp.escape(name)}\(\)\s*\{.*?^\}\s*$/m] || abort("#{name} missing")
+    end
+    File.write(output,bodies.join("\n"))
+  ' "$script" "$output" "$@"
+}
+
+ready_functions="$test_root/ready-functions.sh"
+extract_functions "$ready_functions" now_epoch_ms remaining_budget_ms before_deadline database_name database_url wait_ready
+cat >"$test_root/ready-harness.sh" <<SH
+#!/bin/sh
+set -eu
+bounded_curl() { return 0; }
+curl() { return 0; }
+run_bounded() { "\$@"; }
+$(cat "$ready_functions")
+ready_fixture_calls=0; db_port=41002; deadline_epoch_ms=\$((\$(now_epoch_ms)+5000))
+postgres_exec() { ready_fixture_calls=\$((ready_fixture_calls+1)); [ "\$ready_target" = db:41002 ]; [ "\$ready_fixture_calls" -ge 2 ]; }
+wait_ready db:41002 ''; [ "\$ready_fixture_calls" -eq 2 ]
+database_role=sentinel; database_url upgrade_source >"$test_root/database-url"; database_url_value=\$(cat "$test_root/database-url"); case "\$database_url_value" in *:41002/upgrade_source*) ;; *) exit 1;; esac
+for nested_check in "\$ready_target|db:41002" "\$database_url_role|upgrade_source" "\$database_role|sentinel"; do nested_actual=\${nested_check%%|*}; nested_expected=\${nested_check#*|}; [ "\$nested_actual" = "\$nested_expected" ]; done
+wait_ready http://127.0.0.1:1/readyz 999999
+SH
+chmod +x "$test_root/ready-harness.sh"
+if sh "$test_root/ready-harness.sh"; then printf '%s\n' 'ready 200 accepted for dead pid' >&2; exit 1; fi
+
+bounded_functions="$test_root/bounded-functions.sh"
+extract_functions "$bounded_functions" now_epoch_ms remaining_budget_ms set_safe_command_label wait_bounded run_bounded run_bounded_until go
+cat >"$test_root/bounded-harness.sh" <<SH
+#!/bin/sh
+set -eu
+$(cat "$bounded_functions")
+start_epoch_ms=\$(now_epoch_ms)
+deadline_epoch_ms=\$((start_epoch_ms + 2000))
+last_safe_command_label=
+run_bounded legacy_build sh -c 'exit 0'
+current_phase=02_legacy_build; go_binary=sh; CGO_ENABLED=0 go -c '[ "\$CGO_ENABLED" = 0 ] && [ "\$1" = "argument with spaces" ]' sh 'argument with spaces'
+set +e; run_bounded postgres_client sh -c 'exit 17'; exit_status=\$?; set -e
+[ "\$exit_status" -eq 17 ]
+export PIPE_OUT="$test_root/pipe.out" PRODUCER_MARKER="$test_root/producer.marker" CONSUMER_MARKER="$test_root/consumer.marker"
+sh -c 'printf payload; : >"\$PRODUCER_MARKER"' | run_bounded archive_extract sh -c 'cat >"\$PIPE_OUT"; : >"\$CONSUMER_MARKER"'; [ -f "\$PRODUCER_MARKER" ] && [ -f "\$CONSUMER_MARKER" ] && [ "\$(cat "\$PIPE_OUT")" = payload ]
+printf file-input >"$test_root/stdin.in"; run_bounded artifact_io sh -c 'cat >"\$1"' sh "$test_root/stdin.out" <"$test_root/stdin.in"; [ "\$(cat "$test_root/stdin.out")" = file-input ]
+mkdir "$test_root/cwd"; : >"$test_root/cwd/marker"; expected_cwd=\$(CDPATH= cd -- "$test_root/cwd" && pwd -P); export CWD_OUT="$test_root/cwd.out"; (cd "$test_root/cwd" && run_bounded legacy_build sh -c 'pwd >"\$CWD_OUT"; [ -f marker ]'); actual_cwd=\$(CDPATH= cd -- "\$(cat "\$CWD_OUT")" && pwd -P); [ "\$actual_cwd" = "\$expected_cwd" ]
+export TERM_MARKER="$test_root/term.marker" CHILD_PID_FILE="$test_root/child.pid"
+if run_bounded legacy_build sh -c 'printf "%s\n" "\$\$" >"\$CHILD_PID_FILE"; trap '\''touch "\$TERM_MARKER"; exit 143'\'' TERM; while :; do sleep 1; done'; then
+  exit 1
+else
+  status=\$?
+fi
+[ "\$status" -eq 124 ]
+[ -f "\$TERM_MARKER" ]
+child_pid=\$(cat "\$CHILD_PID_FILE")
+! kill -0 "\$child_pid" 2>/dev/null
+elapsed=\$((\$(now_epoch_ms)-start_epoch_ms))
+[ "\$elapsed" -lt 5000 ]
+SH
+[ -s "$test_root/bounded-harness.sh" ] || { printf '%s\n' 'bounded harness generation failed' >&2; exit 1; }
+chmod +x "$test_root/bounded-harness.sh"
+if ! sh "$test_root/bounded-harness.sh"; then printf '%s\n' 'bounded command fixture failed' >&2; exit 1; fi
+
+sensitive_functions="$test_root/sensitive-functions.sh"
+extract_functions "$sensitive_functions" sensitive_literals contains_sensitive_data capture_failure_artifacts
+cat >"$test_root/sensitive-harness.sh" <<SH
+#!/bin/sh
+set -eu
+$(cat "$sensitive_functions")
+RUN_PAYLOAD_ENCRYPTION_KEY=contract-key
+current_request_key=contract-idempotency
+export RUN_PAYLOAD_ENCRYPTION_KEY
+run_cleanup_bounded() { shift; "\$@"; }
+for literal in contract-key contract-idempotency legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker; do
+  printf '%s\n' "\$literal" >"$test_root/sensitive.log"
+  contains_sensitive_data "$test_root/sensitive.log"
+done
+artifact_dir="$test_root/safe-artifacts"; legacy_log="$test_root/sensitive.log"; current_api_log="$test_root/empty-api.log"; worker_log="$test_root/empty-worker.log"; postgres_log="$test_root/empty-postgres.log"; restore_list="$test_root/empty-restore.log"; summary_log="$test_root/failure-summary.json"
+: >"\$current_api_log"; : >"\$worker_log"; : >"\$postgres_log"; : >"\$restore_list"
+for literal in contract-key contract-idempotency legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker; do printf '%s\n' "\$literal"; done >"\$legacy_log"
+current_phase=09_start_current_api; start_epoch_ms=0; old_commit=; dump_sha=; compose_project_id=contract01
+now_epoch_ms() { printf '%s\n' 1234; }
+capture_failure_artifacts 17
+summary="\$artifact_dir/failure-summary.json"; [ -f "\$summary" ]; jq -e '.phase=="09_start_current_api" and .exitCode==17 and .elapsedMs==1234 and .logsWithheld==true and .composeProjectId=="contract01" and (keys|sort)==["composeProjectId","elapsedMs","exitCode","logsWithheld","phase"]' "\$summary" >/dev/null
+for literal in contract-key contract-idempotency legacy-public-fixture legacy-running legacy-cancelling legacy-completed current-smoke-private ciphertext-marker 'sh -c' '--dbname'; do ! grep -F -- "\$literal" "\$summary" >/dev/null; done
+SH
+[ -s "$test_root/sensitive-harness.sh" ] || { printf '%s\n' 'sensitive harness generation failed' >&2; exit 1; }
+chmod +x "$test_root/sensitive-harness.sh"
+if ! sh "$test_root/sensitive-harness.sh"; then printf '%s\n' 'sensitive literal fixture failed' >&2; exit 1; fi
+
 printf '%s\n' 'v0.4 upgrade/rollback E2E contract passed'
