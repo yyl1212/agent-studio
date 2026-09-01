@@ -17,6 +17,8 @@ var (
 	ErrRollbackUndoUnavailable     = errors.New("workflow rollback undo unavailable")
 	ErrRunEventSequence            = errors.New("run event sequence invalid")
 	ErrRunEventBudgetExceeded      = errors.New("run event budget exceeded")
+	ErrRunLeaseLost                = errors.New("run lease lost")
+	ErrRunNotCancellable           = errors.New("run is not cancellable")
 )
 
 type PublicError struct {
