@@ -18,12 +18,13 @@ import (
 )
 
 const (
-	workflowID = "00000000-0000-0000-0000-000000001001"
-	versionID  = "00000000-0000-0000-0000-000000002001"
-	published  = "00000000-0000-0000-0000-000000003001"
-	debug      = "00000000-0000-0000-0000-000000003002"
-	retry      = "00000000-0000-0000-0000-000000003003"
-	retryKey   = "00000000-0000-0000-0000-000000004001"
+	workflowID     = "00000000-0000-0000-0000-000000001001"
+	versionID      = "00000000-0000-0000-0000-000000002001"
+	published      = "00000000-0000-0000-0000-000000003001"
+	debug          = "00000000-0000-0000-0000-000000003002"
+	retry          = "00000000-0000-0000-0000-000000003003"
+	retryKey       = "00000000-0000-0000-0000-000000004001"
+	v1Alpha1SHA256 = "261a853a18f0fe21ebcb8873685a368e74851808ecd79ea878aa9b498b492e64"
 )
 
 var fixedTime = time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)
@@ -39,16 +40,20 @@ func run(args []string) int {
 		_, _ = fmt.Fprintln(os.Stderr, "golden archive usage: generate --check | generate --write")
 		return 2
 	}
-	fixture, err := fixturePath()
+	legacyFixture, fixture, err := fixturePaths()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "golden archive generation failed")
+		return 1
+	}
+	if err := verifyLegacyFixture(legacyFixture); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "v1alpha1 golden archive was modified")
 		return 1
 	}
 	if err := ensureRegularFixtureTarget(fixture, args[0] == "--check"); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "golden archive fixture target is unsafe")
 		return 1
 	}
-	temporaryDirectory, err := os.MkdirTemp(filepath.Dir(fixture), ".v1alpha1-minimal-")
+	temporaryDirectory, err := os.MkdirTemp(filepath.Dir(fixture), ".v1alpha2-minimal-")
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "golden archive generation failed")
 		return 1
@@ -86,12 +91,25 @@ func run(args []string) int {
 	return 0
 }
 
-func fixturePath() (string, error) {
+func fixturePaths() (string, string, error) {
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
-		return "", errors.New("locate generator source")
+		return "", "", errors.New("locate generator source")
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(source), "..", "v1alpha1-minimal.asbak")), nil
+	directory := filepath.Clean(filepath.Join(filepath.Dir(source), ".."))
+	return filepath.Join(directory, "v1alpha1-minimal.asbak"), filepath.Join(directory, "v1alpha2-minimal.asbak"), nil
+}
+
+func verifyLegacyFixture(path string) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(body)
+	if hex.EncodeToString(digest[:]) != v1Alpha1SHA256 {
+		return errors.New("legacy fixture digest mismatch")
+	}
+	return nil
 }
 
 func ensureRegularFixtureTarget(path string, requireExisting bool) error {
@@ -108,7 +126,7 @@ func ensureRegularFixtureTarget(path string, requireExisting bool) error {
 func generateTwice(first, second string) ([]byte, []byte, error) {
 	base := backup.Manifest{
 		APIVersion: backup.APIVersion, CreatedAt: fixedTime, RuntimeVersion: "0.5.0-golden",
-		DatabaseMigrationVersion: 6, IncludesRuns: true,
+		DatabaseMigrationVersion: 7, IncludesRuns: true,
 	}
 	for _, path := range []string{first, second} {
 		if _, err := backup.WriteArchive(context.Background(), path, base, tableWriters()); err != nil {
@@ -135,9 +153,9 @@ func tableWriters() map[backup.TableName]backup.TableWriter {
 	version := versionID
 	retryKeyID := retryKey
 	nodeRecords := []any{
-		backup.NodeRunRecord{ID: "00000000-0000-0000-0000-000000005001", RunID: published, NodeID: "answer", NodeType: "fixture.answer", Status: "completed", Input: raw(`{"fixture":"published"}`), Output: raw(`{"fixture":"published"}`), StartedAt: timePointer(fixedTime), EndedAt: timePointer(completed)},
-		backup.NodeRunRecord{ID: "00000000-0000-0000-0000-000000005002", RunID: debug, NodeID: "answer", NodeType: "fixture.answer", Status: "completed", Input: raw(`null`), Output: raw(`[]`), StartedAt: timePointer(fixedTime.Add(2 * time.Second)), EndedAt: timePointer(fixedTime.Add(3 * time.Second))},
-		backup.NodeRunRecord{ID: "00000000-0000-0000-0000-000000005003", RunID: retry, NodeID: "answer", NodeType: "fixture.answer", Status: "completed", Output: raw(`{"fixture":"retry"}`), Error: raw(`null`), StartedAt: timePointer(fixedTime.Add(4 * time.Second)), EndedAt: timePointer(fixedTime.Add(5 * time.Second))},
+		backup.NodeRunRecordV1Alpha2{NodeRunRecord: backup.NodeRunRecord{ID: "00000000-0000-0000-0000-000000005001", RunID: published, NodeID: "answer", NodeType: "fixture.answer", Status: "completed", Input: raw(`{"fixture":"published"}`), Output: raw(`{"fixture":"published"}`), StartedAt: timePointer(fixedTime), EndedAt: timePointer(completed)}, Attempt: 1},
+		backup.NodeRunRecordV1Alpha2{NodeRunRecord: backup.NodeRunRecord{ID: "00000000-0000-0000-0000-000000005002", RunID: debug, NodeID: "answer", NodeType: "fixture.answer", Status: "completed", Input: raw(`null`), Output: raw(`[]`), StartedAt: timePointer(fixedTime.Add(2 * time.Second)), EndedAt: timePointer(fixedTime.Add(3 * time.Second))}, Attempt: 1},
+		backup.NodeRunRecordV1Alpha2{NodeRunRecord: backup.NodeRunRecord{ID: "00000000-0000-0000-0000-000000005003", RunID: retry, NodeID: "answer", NodeType: "fixture.answer", Status: "completed", Output: raw(`{"fixture":"retry"}`), Error: raw(`null`), StartedAt: timePointer(fixedTime.Add(4 * time.Second)), EndedAt: timePointer(fixedTime.Add(5 * time.Second))}, Attempt: 1},
 	}
 	records := map[backup.TableName][]any{
 		backup.TableWorkflows: {
@@ -147,15 +165,18 @@ func tableWriters() map[backup.TableName]backup.TableWriter {
 			backup.WorkflowVersionRecord{ID: versionID, WorkflowID: workflowID, Version: 1, Graph: graph, InputSchema: inputSchema, CreatedAt: fixedTime, AgentPresentation: presentation},
 		},
 		backup.TableRuns: {
-			backup.RunRecord{ID: published, WorkflowID: workflowID, WorkflowVersionID: &version, Mode: "published", Status: "completed", Input: json.RawMessage(`{"fixture":"published"}`), Output: raw(`null`), StartedAt: fixedTime, EndedAt: timePointer(completed), InputRedactedPaths: []string{}},
-			backup.RunRecord{ID: debug, WorkflowID: workflowID, GraphSnapshot: raw(string(graph)), Mode: "debug", Status: "completed", Input: json.RawMessage(`{"fixture":"debug"}`), Output: raw(`[]`), StartedAt: fixedTime.Add(2 * time.Second), EndedAt: timePointer(fixedTime.Add(3 * time.Second)), SourceRunID: &publishedID, SourceNodeID: stringPointer("answer"), InputRedactedPaths: []string{}},
-			backup.RunRecord{ID: retry, WorkflowID: workflowID, GraphSnapshot: raw(string(graph)), Mode: "debug", Status: "completed", Input: json.RawMessage(`{"fixture":"retry"}`), Output: raw(`{"fixture":"retry"}`), Error: raw(`null`), StartedAt: fixedTime.Add(4 * time.Second), EndedAt: timePointer(fixedTime.Add(5 * time.Second)), SourceRunID: &publishedID, SourceNodeID: stringPointer("answer"), RetryOfRunID: &debugID, RetryKey: &retryKeyID, InputRedactedPaths: []string{}},
+			backup.RunRecordV1Alpha2{RunRecord: backup.RunRecord{ID: published, WorkflowID: workflowID, WorkflowVersionID: &version, Mode: "published", Status: "completed", Input: json.RawMessage(`{"fixture":"published"}`), Output: raw(`null`), StartedAt: fixedTime, EndedAt: timePointer(completed), InputRedactedPaths: []string{}}, ExecutionProtocol: 1},
+			backup.RunRecordV1Alpha2{RunRecord: backup.RunRecord{ID: debug, WorkflowID: workflowID, GraphSnapshot: raw(string(graph)), Mode: "debug", Status: "completed", Input: json.RawMessage(`{"fixture":"debug"}`), Output: raw(`[]`), StartedAt: fixedTime.Add(2 * time.Second), EndedAt: timePointer(fixedTime.Add(3 * time.Second)), SourceRunID: &publishedID, SourceNodeID: stringPointer("answer"), InputRedactedPaths: []string{}}, ExecutionProtocol: 1},
+			backup.RunRecordV1Alpha2{RunRecord: backup.RunRecord{ID: retry, WorkflowID: workflowID, GraphSnapshot: raw(string(graph)), Mode: "debug", Status: "completed", Input: json.RawMessage(`{"fixture":"retry"}`), Output: raw(`{"fixture":"retry"}`), Error: raw(`null`), StartedAt: fixedTime.Add(4 * time.Second), EndedAt: timePointer(fixedTime.Add(5 * time.Second)), SourceRunID: &publishedID, SourceNodeID: stringPointer("answer"), RetryOfRunID: &debugID, RetryKey: &retryKeyID, InputRedactedPaths: []string{}}, ExecutionProtocol: 1},
 		},
 		backup.TableNodeRuns: nodeRecords,
 		backup.TableRunEvents: {
 			event(published, 1, "run.started", fixedTime), event(published, 2, "run.completed", completed),
 			event(debug, 1, "run.started", fixedTime.Add(2*time.Second)), event(debug, 2, "run.completed", fixedTime.Add(3*time.Second)),
 			event(retry, 1, "run.started", fixedTime.Add(4*time.Second)), event(retry, 2, "run.completed", fixedTime.Add(5*time.Second)),
+		},
+		backup.TableRunPayloads: {
+			backup.RunPayloadRecord{RunID: published, Sequence: 0, Kind: "run_input", ExecutionProtocol: 1, CipherVersion: 1, Ciphertext: "AAEC/w==", CreatedAt: fixedTime},
 		},
 		backup.TableWorkflowDraftCheckpoints: {
 			backup.WorkflowDraftCheckpointRecord{WorkflowID: workflowID, SourceRevision: 7, RestoredRevision: 8, Graph: graph, AgentPresentation: presentation, RestoredFromVersionID: versionID, CreatedAt: fixedTime.Add(6 * time.Second)},
@@ -192,14 +213,15 @@ func tableWriters() map[backup.TableName]backup.TableWriter {
 var tablePaths = map[backup.TableName]string{
 	backup.TableWorkflows: "data/workflows.jsonl", backup.TableWorkflowVersions: "data/workflow_versions.jsonl", backup.TableRuns: "data/runs.jsonl",
 	backup.TableNodeRuns: "data/node_runs.jsonl", backup.TableRunEvents: "data/run_events.jsonl", backup.TableWorkflowDraftCheckpoints: "data/workflow_draft_checkpoints.jsonl",
+	backup.TableRunPayloads: "data/run_payloads.jsonl",
 }
 
-func event(runID string, sequence int64, kind string, timestamp time.Time) backup.RunEventRecord {
+func event(runID string, sequence int64, kind string, timestamp time.Time) backup.RunEventRecordV1Alpha2 {
 	var status *string
 	if kind == "run.completed" {
 		status = stringPointer("completed")
 	}
-	return backup.RunEventRecord{RunID: runID, Sequence: sequence, Type: kind, Status: status, ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, DataBytes: 0, Timestamp: timestamp}
+	return backup.RunEventRecordV1Alpha2{RunEventRecord: backup.RunEventRecord{RunID: runID, Sequence: sequence, Type: kind, Status: status, ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, DataBytes: 0, Timestamp: timestamp}}
 }
 
 func raw(value string) backup.NullableJSONB {

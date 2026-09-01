@@ -23,6 +23,31 @@ func TestCurrentRuntimeRestoresV1Alpha1GoldenArchive(t *testing.T) {
 	assertGoldenDomainData(t, target)
 }
 
+func TestCurrentRuntimeRestoresV1Alpha2GoldenArchive(t *testing.T) {
+	target := openUnmigratedTarget(t)
+	path := filepath.Join("testdata", "v1alpha2-minimal.asbak")
+	summary, err := Inspect(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.APIVersion != APIVersionV1Alpha2 || summary.MigrationVersion != 7 || len(summary.Tables) != len(TableOrderV1Alpha2) {
+		t.Fatalf("summary=%+v", summary)
+	}
+	if _, err := DryRun(context.Background(), target, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(context.Background(), target, path); err != nil {
+		t.Fatal(err)
+	}
+	var ciphertext []byte
+	if err := target.QueryRow(context.Background(), `SELECT ciphertext FROM run_payloads WHERE run_id=$1 AND kind='run_input'`, "00000000-0000-0000-0000-000000003001").Scan(&ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	if string(ciphertext) != string([]byte{0, 1, 2, 0xff}) {
+		t.Fatalf("ciphertext=%x", ciphertext)
+	}
+}
+
 func assertGoldenDomainData(t *testing.T, target *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()

@@ -36,12 +36,12 @@ func TestCreateAndInspectPostgresSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.DatasetDigest != inspected.DatasetDigest || inspected.MigrationVersion != 6 {
+	if summary.DatasetDigest != inspected.DatasetDigest || inspected.MigrationVersion != 7 || inspected.APIVersion != APIVersionV1Alpha2 {
 		t.Fatalf("created=%+v inspected=%+v", summary, inspected)
 	}
 	wantCounts := map[TableName]uint64{
 		TableWorkflows: 1, TableWorkflowVersions: 1, TableRuns: 3,
-		TableNodeRuns: 1, TableRunEvents: 1, TableWorkflowDraftCheckpoints: 1,
+		TableNodeRuns: 1, TableRunEvents: 1, TableRunPayloads: 0, TableWorkflowDraftCheckpoints: 1,
 	}
 	for _, table := range inspected.Tables {
 		if table.Records != wantCounts[table.Name] {
@@ -56,7 +56,7 @@ func TestCreateAndInspectPostgresSnapshot(t *testing.T) {
 	defer archive.Close()
 	var runIDs []string
 	if err := archive.ReadTable(context.Background(), TableRuns, func(raw json.RawMessage) error {
-		record, err := decodeRunRecord(raw)
+		record, err := decodeRunRecordV1Alpha2(raw)
 		if err == nil {
 			runIDs = append(runIDs, record.ID)
 		}

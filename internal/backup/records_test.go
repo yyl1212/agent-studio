@@ -1,11 +1,58 @@
 package backup
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestV1Alpha2PayloadUsesStrictBase64AndMetadata(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	record := RunPayloadRecord{
+		RunID: recordUUID1, Sequence: 0, Kind: "run_input", ExecutionProtocol: 1,
+		CipherVersion: 1, Ciphertext: base64.StdEncoding.EncodeToString([]byte{0, 1, 2, 0xff}), CreatedAt: now,
+	}
+	body, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeRunPayloadRecord(body)
+	if err != nil || decoded.Ciphertext != record.Ciphertext {
+		t.Fatalf("decoded=%+v err=%v", decoded, err)
+	}
+
+	for _, invalid := range []string{"AA", "AA==\n", "", "!!!!"} {
+		record.Ciphertext = invalid
+		body, err = json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeRunPayloadRecord(body); CodeOf(err) != CodeArchiveInvalid {
+			t.Fatalf("ciphertext=%q code=%q err=%v", invalid, CodeOf(err), err)
+		}
+	}
+}
+
+func TestV1Alpha2RunNodeAndEventRequireDurableFields(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	run := RunRecordV1Alpha2{RunRecord: RunRecord{
+		ID: recordUUID2, WorkflowID: recordUUID1, DraftRevision: pointer(int64(1)), GraphSnapshot: presentJSONB(`{}`),
+		Mode: "test", Status: "queued", Input: json.RawMessage(`{}`), InputRedactedPaths: []string{}, StartedAt: now,
+	}, ExecutionProtocol: 1}
+	node := NodeRunRecordV1Alpha2{NodeRunRecord: NodeRunRecord{ID: recordUUID2, RunID: recordUUID1, NodeID: "work", NodeType: "test", Status: "running"}, Attempt: 1}
+	event := RunEventRecordV1Alpha2{RunEventRecord: RunEventRecord{RunID: recordUUID1, Sequence: 1, Type: "run.queued", ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, Timestamp: now}}
+	for table, record := range map[TableName]any{TableRuns: run, TableNodeRuns: node, TableRunEvents: event} {
+		body, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateTableRecordForVersion(APIVersionV1Alpha2, table, body); err != nil {
+			t.Fatalf("%s: %v", table, err)
+		}
+	}
+}
 
 const (
 	recordUUID1 = "00000000-0000-0000-0000-000000000001"
@@ -40,7 +87,7 @@ func TestValidateTableRecordAcceptsAllCompatibilityRecords(t *testing.T) {
 			AgentPresentation: json.RawMessage(`{}`), RestoredFromVersionID: recordUUID2, CreatedAt: now,
 		},
 	}
-	for _, name := range TableOrder {
+	for _, name := range TableOrderV1Alpha1 {
 		name := name
 		t.Run(string(name), func(t *testing.T) {
 			raw, err := json.Marshal(records[name])

@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"hash"
@@ -17,7 +18,8 @@ import (
 const runExportColumns = `r.id::text,r.workflow_id::text,r.workflow_version_id::text,r.draft_revision,
 	r.graph_snapshot,r.mode,r.status,r.input,r.output,r.error,r.started_at,r.ended_at,
 	r.source_run_id::text,r.source_node_id,r.retry_of_run_id::text,r.retry_key::text,
-	r.input_redacted_paths,r.cancel_requested_at,r.heartbeat_at,r.agent_request_key::text`
+	r.input_redacted_paths,r.cancel_requested_at,r.heartbeat_at,r.agent_request_key::text,
+	r.execution_protocol,r.lease_token,r.recovery_reason,r.recovery_requested_at`
 
 type postgresExporter func(context.Context, pgx.Tx, io.Writer) (uint64, error)
 
@@ -25,6 +27,7 @@ func postgresTableWriters(_ context.Context, transaction pgx.Tx) (map[TableName]
 	exporters := map[TableName]postgresExporter{
 		TableWorkflows: exportWorkflows, TableWorkflowVersions: exportWorkflowVersions,
 		TableRuns: exportRuns, TableNodeRuns: exportNodeRuns, TableRunEvents: exportRunEvents,
+		TableRunPayloads:              exportRunPayloads,
 		TableWorkflowDraftCheckpoints: exportWorkflowDraftCheckpoints,
 	}
 	writers := make(map[TableName]TableWriter, len(TableOrder))
@@ -67,7 +70,7 @@ func writeRecord(writer io.Writer, table TableName, record any) error {
 	if err != nil {
 		return Wrap(CodeCreateFailed, "encode source record", err)
 	}
-	if err := validateTableRecord(table, body); err != nil {
+	if err := validateTableRecordForVersion(APIVersion, table, body); err != nil {
 		return err
 	}
 	body = append(body, '\n')
@@ -288,16 +291,17 @@ func (items *runReferenceHeap) Pop() any {
 	return last
 }
 
-func scanRunRecord(row pgx.Row) (RunRecord, error) {
-	var record RunRecord
+func scanRunRecord(row pgx.Row) (RunRecordV1Alpha2, error) {
+	var record RunRecordV1Alpha2
 	var graph, input, output, errorJSON []byte
 	if err := row.Scan(
 		&record.ID, &record.WorkflowID, &record.WorkflowVersionID, &record.DraftRevision,
 		&graph, &record.Mode, &record.Status, &input, &output, &errorJSON, &record.StartedAt, &record.EndedAt,
 		&record.SourceRunID, &record.SourceNodeID, &record.RetryOfRunID, &record.RetryKey,
 		&record.InputRedactedPaths, &record.CancelRequestedAt, &record.HeartbeatAt, &record.AgentRequestKey,
+		&record.ExecutionProtocol, &record.LeaseToken, &record.RecoveryReason, &record.RecoveryRequestedAt,
 	); err != nil {
-		return RunRecord{}, Wrap(CodeCreateFailed, "scan source run", err)
+		return RunRecordV1Alpha2{}, Wrap(CodeCreateFailed, "scan source run", err)
 	}
 	record.GraphSnapshot = nullableJSONB(graph)
 	record.Input = append(json.RawMessage(nil), input...)
@@ -308,11 +312,12 @@ func scanRunRecord(row pgx.Row) (RunRecord, error) {
 	normalizeOptionalTime(record.EndedAt)
 	normalizeOptionalTime(record.CancelRequestedAt)
 	normalizeOptionalTime(record.HeartbeatAt)
+	normalizeOptionalTime(record.RecoveryRequestedAt)
 	return record, nil
 }
 
 func exportNodeRuns(ctx context.Context, transaction pgx.Tx, writer io.Writer) (uint64, error) {
-	rows, err := transaction.Query(ctx, `SELECT id::text,run_id::text,node_id,node_type,status,input,output,error,started_at,ended_at
+	rows, err := transaction.Query(ctx, `SELECT id::text,run_id::text,node_id,node_type,status,input,output,error,started_at,ended_at,attempt
 		FROM node_runs ORDER BY run_id,node_id,id`)
 	if err != nil {
 		return 0, Wrap(CodeCreateFailed, "query source node runs", err)
@@ -320,10 +325,10 @@ func exportNodeRuns(ctx context.Context, transaction pgx.Tx, writer io.Writer) (
 	defer rows.Close()
 	var count uint64
 	for rows.Next() {
-		var record NodeRunRecord
+		var record NodeRunRecordV1Alpha2
 		var input, output, errorJSON []byte
 		if err := rows.Scan(&record.ID, &record.RunID, &record.NodeID, &record.NodeType, &record.Status,
-			&input, &output, &errorJSON, &record.StartedAt, &record.EndedAt); err != nil {
+			&input, &output, &errorJSON, &record.StartedAt, &record.EndedAt, &record.Attempt); err != nil {
 			return 0, Wrap(CodeCreateFailed, "scan source node run", err)
 		}
 		record.Input, record.Output, record.Error = nullableJSONB(input), nullableJSONB(output), nullableJSONB(errorJSON)
@@ -342,18 +347,18 @@ func exportNodeRuns(ctx context.Context, transaction pgx.Tx, writer io.Writer) (
 
 func exportRunEvents(ctx context.Context, transaction pgx.Tx, writer io.Writer) (uint64, error) {
 	rows, err := transaction.Query(ctx, `SELECT run_id::text,sequence,type,node_id,status,input,output,active_ports,error,
-		input_redacted_paths,output_redacted_paths,data_bytes,timestamp FROM run_events ORDER BY run_id,sequence`)
+		input_redacted_paths,output_redacted_paths,data_bytes,timestamp,node_attempt FROM run_events ORDER BY run_id,sequence`)
 	if err != nil {
 		return 0, Wrap(CodeCreateFailed, "query source run events", err)
 	}
 	defer rows.Close()
 	var count uint64
 	for rows.Next() {
-		var record RunEventRecord
+		var record RunEventRecordV1Alpha2
 		var input, output, errorJSON []byte
 		if err := rows.Scan(&record.RunID, &record.Sequence, &record.Type, &record.NodeID, &record.Status,
 			&input, &output, &record.ActivePorts, &errorJSON, &record.InputRedactedPaths,
-			&record.OutputRedactedPaths, &record.DataBytes, &record.Timestamp); err != nil {
+			&record.OutputRedactedPaths, &record.DataBytes, &record.Timestamp, &record.NodeAttempt); err != nil {
 			return 0, Wrap(CodeCreateFailed, "scan source run event", err)
 		}
 		record.Input, record.Output, record.Error = nullableJSONB(input), nullableJSONB(output), nullableJSONB(errorJSON)
@@ -368,6 +373,34 @@ func exportRunEvents(ctx context.Context, transaction pgx.Tx, writer io.Writer) 
 	}
 	if err := rows.Err(); err != nil {
 		return 0, Wrap(CodeCreateFailed, "iterate source run events", err)
+	}
+	return count, nil
+}
+
+func exportRunPayloads(ctx context.Context, transaction pgx.Tx, writer io.Writer) (uint64, error) {
+	rows, err := transaction.Query(ctx, `SELECT run_id::text,sequence,kind,node_id,node_attempt,execution_protocol,
+		cipher_version,ciphertext,created_at FROM run_payloads ORDER BY run_id,sequence,kind`)
+	if err != nil {
+		return 0, Wrap(CodeCreateFailed, "query source run payloads", err)
+	}
+	defer rows.Close()
+	var count uint64
+	for rows.Next() {
+		var record RunPayloadRecord
+		var ciphertext []byte
+		if err := rows.Scan(&record.RunID, &record.Sequence, &record.Kind, &record.NodeID, &record.NodeAttempt,
+			&record.ExecutionProtocol, &record.CipherVersion, &ciphertext, &record.CreatedAt); err != nil {
+			return 0, Wrap(CodeCreateFailed, "scan source run payload", err)
+		}
+		record.Ciphertext = base64.StdEncoding.EncodeToString(ciphertext)
+		record.CreatedAt = record.CreatedAt.UTC()
+		if err := writeRecord(writer, TableRunPayloads, record); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, Wrap(CodeCreateFailed, "iterate source run payloads", err)
 	}
 	return count, nil
 }

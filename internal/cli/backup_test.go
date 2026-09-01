@@ -53,7 +53,7 @@ func TestBackupCommandCreateRoutesOptionsAndPrintsHumanSummary(t *testing.T) {
 			return backupSummaryFixture("snapshot.asbak"), nil
 		},
 	})
-	want := "backup: \"snapshot.asbak\"\nformat: agent-studio.dev/backup/v1alpha1\nruntime: 0.5.0-test\nmigration: 6\nrecords: 3\ncompressed: 4096\nchecksum: sha256:" + strings.Repeat("a", 64) + "\n"
+	want := "backup: \"snapshot.asbak\"\nformat: agent-studio.dev/backup/v1alpha2\nruntime: 0.5.0-test\nmigration: 7\nrecords: 3\ncompressed: 4096\nchecksum: sha256:" + strings.Repeat("a", 64) + "\n"
 	if code != 0 || !called || stdout.String() != want {
 		t.Fatalf("code=%d called=%t stdout=%q", code, called, stdout.String())
 	}
@@ -83,7 +83,7 @@ func TestBackupInspectJSONOutput(t *testing.T) {
 			return backupSummaryFixture("snapshot.asbak"), nil
 		},
 	})
-	if code != 0 || !strings.Contains(stdout.String(), `"apiVersion":"agent-studio.dev/backup/v1alpha1"`) || !strings.HasSuffix(stdout.String(), "\n") {
+	if code != 0 || !strings.Contains(stdout.String(), `"apiVersion":"agent-studio.dev/backup/v1alpha2"`) || !strings.HasSuffix(stdout.String(), "\n") {
 		t.Fatalf("code=%d stdout=%q", code, stdout.String())
 	}
 }
@@ -166,8 +166,8 @@ func TestBackupRestoreRoutesModesAndPrintsSafeSummaries(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "dry run", args: []string{"restore", "--dry-run", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha1\narchive-migration: 6\ntarget-migration: 0\nlatest-migration: 6\npending-migrations: 1,2,3,4,5,6\nuncompressed: 2048\nrestore-order: workflows,workflow_versions,runs,node_runs,run_events,workflow_draft_checkpoints\nrecords: 4\nworkflows: 1\nruns: 3\ntarget-empty: true\n"},
-		{name: "restore", args: []string{"restore", "--confirm-empty-instance", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha1\narchive-migration: 6\ncommitted-migration: 6\nrecords: 4\nworkflows: 1\nruns: 3\nrestored: true\n"},
+		{name: "dry run", args: []string{"restore", "--dry-run", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha2\narchive-migration: 7\ntarget-migration: 0\nlatest-migration: 7\npending-migrations: 1,2,3,4,5,6,7\nuncompressed: 2048\nrestore-order: workflows,workflow_versions,runs,node_runs,run_events,run_payloads,workflow_draft_checkpoints\nrecords: 4\nworkflows: 1\nruns: 3\ntarget-empty: true\n"},
+		{name: "restore", args: []string{"restore", "--confirm-empty-instance", "fixture.asbak"}, want: "format: agent-studio.dev/backup/v1alpha2\narchive-migration: 7\ncommitted-migration: 7\nrecords: 4\nworkflows: 1\nruns: 3\nrestored: true\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -181,14 +181,14 @@ func TestBackupRestoreRoutesModesAndPrintsSafeSummaries(t *testing.T) {
 					if path != "fixture.asbak" {
 						t.Fatalf("path=%q", path)
 					}
-					return backupdomain.RestorePlan{Archive: summary, TargetMigrationVersion: 0, LatestMigrationVersion: 6, PendingMigrations: []int64{1, 2, 3, 4, 5, 6}, TargetEmpty: true}, nil
+					return backupdomain.RestorePlan{Archive: summary, TargetMigrationVersion: 0, LatestMigrationVersion: 7, PendingMigrations: []int64{1, 2, 3, 4, 5, 6, 7}, TargetEmpty: true}, nil
 				},
 				restore: func(_ context.Context, _ *pgxpool.Pool, path string) (backupdomain.RestoreResult, error) {
 					restoreCalled = true
 					if path != "fixture.asbak" {
 						t.Fatalf("path=%q", path)
 					}
-					return backupdomain.RestoreResult{Summary: summary, MigrationVersion: 6, Tables: map[backupdomain.TableName]uint64{backupdomain.TableWorkflows: 1, backupdomain.TableRuns: 3}}, nil
+					return backupdomain.RestoreResult{Summary: summary, MigrationVersion: 7, Tables: map[backupdomain.TableName]uint64{backupdomain.TableWorkflows: 1, backupdomain.TableRuns: 3}}, nil
 				},
 			})
 			if code != 0 || stdout.String() != test.want || stderr.Len() != 0 || strings.Contains(stdout.String(), secret) || strings.Contains(stderr.String(), secret) {
@@ -245,7 +245,7 @@ func TestBackupRestoreUsesSafeFailureOutput(t *testing.T) {
 func backupSummaryFixture(path string) backupdomain.Summary {
 	return backupdomain.Summary{
 		Path: path, APIVersion: backupdomain.APIVersion, CreatedAt: time.Now().UTC(), RuntimeVersion: "0.5.0-test",
-		MigrationVersion: 6, DatasetDigest: "sha256:" + strings.Repeat("a", 64), CompressedBytes: 4096,
+		MigrationVersion: 7, DatasetDigest: "sha256:" + strings.Repeat("a", 64), CompressedBytes: 4096,
 		Tables: []backupdomain.TableManifest{{Name: backupdomain.TableWorkflows, Records: 1}, {Name: backupdomain.TableRuns, Records: 2}},
 	}
 }

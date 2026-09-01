@@ -23,7 +23,7 @@ import (
 const (
 	manifestPath   = "manifest.json"
 	checksumsPath  = "checksums.txt"
-	archiveEntries = 2 + 6
+	archiveEntries = 2 + 7
 )
 
 var runtimeVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
@@ -41,12 +41,13 @@ func writeArchive(ctx context.Context, output string, base Manifest, writers map
 	if err := validateBaseManifest(base); err != nil {
 		return Summary{}, err
 	}
-	if len(writers) != len(TableOrder) {
+	tableOrder, err := tableOrderForVersion(base.APIVersion)
+	if err != nil || len(writers) != len(tableOrder) {
 		return Summary{}, Wrap(CodeArchiveInvalid, "validate table writers", nil)
 	}
 
 	var result Manifest
-	err := publishAtomicContextGuarded(ctx, output, func(file *os.File) error {
+	err = publishAtomicContextGuarded(ctx, output, func(file *os.File) error {
 		zipWriter := zip.NewWriter(file)
 		closed := false
 		defer func() {
@@ -57,9 +58,9 @@ func writeArchive(ctx context.Context, output string, base Manifest, writers map
 
 		result = base
 		result.CreatedAt = result.CreatedAt.UTC()
-		result.Tables = make([]TableManifest, 0, len(TableOrder))
+		result.Tables = make([]TableManifest, 0, len(tableOrder))
 		var total uint64
-		for _, name := range TableOrder {
+		for _, name := range tableOrder {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -277,6 +278,9 @@ func OpenArchive(ctx context.Context, path string) (*Archive, error) {
 	}
 	manifest, err := decodeManifest(manifestBody)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateArchiveFileSet(files, manifest); err != nil {
 		return nil, err
 	}
 	checksumsBody, err := readZipPart(files[checksumsPath], MaxChecksumsBytes)
@@ -516,8 +520,12 @@ func validateBaseManifest(manifest Manifest) error {
 		return Wrap(CodeArchiveInvalid, "validate base manifest", nil)
 	}
 	copy := manifest
-	copy.Tables = make([]TableManifest, len(TableOrder))
-	for index, name := range TableOrder {
+	tableOrder, err := tableOrderForVersion(manifest.APIVersion)
+	if err != nil {
+		return Wrap(CodeFormatUnsupported, "validate backup api version", nil)
+	}
+	copy.Tables = make([]TableManifest, len(tableOrder))
+	for index, name := range tableOrder {
 		path, _ := tablePath(name)
 		copy.Tables[index] = TableManifest{Name: name, Path: path, Digest: digestPrefix + strings.Repeat("0", 64)}
 	}
@@ -526,7 +534,8 @@ func validateBaseManifest(manifest Manifest) error {
 }
 
 func validateManifest(manifest Manifest) error {
-	if manifest.APIVersion != APIVersion {
+	tableOrder, err := tableOrderForVersion(manifest.APIVersion)
+	if err != nil {
 		return Wrap(CodeFormatUnsupported, "validate backup api version", nil)
 	}
 	if manifest.CreatedAt.IsZero() || manifest.CreatedAt.Location() != time.UTC {
@@ -535,11 +544,11 @@ func validateManifest(manifest Manifest) error {
 	if !runtimeVersionPattern.MatchString(manifest.RuntimeVersion) || manifest.DatabaseMigrationVersion <= 0 || !manifest.IncludesRuns {
 		return Wrap(CodeArchiveInvalid, "validate backup manifest metadata", nil)
 	}
-	if !canonicalDigest(manifest.DatasetDigest) || len(manifest.Tables) != len(TableOrder) {
+	if !canonicalDigest(manifest.DatasetDigest) || len(manifest.Tables) != len(tableOrder) {
 		return Wrap(CodeArchiveInvalid, "validate backup manifest tables", nil)
 	}
 	var total uint64
-	for index, name := range TableOrder {
+	for index, name := range tableOrder {
 		table := manifest.Tables[index]
 		path, _ := tablePath(name)
 		if table.Name != name || table.Path != path || !canonicalDigest(table.Digest) {
@@ -584,7 +593,7 @@ func validateChecksums(manifest Manifest, manifestBody, body []byte) error {
 		return Wrap(CodeArchiveInvalid, "validate backup checksums newline", nil)
 	}
 	lines := strings.Split(string(body[:len(body)-1]), "\n")
-	if len(lines) != archiveEntries-1 {
+	if len(lines) != len(manifest.Tables)+1 {
 		return Wrap(CodeArchiveInvalid, "validate backup checksum count", nil)
 	}
 	actual := make(map[string]string, len(lines))
@@ -692,11 +701,11 @@ func readZipPart(file *zip.File, limit int) ([]byte, error) {
 }
 
 func validateZipEntries(entries []*zip.File) (map[string]*zip.File, error) {
-	if len(entries) != archiveEntries {
+	if len(entries) != len(TableOrderV1Alpha1)+2 && len(entries) != len(TableOrderV1Alpha2)+2 {
 		return nil, Wrap(CodeArchiveInvalid, "validate backup entry count", nil)
 	}
 	expected := map[string]bool{manifestPath: true, checksumsPath: true}
-	for _, name := range TableOrder {
+	for _, name := range TableOrderV1Alpha2 {
 		path, _ := tablePath(name)
 		expected[path] = true
 	}
@@ -720,6 +729,18 @@ func validateZipEntries(entries []*zip.File) (map[string]*zip.File, error) {
 		files[name] = file
 	}
 	return files, nil
+}
+
+func validateArchiveFileSet(files map[string]*zip.File, manifest Manifest) error {
+	if len(files) != len(manifest.Tables)+2 {
+		return Wrap(CodeArchiveInvalid, "validate backup entry count", nil)
+	}
+	for _, table := range manifest.Tables {
+		if files[table.Path] == nil {
+			return Wrap(CodeArchiveInvalid, "validate backup entry path", nil)
+		}
+	}
+	return nil
 }
 
 func preflightZIPDirectory(reader io.ReaderAt, size int64) error {
@@ -783,7 +804,7 @@ func preflightZIPDirectory(reader io.ReaderAt, size int64) error {
 	if disk != 0 || centralDisk != 0 || diskEntries != entries {
 		return Wrap(CodeArchiveInvalid, "validate zip disks", nil)
 	}
-	if entries != archiveEntries {
+	if entries != uint64(len(TableOrderV1Alpha1)+2) && entries != uint64(len(TableOrderV1Alpha2)+2) {
 		return Wrap(CodeArchiveInvalid, "validate backup entry count", nil)
 	}
 	if centralSize > MaxCentralDirectoryBytes {

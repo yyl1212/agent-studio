@@ -6,7 +6,9 @@ import (
 )
 
 const (
-	APIVersion                      = "agent-studio.dev/backup/v1alpha1"
+	APIVersionV1Alpha1              = "agent-studio.dev/backup/v1alpha1"
+	APIVersionV1Alpha2              = "agent-studio.dev/backup/v1alpha2"
+	APIVersion                      = APIVersionV1Alpha2
 	digestPrefix                    = "sha256:"
 	MaxManifestBytes                = 1 << 20
 	MaxChecksumsBytes               = 1 << 20
@@ -23,16 +25,41 @@ const (
 	TableRuns                     TableName = "runs"
 	TableNodeRuns                 TableName = "node_runs"
 	TableRunEvents                TableName = "run_events"
+	TableRunPayloads              TableName = "run_payloads"
 	TableWorkflowDraftCheckpoints TableName = "workflow_draft_checkpoints"
 )
 
-var TableOrder = []TableName{
+var TableOrderV1Alpha1 = []TableName{
 	TableWorkflows,
 	TableWorkflowVersions,
 	TableRuns,
 	TableNodeRuns,
 	TableRunEvents,
 	TableWorkflowDraftCheckpoints,
+}
+
+var TableOrderV1Alpha2 = []TableName{
+	TableWorkflows,
+	TableWorkflowVersions,
+	TableRuns,
+	TableNodeRuns,
+	TableRunEvents,
+	TableRunPayloads,
+	TableWorkflowDraftCheckpoints,
+}
+
+// TableOrder is the table order emitted by the current backup format.
+var TableOrder = TableOrderV1Alpha2
+
+func tableOrderForVersion(version string) ([]TableName, error) {
+	switch version {
+	case APIVersionV1Alpha1:
+		return TableOrderV1Alpha1, nil
+	case APIVersionV1Alpha2:
+		return TableOrderV1Alpha2, nil
+	default:
+		return nil, errors.New("unsupported backup api version")
+	}
 }
 
 type TableManifest struct {
@@ -77,6 +104,8 @@ func tablePath(name TableName) (string, error) {
 		return "data/node_runs.jsonl", nil
 	case TableRunEvents:
 		return "data/run_events.jsonl", nil
+	case TableRunPayloads:
+		return "data/run_payloads.jsonl", nil
 	case TableWorkflowDraftCheckpoints:
 		return "data/workflow_draft_checkpoints.jsonl", nil
 	default:
