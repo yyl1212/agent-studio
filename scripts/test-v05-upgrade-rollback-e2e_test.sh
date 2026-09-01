@@ -387,6 +387,57 @@ require_match(source, /run_bounded postgres_client docker compose -f .* exec -T 
 RUBY
 ruby "$review_validator" "$script"
 
+clean_tree_fixture="$test_root/clean-tree-fixture"
+clean_tree_bin="$test_root/clean-tree-bin"
+mkdir -p "$clean_tree_fixture/scripts" "$clean_tree_bin"
+cp "$script" "$clean_tree_fixture/scripts/test-v05-upgrade-rollback-e2e.sh"
+printf '%s\n' tracked >"$clean_tree_fixture/tracked.txt"
+git -C "$clean_tree_fixture" init -q
+git -C "$clean_tree_fixture" add scripts/test-v05-upgrade-rollback-e2e.sh tracked.txt
+git -C "$clean_tree_fixture" -c user.name=contract -c user.email=contract@example.invalid commit -qm fixture
+cat >"$clean_tree_bin/docker" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >>"$CLEAN_TREE_DOCKER_LOG"
+exit 19
+SH
+chmod +x "$clean_tree_bin/docker"
+
+exercise_clean_tree_guard() {
+  clean_tree_case=$1
+  clean_tree_log="$test_root/$clean_tree_case-docker.log"
+  clean_tree_tmp="$test_root/$clean_tree_case-tmp"
+  mkdir "$clean_tree_tmp"
+  rm -f "$clean_tree_log"
+  set +e
+  PATH="$clean_tree_bin:$PATH" TMPDIR="$clean_tree_tmp" CLEAN_TREE_DOCKER_LOG="$clean_tree_log" \
+    RUN_PAYLOAD_ENCRYPTION_KEY=contract-test-key V04_UPGRADE_ROLLBACK_ARTIFACT_DIR="$test_root/$clean_tree_case-artifacts" \
+    sh "$clean_tree_fixture/scripts/test-v05-upgrade-rollback-e2e.sh" >"$test_root/$clean_tree_case.out" 2>&1
+  clean_tree_status=$?
+  set -e
+  [ "$clean_tree_status" -ne 0 ]
+}
+
+exercise_clean_tree_guard clean
+[ -s "$test_root/clean-docker.log" ] || { printf '%s\n' 'clean source tree was rejected before preflight' >&2; exit 1; }
+
+printf '%s\n' dirty >>"$clean_tree_fixture/tracked.txt"
+exercise_clean_tree_guard dirty-tracked
+[ ! -e "$test_root/dirty-tracked-docker.log" ] || { printf '%s\n' 'dirty tracked source reached Docker preflight' >&2; exit 1; }
+[ -z "$(find "$test_root/dirty-tracked-tmp" -name 'agent-studio-v04-upgrade-rollback.*' -print -quit)" ] || { printf '%s\n' 'dirty tracked source created a run root' >&2; exit 1; }
+git -C "$clean_tree_fixture" checkout -q -- tracked.txt
+
+printf '%s\n' dirty >"$clean_tree_fixture/untracked.txt"
+exercise_clean_tree_guard dirty-untracked
+[ ! -e "$test_root/dirty-untracked-docker.log" ] || { printf '%s\n' 'dirty untracked source reached Docker preflight' >&2; exit 1; }
+[ -z "$(find "$test_root/dirty-untracked-tmp" -name 'agent-studio-v04-upgrade-rollback.*' -print -quit)" ] || { printf '%s\n' 'dirty untracked source created a run root' >&2; exit 1; }
+rm "$clean_tree_fixture/untracked.txt"
+
+mv "$clean_tree_fixture/.git" "$clean_tree_fixture/.git-hidden"
+exercise_clean_tree_guard git-status-error
+[ ! -e "$test_root/git-status-error-docker.log" ] || { printf '%s\n' 'git status failure reached Docker preflight' >&2; exit 1; }
+[ -z "$(find "$test_root/git-status-error-tmp" -name 'agent-studio-v04-upgrade-rollback.*' -print -quit)" ] || { printf '%s\n' 'git status failure created a run root' >&2; exit 1; }
+mv "$clean_tree_fixture/.git-hidden" "$clean_tree_fixture/.git"
+
 fake_bin="$test_root/fake-bin"
 mkdir -p "$fake_bin" "$test_root/fake-tmp"
 fake_log="$test_root/fake-docker.log"

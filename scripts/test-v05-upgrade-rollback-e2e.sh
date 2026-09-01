@@ -18,6 +18,18 @@ tar_binary=$(command -v tar 2>/dev/null || true)
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$repo_root"
 
+assert_clean_source_tree() {
+  if ! source_tree_status=$("$git_binary" -C "$repo_root" status --porcelain --untracked-files=all 2>/dev/null); then
+    printf '%s\n' 'unable to verify that the upgrade source tree is clean' >&2
+    return 1
+  fi
+  if [ -n "$source_tree_status" ]; then
+    printf '%s\n' 'upgrade rollback E2E requires a clean source tree' >&2
+    return 1
+  fi
+}
+assert_clean_source_tree
+
 postgres_image=postgres:18
 workflow_id=50000000-0000-4000-8000-000000000001
 workflow_version_id=50000000-0000-4000-8000-000000000002
