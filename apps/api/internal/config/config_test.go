@@ -23,6 +23,7 @@ func clearOTelEnv(t *testing.T) {
 		"WORKER_LEASE_DURATION",
 		"WORKER_HEARTBEAT_INTERVAL",
 		"WORKER_CLAIM_INTERVAL",
+		"WORKER_QUEUE_SAMPLE_INTERVAL",
 		"WORKER_SHUTDOWN_TIMEOUT",
 		"RUN_EVENT_POLL_INTERVAL",
 	} {
@@ -129,7 +130,7 @@ func TestLoadUsesDurableWorkerDefaults(t *testing.T) {
 		t.Fatalf("config=%+v error=%v", cfg, err)
 	}
 	if cfg.WorkerMaxActiveRuns != 1 || cfg.WorkerLeaseDuration != 30*time.Second || cfg.WorkerHeartbeatInterval != 10*time.Second ||
-		cfg.WorkerClaimInterval != 500*time.Millisecond || cfg.WorkerShutdownTimeout != 30*time.Second || cfg.RunEventPollInterval != 250*time.Millisecond {
+		cfg.WorkerClaimInterval != 500*time.Millisecond || cfg.WorkerQueueSampleInterval != 5*time.Second || cfg.WorkerShutdownTimeout != 30*time.Second || cfg.RunEventPollInterval != 250*time.Millisecond {
 		t.Fatalf("unexpected worker defaults: %+v", cfg)
 	}
 }
@@ -140,6 +141,7 @@ func TestLoadValidatesDurableWorkerBoundsAndRelationships(t *testing.T) {
 		{"WORKER_LEASE_DURATION", "14s"}, {"WORKER_LEASE_DURATION", "5m1s"},
 		{"WORKER_HEARTBEAT_INTERVAL", "0s"}, {"WORKER_HEARTBEAT_INTERVAL", "11s"},
 		{"WORKER_CLAIM_INTERVAL", "99ms"}, {"WORKER_CLAIM_INTERVAL", "5s1ms"},
+		{"WORKER_QUEUE_SAMPLE_INTERVAL", "999ms"}, {"WORKER_QUEUE_SAMPLE_INTERVAL", "1m1s"},
 		{"WORKER_SHUTDOWN_TIMEOUT", "999ms"}, {"WORKER_SHUTDOWN_TIMEOUT", "5m1s"},
 		{"RUN_EVENT_POLL_INTERVAL", "99ms"}, {"RUN_EVENT_POLL_INTERVAL", "2s1ms"},
 	}
@@ -148,7 +150,7 @@ func TestLoadValidatesDurableWorkerBoundsAndRelationships(t *testing.T) {
 			clearOTelEnv(t)
 			t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
 			t.Setenv(test.key, test.value)
-			if _, err := Load(); err == nil || !strings.Contains(err.Error(), test.key) {
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), test.key) || strings.Contains(err.Error(), test.value) {
 				t.Fatalf("Load(%s=%s) error=%v", test.key, test.value, err)
 			}
 		})
@@ -162,6 +164,7 @@ func TestLoadAcceptsDurableWorkerBoundaries(t *testing.T) {
 	t.Setenv("WORKER_LEASE_DURATION", "15s")
 	t.Setenv("WORKER_HEARTBEAT_INTERVAL", "5s")
 	t.Setenv("WORKER_CLAIM_INTERVAL", "100ms")
+	t.Setenv("WORKER_QUEUE_SAMPLE_INTERVAL", "1m")
 	t.Setenv("WORKER_SHUTDOWN_TIMEOUT", "5m")
 	t.Setenv("RUN_EVENT_POLL_INTERVAL", "2s")
 	if _, err := Load(); err != nil {

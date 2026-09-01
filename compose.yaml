@@ -49,6 +49,7 @@ services:
     environment:
       <<: *runtime-environment
       WORKER_MAX_ACTIVE_RUNS: "1"
+      WORKER_QUEUE_SAMPLE_INTERVAL: ${WORKER_QUEUE_SAMPLE_INTERVAL:-5s}
       OTEL_SERVICE_NAME: agent-studio-worker
     depends_on:
       db:

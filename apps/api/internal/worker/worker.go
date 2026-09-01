@@ -17,12 +17,13 @@ import (
 )
 
 type Config struct {
-	OwnerID           string
-	MaxActiveRuns     int
-	LeaseDuration     time.Duration
-	HeartbeatInterval time.Duration
-	ClaimInterval     time.Duration
-	ShutdownTimeout   time.Duration
+	OwnerID             string
+	MaxActiveRuns       int
+	LeaseDuration       time.Duration
+	HeartbeatInterval   time.Duration
+	ClaimInterval       time.Duration
+	QueueSampleInterval time.Duration
+	ShutdownTimeout     time.Duration
 }
 
 type executionRehydrator interface {
