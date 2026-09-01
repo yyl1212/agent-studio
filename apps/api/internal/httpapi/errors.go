@@ -62,6 +62,18 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 		status, response.Code, response.Message = http.StatusBadRequest, "CURSOR_INVALID", "分页游标无效，请刷新后重试"
 	case errors.Is(err, workflow.ErrRunNotCancellable):
 		status, response.Code, response.Message = http.StatusConflict, "RUN_NOT_CANCELLABLE", "运行已结束，不能取消"
+	case errors.Is(err, workflow.ErrRunRecoveryNotRequired):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_NOT_REQUIRED", "当前运行不需要恢复"
+	case errors.Is(err, workflow.ErrRunRecoveryConflict):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_CONFLICT", "恢复状态已变化，请刷新后重试"
+	case errors.Is(err, workflow.ErrRunRecoveryNodeNotFound):
+		status, response.Code, response.Message = http.StatusNotFound, "RUN_RECOVERY_NODE_NOT_FOUND", "待恢复节点不存在"
+	case errors.Is(err, workflow.ErrRunRecoveryRetryUnavailable):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_RETRY_UNAVAILABLE", "当前节点不能确认重试"
+	case errors.Is(err, workflow.ErrRunRecoveryRetryExhausted):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_RETRY_EXHAUSTED", "节点重试次数已用尽"
+	case errors.Is(err, workflow.ErrRunRecoveryPayloadUnavailable):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_PAYLOAD_UNAVAILABLE", "运行负载不可用，不能重试"
 	case errors.Is(err, workflow.ErrRunNotRetryable):
 		status, response.Code, response.Message = http.StatusConflict, "RUN_NOT_RETRYABLE", "当前运行不能完整重试"
 	case errors.Is(err, workflow.ErrRunRetrySecretRequired):

@@ -1333,6 +1333,7 @@ func fixtureDeps() Dependencies {
 		},
 		VersionGovernance: &fixtureVersionGovernance{},
 		RunManagement:     runManager,
+		RunRecovery:       &fixtureRecoveryAPI{},
 		RetrySubmissions:  runManager,
 		Debugger:          debugger,
 		RerunSubmissions:  debugger,

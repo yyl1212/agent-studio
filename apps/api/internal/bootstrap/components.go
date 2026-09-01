@@ -58,6 +58,7 @@ type APIComponents struct {
 	Submission    *workflow.RunSubmissionService
 	RunService    *workflow.RunService
 	RunManagement *workflow.RunManagementService
+	RunRecovery   *workflow.RunRecoveryService
 	Debug         *workflow.DebugService
 	Follower      *workflow.RunEventFollower
 	Router        http.Handler
@@ -137,6 +138,7 @@ func BuildAPI(common *Common, logger *slog.Logger) (*APIComponents, error) {
 	runService := workflow.NewRunService(common.Store, common.Compiler, nil,
 		workflow.WithLogger(logger), workflow.WithRunTelemetry(providers), workflow.WithRunSubmission(submission))
 	runManagement := workflow.NewQueuedRunManagementService(common.Store, common.Compiler, submission)
+	runRecovery := workflow.NewRunRecoveryService(common.Store, common.Compiler)
 	debugService := workflow.NewQueuedDebugService(common.Store, common.Compiler, submission)
 	follower := workflow.NewRunEventFollower(common.Store, common.Config.RunEventPollInterval)
 	agentRuns := workflow.NewQueuedAgentRunService(runService, common.Store)
@@ -146,13 +148,13 @@ func BuildAPI(common *Common, logger *slog.Logger) (*APIComponents, error) {
 		WorkflowManagement: workflow.NewWorkflowManagementService(common.Store),
 		VersionGovernance:  workflow.NewVersionGovernanceService(common.Store, common.Compiler, common.Registry),
 		RunSubmissions:     runService, RunFollower: follower, Runs: common.Store, AgentRuns: agentRuns,
-		RunManagement: runManagement, RetrySubmissions: runManagement,
+		RunManagement: runManagement, RunRecovery: runRecovery, RetrySubmissions: runManagement,
 		Debugger: debugService, RerunSubmissions: debugService,
 		Readiness: common.Store, NodePackages: common.NodePackages, WebOrigin: common.Config.WebOrigin,
 		Logger: logger, Telemetry: providers,
 	})
 	return &APIComponents{
-		Common: common, Submission: submission, RunService: runService, RunManagement: runManagement,
+		Common: common, Submission: submission, RunService: runService, RunManagement: runManagement, RunRecovery: runRecovery,
 		Debug: debugService, Follower: follower, Router: router,
 	}, nil
 }

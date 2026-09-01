@@ -81,6 +81,12 @@ type RunManager interface {
 	RetryPreview(context.Context, string) (workflow.RunRetryPreview, error)
 }
 
+type RunRecoveryAPI interface {
+	Get(context.Context, string) (workflow.RunRecoveryView, error)
+	ConfirmNodeRetry(context.Context, string, string, workflow.ConfirmNodeRetryRequest) (domain.RunSummary, error)
+	Terminate(context.Context, string, workflow.TerminateRecoveryRequest) (domain.RunSummary, error)
+}
+
 type Debugger interface {
 	Overview(context.Context, string) (workflow.DebugOverview, error)
 	Events(context.Context, string, int64) (workflow.RunEventPage, error)
@@ -107,6 +113,7 @@ type Dependencies struct {
 	Runs               RunReader
 	AgentRuns          AgentRunAPI
 	RunManagement      RunManager
+	RunRecovery        RunRecoveryAPI
 	RetrySubmissions   RetrySubmitter
 	Debugger           Debugger
 	RerunSubmissions   RerunSubmitter
@@ -170,6 +177,9 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Get("/runs/{id}", handler.getRun)
 		api.Get("/runs", handler.listRunSummaries)
 		api.Post("/runs/{id}/cancel", handler.cancelRun)
+		api.Get("/runs/{runId}/recovery", handler.getRunRecovery)
+		api.Post("/runs/{runId}/recovery/nodes/{nodeId}/retry", handler.confirmRunNodeRetry)
+		api.Post("/runs/{runId}/recovery/terminate", handler.terminateRunRecovery)
 		api.Get("/runs/{id}/retry-preview", handler.previewRunRetry)
 		api.Post("/runs/{id}/retries", handler.retryRun)
 		api.Get("/runs/{id}/debug", handler.getRunDebug)

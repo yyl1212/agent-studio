@@ -306,6 +306,103 @@ func TestDurableRunRecoveryRequiresCurrentLeaseAndReleasesIt(t *testing.T) {
 	}
 }
 
+func TestRunRecoveryConfirmationIsConcurrentAndQueuesOnlyAfterLastNode(t *testing.T) {
+	store := migratedTestStore(t)
+	workflowRecord := createWorkflowFixture(t, store, "recovery-confirm")
+	submission := durableSubmissionFixture(workflowRecord)
+	if err := store.SubmitRun(context.Background(), submission); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimRun(context.Background(), "worker", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("claimed=%v error=%v", ok, err)
+	}
+	budget := domain.RunEventBudget{MaxEvents: 32, MaxTotalDataBytes: 1 << 20}
+	for sequence, nodeID := range []string{"node-a", "node-b"} {
+		attempt := 1
+		event := domain.RunEvent{RunID: submission.Run.ID, Sequence: int64(sequence + 2), Type: "node.started", NodeID: nodeID, NodeAttempt: &attempt, Status: domain.NodeRunning, Timestamp: time.Now().UTC()}
+		nodeRun := domain.NodeRun{ID: fixtureUUID(), RunID: submission.Run.ID, NodeID: nodeID, NodeType: "fixture", Attempt: 1, Status: domain.NodeRunning}
+		if err := store.PersistLeasedRunEvent(context.Background(), claimed.Lease, event, &nodeRun, nil, budget); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recoveryAt := time.Now().UTC()
+	if err := store.RequireRunRecovery(context.Background(), claimed.Lease,
+		domain.RunEvent{RunID: submission.Run.ID, Sequence: 4, Type: "run.recovery_required", Timestamp: recoveryAt},
+		domain.RecoveryUncertainEffect, recoveryAt, budget); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			_, err := store.ConfirmRunNodeRetry(context.Background(), submission.Run.ID, "node-a", 1, 4, false)
+			results <- err
+		}()
+	}
+	close(start)
+	firstErr, secondErr := <-results, <-results
+	if (firstErr == nil) == (secondErr == nil) {
+		t.Fatalf("confirmation errors=%v / %v", firstErr, secondErr)
+	}
+	conflict := firstErr
+	if conflict == nil {
+		conflict = secondErr
+	}
+	if !errors.Is(conflict, workflowservice.ErrRunRecoveryConflict) {
+		t.Fatalf("conflict error=%v", conflict)
+	}
+	afterFirst, _, err := store.GetRun(context.Background(), submission.Run.ID)
+	if err != nil || afterFirst.Status != domain.RunRecoveryRequired {
+		t.Fatalf("after first=%+v error=%v", afterFirst, err)
+	}
+	afterLast, err := store.ConfirmRunNodeRetry(context.Background(), submission.Run.ID, "node-b", 1, 5, true)
+	if err != nil || afterLast.Status != domain.RunQueued {
+		t.Fatalf("after last=%+v error=%v", afterLast, err)
+	}
+	events, err := store.ListRunEvents(context.Background(), submission.Run.ID, 0, 10)
+	if err != nil || len(events) != 7 || events[4].Type != "node.retry_confirmed" || events[5].Type != "node.retry_confirmed" || events[6].Type != "run.queued" {
+		t.Fatalf("events=%+v error=%v", events, err)
+	}
+}
+
+func TestRunRecoveryTerminateUsesExpectedSequenceAndStableError(t *testing.T) {
+	store := migratedTestStore(t)
+	workflowRecord := createWorkflowFixture(t, store, "recovery-terminate")
+	submission := durableSubmissionFixture(workflowRecord)
+	if err := store.SubmitRun(context.Background(), submission); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimRun(context.Background(), "worker", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("claimed=%v error=%v", ok, err)
+	}
+	recoveryAt := time.Now().UTC()
+	if err := store.RequireRunRecovery(context.Background(), claimed.Lease,
+		domain.RunEvent{RunID: submission.Run.ID, Sequence: 2, Type: "run.recovery_required", Timestamp: recoveryAt},
+		domain.RecoveryPayloadUnavailable, recoveryAt, domain.RunEventBudget{MaxEvents: 16, MaxTotalDataBytes: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TerminateRunRecovery(context.Background(), submission.Run.ID, 1); !errors.Is(err, workflowservice.ErrRunRecoveryConflict) {
+		t.Fatalf("stale terminate error=%v", err)
+	}
+	summary, err := store.TerminateRunRecovery(context.Background(), submission.Run.ID, 2)
+	if err != nil || summary.Status != domain.RunCancelled || summary.EndedAt == nil {
+		t.Fatalf("summary=%+v error=%v", summary, err)
+	}
+	run, _, err := store.GetRun(context.Background(), submission.Run.ID)
+	if err != nil || run.Error == nil || run.Error.Code != "RUN_RECOVERY_TERMINATED" {
+		t.Fatalf("run=%+v error=%v", run, err)
+	}
+	if _, err := store.TerminateRunRecovery(context.Background(), submission.Run.ID, 2); !errors.Is(err, workflowservice.ErrRunRecoveryConflict) {
+		t.Fatalf("repeated stale terminate error=%v", err)
+	}
+	if _, err := store.TerminateRunRecovery(context.Background(), submission.Run.ID, 3); !errors.Is(err, workflowservice.ErrRunRecoveryNotRequired) {
+		t.Fatalf("repeated current terminate error=%v", err)
+	}
+}
+
 func TestDurableRunBudgetIncludesExistingAndNewPrivatePayloads(t *testing.T) {
 	store, submission, lease := claimedDurableRunFixture(t, "combined-budget")
 	// The submitted run already contains one byte of encrypted run input.

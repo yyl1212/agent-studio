@@ -290,6 +290,130 @@ func (store *Store) RequireRunRecovery(ctx context.Context, lease domain.RunLeas
 	return nil
 }
 
+func (store *Store) ConfirmRunNodeRetry(ctx context.Context, runID, nodeID string, nodeAttempt int, expectedSequence int64, queueAfterConfirmation bool) (domain.RunSummary, error) {
+	if runID == "" || nodeID == "" || nodeAttempt < 1 || expectedSequence < 1 {
+		return domain.RunSummary{}, workflowservice.ErrInvalidWorkflowInput
+	}
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return domain.RunSummary{}, fmt.Errorf("begin recovery node confirmation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var status domain.RunStatus
+	if err := tx.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1 FOR UPDATE`, runID).Scan(&status); err != nil {
+		return domain.RunSummary{}, mapNotFound(err)
+	}
+	var currentSequence int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(sequence),0) FROM run_events WHERE run_id=$1`, runID).Scan(&currentSequence); err != nil {
+		return domain.RunSummary{}, fmt.Errorf("read recovery sequence: %w", err)
+	}
+	if currentSequence != expectedSequence {
+		return domain.RunSummary{}, workflowservice.ErrRunRecoveryConflict
+	}
+	if status != domain.RunRecoveryRequired {
+		return domain.RunSummary{}, workflowservice.ErrRunRecoveryNotRequired
+	}
+	if nodeAttempt >= 3 {
+		return domain.RunSummary{}, workflowservice.ErrRunRecoveryRetryExhausted
+	}
+	var started, resolved bool
+	if err := tx.QueryRow(ctx, `SELECT
+		EXISTS(SELECT 1 FROM run_events WHERE run_id=$1 AND node_id=$2 AND node_attempt=$3 AND type='node.started'),
+		EXISTS(SELECT 1 FROM run_events WHERE run_id=$1 AND node_id=$2 AND node_attempt=$3
+			AND type IN ('node.completed','node.failed','node.skipped','node.cancelled','node.retry_confirmed'))`,
+		runID, nodeID, nodeAttempt).Scan(&started, &resolved); err != nil {
+		return domain.RunSummary{}, fmt.Errorf("read recovery node state: %w", err)
+	}
+	if !started || resolved {
+		return domain.RunSummary{}, workflowservice.ErrRunRecoveryNodeNotFound
+	}
+	attempt := nodeAttempt
+	event := domain.RunEvent{
+		RunID: runID, Sequence: currentSequence + 1, Type: "node.retry_confirmed", NodeID: nodeID,
+		NodeAttempt: &attempt, Timestamp: time.Now().UTC(), ActivePorts: []string{},
+		InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, DataBytes: 6,
+	}
+	if err := insertRunEventRecord(ctx, tx, event); err != nil {
+		return domain.RunSummary{}, err
+	}
+	if queueAfterConfirmation {
+		queued := domain.RunEvent{
+			RunID: runID, Sequence: currentSequence + 2, Type: "run.queued", Timestamp: event.Timestamp,
+			ActivePorts: []string{}, InputRedactedPaths: []string{}, OutputRedactedPaths: []string{}, DataBytes: 6,
+		}
+		if err := insertRunEventRecord(ctx, tx, queued); err != nil {
+			return domain.RunSummary{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE runs SET status='queued',recovery_reason=NULL,recovery_requested_at=NULL,
+			lease_owner=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1`, runID); err != nil {
+			return domain.RunSummary{}, fmt.Errorf("queue recovered run: %w", err)
+		}
+	}
+	summary, err := loadRunSummaryTx(ctx, tx, runID)
+	if err != nil {
+		return domain.RunSummary{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.RunSummary{}, fmt.Errorf("commit recovery node confirmation: %w", err)
+	}
+	return summary, nil
+}
+
+func (store *Store) TerminateRunRecovery(ctx context.Context, runID string, expectedSequence int64) (domain.RunSummary, error) {
+	if runID == "" || expectedSequence < 1 {
+		return domain.RunSummary{}, workflowservice.ErrInvalidWorkflowInput
+	}
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return domain.RunSummary{}, fmt.Errorf("begin recovery termination: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var status domain.RunStatus
+	if err := tx.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1 FOR UPDATE`, runID).Scan(&status); err != nil {
+		return domain.RunSummary{}, mapNotFound(err)
+	}
+	var currentSequence int64
+	var eventCount int
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(sequence),0),count(*) FROM run_events WHERE run_id=$1`, runID).Scan(&currentSequence, &eventCount); err != nil {
+		return domain.RunSummary{}, fmt.Errorf("read recovery termination sequence: %w", err)
+	}
+	if currentSequence != expectedSequence {
+		return domain.RunSummary{}, workflowservice.ErrRunRecoveryConflict
+	}
+	if status != domain.RunRecoveryRequired {
+		return domain.RunSummary{}, workflowservice.ErrRunRecoveryNotRequired
+	}
+	now := time.Now().UTC()
+	publicError := &domain.PublicError{Code: "RUN_RECOVERY_TERMINATED", Message: "运行已由管理员终止"}
+	if _, err := store.finalizeRunTx(ctx, tx, workflowservice.RunFinalization{
+		RunID: runID, Status: domain.RunCancelled, Error: publicError, EndedAt: now,
+		TerminalEvent: domain.RunEvent{RunID: runID, Sequence: currentSequence + 1, Type: "run.cancelled", Error: publicError, Timestamp: now},
+		Budget:        domain.RunEventBudget{MaxEvents: eventCount + 1, MaxTotalDataBytes: 32 << 20},
+	}, true); err != nil {
+		return domain.RunSummary{}, err
+	}
+	summary, err := loadRunSummaryTx(ctx, tx, runID)
+	if err != nil {
+		return domain.RunSummary{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.RunSummary{}, fmt.Errorf("commit recovery termination: %w", err)
+	}
+	return summary, nil
+}
+
+func loadRunSummaryTx(ctx context.Context, tx pgx.Tx, runID string) (domain.RunSummary, error) {
+	summary, err := scanRunSummary(tx.QueryRow(ctx, `SELECT `+runSummarySelectColumns+`
+		FROM runs r
+		JOIN workflows w ON w.id=r.workflow_id
+		LEFT JOIN workflow_versions rv ON rv.id=r.workflow_version_id AND rv.workflow_id=r.workflow_id
+		WHERE r.id=$1`, runID))
+	if err != nil {
+		return domain.RunSummary{}, fmt.Errorf("load recovery run summary: %w", mapNotFound(err))
+	}
+	return summary, nil
+}
+
 func (store *Store) FinalizeLeasedRun(ctx context.Context, lease domain.RunLease, finalization workflowservice.RunFinalization, payloads []domain.RunPayload) (domain.RunEvent, error) {
 	if finalization.RunID != lease.RunID {
 		return domain.RunEvent{}, domain.ErrRunLeaseLost
