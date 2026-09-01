@@ -32,7 +32,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 6 {
+	if count != 7 {
 		t.Fatalf("migration count=%d", count)
 	}
 }
