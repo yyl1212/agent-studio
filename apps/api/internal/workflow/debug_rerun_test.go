@@ -11,6 +11,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/apps/api/internal/runpayload"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -99,6 +100,24 @@ func TestPrepareRerunUsesEditedEntryInputAndCreatesDebugRun(t *testing.T) {
 	}
 	if frozen := prepared.Scope.FrozenEdges["right-join"]; !frozen.Active || frozen.Value != "R-old" {
 		t.Fatalf("frozen=%+v", frozen)
+	}
+}
+
+func TestSubmitRerunQueuesAtomicallyWithoutLegacyCreate(t *testing.T) {
+	legacy, store, _ := newRerunFixture(t)
+	before := len(store.runs)
+	cipher, err := runpayload.New("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable := &submissionStore{}
+	service := NewQueuedDebugService(store, legacy.compiler, NewRunSubmissionService(durable, cipher))
+	result, err := service.SubmitRerun(context.Background(), "source-run", "left", RerunRequest{EntryInput: map[string]any{"seed": []any{"edited"}}})
+	if err != nil || result.Status != domain.RunQueued || durable.calls != 1 || len(store.runs) != before {
+		t.Fatalf("result=%+v calls=%d runs=%d before=%d error=%v", result, durable.calls, len(store.runs), before, err)
+	}
+	if durable.submission.Run.SourceRunID == nil || durable.submission.Run.SourceNodeID == nil || durable.submission.Run.Mode != domain.RunModeDebug {
+		t.Fatalf("submission=%+v", durable.submission)
 	}
 }
 

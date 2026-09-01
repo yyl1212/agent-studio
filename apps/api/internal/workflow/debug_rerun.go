@@ -34,35 +34,57 @@ func (service *DebugService) PreviewRerun(ctx context.Context, runID, nodeID str
 }
 
 func (service *DebugService) PrepareRerun(ctx context.Context, runID, nodeID string, request RerunRequest) (*PreparedRun, error) {
-	built, err := service.buildRerun(ctx, runID, nodeID)
+	prepared, run, err := service.buildPreparedRerun(ctx, runID, nodeID, request)
 	if err != nil {
 		return nil, err
 	}
+	if err := service.store.CreateRun(ctx, run); err != nil {
+		return nil, err
+	}
+	return prepared, nil
+}
+
+func (service *DebugService) SubmitRerun(ctx context.Context, runID, nodeID string, request RerunRequest) (SubmittedRun, error) {
+	if service.submission == nil {
+		return SubmittedRun{}, errors.New("run submission service is unavailable")
+	}
+	prepared, run, err := service.buildPreparedRerun(ctx, runID, nodeID, request)
+	if err != nil {
+		return SubmittedRun{}, err
+	}
+	return service.submission.Submit(ctx, run, prepared.Input)
+}
+
+func (service *DebugService) buildPreparedRerun(ctx context.Context, runID, nodeID string, request RerunRequest) (*PreparedRun, domain.Run, error) {
+	built, err := service.buildRerun(ctx, runID, nodeID)
+	if err != nil {
+		return nil, domain.Run{}, err
+	}
 	if built.preview.RequiresConfirmation && !request.ConfirmSideEffects {
-		return nil, ErrRunSideEffectConfirmationRequired
+		return nil, domain.Run{}, ErrRunSideEffectConfirmationRequired
 	}
 	entryInput := normalizeInput(request.EntryInput)
 	if containsHistoricRedactedPlaceholder(entryInput, built.preview.EntryInputRedactedPaths) {
-		return nil, ErrRunEntryInputInvalid
+		return nil, domain.Run{}, ErrRunEntryInputInvalid
 	}
 	if nodeID == built.plan.StartNodeID {
 		schema, schemaErr := deriveInputSchema(built.plan.Graph)
 		if schemaErr != nil || validateInput(schema, entryInput) != nil {
-			return nil, ErrRunEntryInputInvalid
+			return nil, domain.Run{}, ErrRunEntryInputInvalid
 		}
 		built.scope.EntryRunInput = cloneAnyMap(entryInput)
 		built.scope.EntryNodeInputs = map[string][]any{}
 	} else {
 		nodeInputs, inputErr := validateNodeEntryInput(built.plan.Nodes[nodeID].Ports.Inputs, entryInput)
 		if inputErr != nil {
-			return nil, ErrRunEntryInputInvalid
+			return nil, domain.Run{}, ErrRunEntryInputInvalid
 		}
 		built.scope.EntryRunInput = map[string]any{}
 		built.scope.EntryNodeInputs = nodeInputs
 	}
 	inputJSON, inputPaths, secretRedactor, err := persistedRunInput(entryInput)
 	if err != nil {
-		return nil, fmt.Errorf("encode debug run input: %w", err)
+		return nil, domain.Run{}, fmt.Errorf("encode debug run input: %w", err)
 	}
 	runIDNew := uuid.NewString()
 	sourceRunID, sourceNodeID := built.source.ID, nodeID
@@ -78,10 +100,7 @@ func (service *DebugService) PrepareRerun(ctx context.Context, runID, nodeID str
 		InputRedactedPaths: inputPaths,
 		StartedAt:          time.Now().UTC(),
 	}
-	if err := service.store.CreateRun(ctx, run); err != nil {
-		return nil, err
-	}
-	return &PreparedRun{
+	prepared := &PreparedRun{
 		RunID:          runIDNew,
 		Plan:           built.plan,
 		Input:          cloneAnyMap(entryInput),
@@ -91,7 +110,8 @@ func (service *DebugService) PrepareRerun(ctx context.Context, runID, nodeID str
 		secretRedactor: secretRedactor,
 		sourceRunID:    sourceRunID,
 		sourceNodeID:   sourceNodeID,
-	}, nil
+	}
+	return prepared, run, nil
 }
 
 func (service *DebugService) buildRerun(ctx context.Context, runID, nodeID string) (rerunBuild, error) {

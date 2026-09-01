@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
+	"github.com/yyl1212/agent-studio/apps/api/internal/runpayload"
 )
 
 func TestHistoricPlaceholderPathsEscapesSortsAndEnforcesBudgets(t *testing.T) {
@@ -227,6 +228,33 @@ func TestPrepareRetryRestoresSecretsValidatesAndCreatesHistoricRun(t *testing.T)
 	}
 	if string(created.GraphSnapshot) != string(graph) || strings.Contains(string(created.Input), "new-secret") || !strings.Contains(string(created.Input), redactedValue) {
 		t.Fatalf("snapshot=%s persisted input=%s", created.GraphSnapshot, created.Input)
+	}
+}
+
+func TestSubmitRetryQueuesAtomicallyWithoutLegacyCreate(t *testing.T) {
+	graph := rerunGraph(t)
+	store := &fakeRunManagementStore{
+		run: domain.Run{
+			ID: testRunID, WorkflowID: testWorkflowID, Mode: domain.RunModeTest, Status: domain.RunFailed,
+			GraphSnapshot: graph, DraftRevision: int64Pointer(3), Input: json.RawMessage(`{"seed":"visible","webhookToken":"[REDACTED]"}`),
+			InputRedactedPaths: []string{"/webhookToken"},
+		},
+		workflow: domain.Workflow{ID: testWorkflowID, Name: "Workflow", Slug: "workflow"},
+	}
+	cipher, err := runpayload.New("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable := &submissionStore{}
+	service := NewQueuedRunManagementService(store, newRealCompiler(t), NewRunSubmissionService(durable, cipher))
+	result, err := service.SubmitRetry(context.Background(), testRunID, "33333333-3333-4333-8333-333333333333", RunRetryRequest{
+		SecretValues: map[string]any{"/webhookToken": "new-secret"},
+	})
+	if err != nil || result.Status != domain.RunQueued || durable.calls != 1 || store.retryRun.ID != "" {
+		t.Fatalf("result=%+v calls=%d legacy=%+v error=%v", result, durable.calls, store.retryRun, err)
+	}
+	if durable.submission.Run.RetryOfRunID == nil || durable.submission.Run.Status != domain.RunQueued || bytes.Contains(durable.submission.Run.Input, []byte("new-secret")) {
+		t.Fatalf("submission=%+v", durable.submission)
 	}
 }
 

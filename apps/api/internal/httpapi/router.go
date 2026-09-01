@@ -38,6 +38,23 @@ type Runner interface {
 	Execute(context.Context, *workflow.PreparedRun, engine.Observer) (engine.RunResult, error)
 }
 
+type RunSubmitter interface {
+	SubmitDraft(context.Context, string, int64, map[string]any) (workflow.SubmittedRun, error)
+	SubmitAgent(context.Context, string, string, map[string]any) (workflow.SubmittedRun, error)
+}
+
+type RunFollower interface {
+	Follow(context.Context, string, engine.Observer) error
+}
+
+type RetrySubmitter interface {
+	SubmitRetry(context.Context, string, string, workflow.RunRetryRequest) (workflow.SubmittedRun, error)
+}
+
+type RerunSubmitter interface {
+	SubmitRerun(context.Context, string, string, workflow.RerunRequest) (workflow.SubmittedRun, error)
+}
+
 type RunReader interface {
 	GetRun(context.Context, string) (domain.Run, []domain.NodeRun, error)
 	ListRuns(context.Context, string, int) ([]domain.Run, error)
@@ -94,10 +111,14 @@ type Dependencies struct {
 	WorkflowManagement WorkflowManager
 	VersionGovernance  VersionGovernance
 	Runner             Runner
+	RunSubmissions     RunSubmitter
+	RunFollower        RunFollower
 	Runs               RunReader
 	AgentRuns          AgentRunAPI
 	RunManagement      RunManager
+	RetrySubmissions   RetrySubmitter
 	Debugger           Debugger
+	RerunSubmissions   RerunSubmitter
 	Readiness          Readiness
 	NodePackages       NodePackageCatalog
 	WebOrigin          string

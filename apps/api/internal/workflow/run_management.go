@@ -40,9 +40,14 @@ type runSummaryFilter struct {
 }
 
 type RunManagementService struct {
-	store     RunManagementStore
-	compiler  Compiler
-	canceller LocalRunCanceller
+	store      RunManagementStore
+	compiler   Compiler
+	canceller  LocalRunCanceller
+	submission *RunSubmissionService
+}
+
+func NewQueuedRunManagementService(store RunManagementStore, compiler Compiler, submission *RunSubmissionService) *RunManagementService {
+	return &RunManagementService{store: store, compiler: compiler, submission: submission}
 }
 
 func NewRunManagementService(store RunManagementStore, compiler Compiler, canceller LocalRunCanceller) *RunManagementService {
@@ -121,58 +126,82 @@ func (service *RunManagementService) RetryPreview(ctx context.Context, runID str
 }
 
 func (service *RunManagementService) PrepareRetry(ctx context.Context, sourceRunID, idempotencyKey string, request RunRetryRequest) (*PreparedRun, error) {
+	prepared, created, err := service.buildRetry(ctx, sourceRunID, idempotencyKey, request)
+	if err != nil {
+		return nil, err
+	}
+	createdID, err := service.store.CreateRetryRun(ctx, created)
+	if err != nil {
+		return nil, err
+	}
+	prepared.RunID = createdID
+	return prepared, nil
+}
+
+func (service *RunManagementService) SubmitRetry(ctx context.Context, sourceRunID, idempotencyKey string, request RunRetryRequest) (SubmittedRun, error) {
+	if service.submission == nil {
+		return SubmittedRun{}, errors.New("run submission service is unavailable")
+	}
+	prepared, created, err := service.buildRetry(ctx, sourceRunID, idempotencyKey, request)
+	if err != nil {
+		return SubmittedRun{}, err
+	}
+	return service.submission.Submit(ctx, created, prepared.Input)
+}
+
+func (service *RunManagementService) buildRetry(ctx context.Context, sourceRunID, idempotencyKey string, request RunRetryRequest) (*PreparedRun, domain.Run, error) {
 	normalizedSourceID, err := normalizeOptionalUUID(sourceRunID)
 	if err != nil || normalizedSourceID == "" || !isCanonicalUUID(idempotencyKey) {
-		return nil, ErrInvalidWorkflowInput
+		return nil, domain.Run{}, ErrInvalidWorkflowInput
 	}
 	source, _, err := service.store.GetRun(ctx, normalizedSourceID)
 	if err != nil {
-		return nil, fmt.Errorf("load retry source run: %w", err)
+		return nil, domain.Run{}, fmt.Errorf("load retry source run: %w", err)
 	}
 	workflowRecord, err := service.store.GetWorkflow(ctx, source.WorkflowID)
 	if err != nil {
-		return nil, fmt.Errorf("load retry source workflow: %w", err)
+		return nil, domain.Run{}, fmt.Errorf("load retry source workflow: %w", err)
 	}
 	if workflowRecord.ArchivedAt != nil {
-		return nil, domain.ErrWorkflowArchived
+		return nil, domain.Run{}, domain.ErrWorkflowArchived
 	}
 	if (source.Status != domain.RunFailed && source.Status != domain.RunCancelled) || (source.Mode != domain.RunModeTest && source.Mode != domain.RunModePublished) {
-		return nil, ErrRunNotRetryable
+		return nil, domain.Run{}, ErrRunNotRetryable
 	}
 	rawGraph, graph, plan, err := loadRunGraphData(ctx, service.store, service.compiler, source)
 	if err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	inputSchema, err := deriveInputSchema(graph)
 	if err != nil {
-		return nil, ErrRunNotRetryable
+		return nil, domain.Run{}, ErrRunNotRetryable
 	}
 	var historicInput map[string]any
 	if err := decodeJSON(source.Input, &historicInput); err != nil || historicInput == nil {
-		return nil, ErrRunNotRetryable
+		return nil, domain.Run{}, ErrRunNotRetryable
 	}
 	discovered, err := historicRedactedPaths(historicInput)
 	if err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	requiredPaths, err := mergeRetryRedactedPaths(discovered, source.InputRedactedPaths)
 	if err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	input, err := applyRetrySecrets(historicInput, requiredPaths, request.SecretValues)
 	if err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	if err := validateInput(inputSchema, input); err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	encodedInput, err := json.Marshal(input)
 	if err != nil || len(encodedInput) > maxRetryPreviewBytes {
-		return nil, ErrRunNotRetryable
+		return nil, domain.Run{}, ErrRunNotRetryable
 	}
 	persistedInput, persistedPaths, secretRedactor, err := persistedRunInput(input)
 	if err != nil {
-		return nil, fmt.Errorf("encode retry run input: %w", err)
+		return nil, domain.Run{}, fmt.Errorf("encode retry run input: %w", err)
 	}
 	runID := uuid.NewString()
 	retryOfRunID, retryKey := source.ID, idempotencyKey
@@ -187,15 +216,12 @@ func (service *RunManagementService) PrepareRetry(ctx context.Context, sourceRun
 	} else {
 		created.WorkflowVersionID = cloneStringPointer(source.WorkflowVersionID)
 	}
-	createdID, err := service.store.CreateRetryRun(ctx, created)
-	if err != nil {
-		return nil, err
-	}
-	return &PreparedRun{
-		RunID: createdID, Plan: plan, Input: input, Mode: created.Mode, WorkflowID: created.WorkflowID,
+	prepared := &PreparedRun{
+		RunID: created.ID, Plan: plan, Input: input, Mode: created.Mode, WorkflowID: created.WorkflowID,
 		WorkflowVersionID: cloneStringPointer(created.WorkflowVersionID), DraftRevision: cloneInt64Pointer(created.DraftRevision),
 		secretRedactor: secretRedactor, retryOfRunID: source.ID,
-	}, nil
+	}
+	return prepared, created, nil
 }
 
 func isCanonicalUUID(value string) bool {

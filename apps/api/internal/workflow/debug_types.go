@@ -72,6 +72,11 @@ type FrozenEdgePreview struct {
 }
 
 type DebugService struct {
-	store    Store
-	compiler Compiler
+	store      Store
+	compiler   Compiler
+	submission *RunSubmissionService
+}
+
+func NewQueuedDebugService(store Store, compiler Compiler, submission *RunSubmissionService) *DebugService {
+	return &DebugService{store: store, compiler: compiler, submission: submission}
 }

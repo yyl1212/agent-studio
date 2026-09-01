@@ -56,6 +56,15 @@ func (handler *handler) runAgent(writer http.ResponseWriter, request *http.Reque
 		writeJSON(writer, http.StatusAccepted, accepted)
 		return
 	}
+	if handler.dependencies.RunSubmissions != nil {
+		submitted, err := handler.dependencies.RunSubmissions.SubmitAgent(request.Context(), chi.URLParam(request, "slug"), body.WorkflowVersionID, body.Input)
+		if err != nil {
+			writeError(writer, request, err)
+			return
+		}
+		handler.streamSubmittedRun(writer, request, submitted)
+		return
+	}
 	prepared, err := handler.dependencies.Runner.PrepareAgent(request.Context(), chi.URLParam(request, "slug"), body.WorkflowVersionID, body.Input)
 	if err != nil {
 		writeError(writer, request, err)
