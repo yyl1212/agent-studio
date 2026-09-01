@@ -44,6 +44,68 @@ func TestWorkerDefaultsToOneActiveRun(t *testing.T) {
 	}
 }
 
+func TestWorkerDefaultsNonPositiveQueueSampleInterval(t *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Second} {
+		worker := New(Config{QueueSampleInterval: interval}, nil, nil, nil, nil)
+		if worker.config.QueueSampleInterval != 5*time.Second {
+			t.Fatalf("interval %s defaulted to %s", interval, worker.config.QueueSampleInterval)
+		}
+	}
+}
+
+func TestWorkerSamplesQueueWhileAtCapacity(t *testing.T) {
+	store := &workerStore{
+		claims:       []workflow.ClaimedRun{claimedRun("at-capacity", 1)},
+		queueSampled: make(chan struct{}, 16),
+	}
+	rehydrator := &workerRehydrator{results: map[string]PreparedExecution{"at-capacity": preparedWorkerExecution("at-capacity")}}
+	executor := &workerExecutor{started: make(chan string, 1), release: make(chan struct{})}
+	worker := New(Config{
+		OwnerID:             "worker",
+		MaxActiveRuns:       1,
+		HeartbeatInterval:   time.Second,
+		ClaimInterval:       time.Millisecond,
+		QueueSampleInterval: time.Millisecond,
+		ShutdownTimeout:     time.Second,
+	}, store, rehydrator, executor, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+
+	select {
+	case <-executor.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker to reach capacity")
+	}
+	for {
+		select {
+		case <-store.queueSampled:
+			continue
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	for sample := 0; sample < 2; sample++ {
+		select {
+		case <-store.queueSampled:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for queue sample %d while at capacity", sample+1)
+		}
+	}
+	cancel()
+	executor.release <- struct{}{}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker shutdown")
+	}
+}
+
 func TestWorkerRetriesClaimFailureWithJitter(t *testing.T) {
 	store := &workerStore{claimErrors: []error{errors.New("temporary claim failure")}, claims: []workflow.ClaimedRun{claimedRun("retry-claim", 1)}}
 	rehydrator := &workerRehydrator{results: map[string]PreparedExecution{"retry-claim": preparedWorkerExecution("retry-claim")}}
@@ -289,6 +351,18 @@ type workerStore struct {
 	recovered    chan domain.RunRecoveryReason
 	renewed      chan struct{}
 	finalized    chan domain.RunStatus
+	queueSampled chan struct{}
+	queueCalls   int
+}
+
+func (store *workerStore) RunQueueStats(context.Context) (int64, time.Duration, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.queueCalls++
+	if store.queueSampled != nil {
+		store.queueSampled <- struct{}{}
+	}
+	return 2, time.Second, nil
 }
 
 func (store *workerStore) SubmitRun(context.Context, workflow.RunSubmission) error { return nil }
