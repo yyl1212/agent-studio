@@ -220,6 +220,40 @@ func persistedRunInput(input map[string]any) (json.RawMessage, []string, *Secret
 	return encoded, paths, NewSecretRedactor(report.SecretValues), nil
 }
 
+// LoadPreparedExecution rebuilds executable in-memory state for an existing
+// durable run. It never inserts or mutates a run record.
+func LoadPreparedExecution(ctx context.Context, store Store, compiler Compiler, run domain.Run, input map[string]any) (*PreparedRun, error) {
+	if store == nil || compiler == nil {
+		return nil, errors.New("load prepared execution: dependencies are incomplete")
+	}
+	_, _, plan, err := loadRunGraphData(ctx, store, compiler, run)
+	if err != nil {
+		return nil, err
+	}
+	input = normalizeInput(input)
+	_, _, redactor, err := persistedRunInput(input)
+	if err != nil {
+		return nil, fmt.Errorf("rebuild run input redactor: %w", err)
+	}
+	prepared := &PreparedRun{
+		RunID: run.ID, Plan: plan, Input: input, Mode: run.Mode, WorkflowID: run.WorkflowID,
+		WorkflowVersionID: cloneStringPointer(run.WorkflowVersionID), DraftRevision: cloneInt64Pointer(run.DraftRevision),
+		StartedAt: run.StartedAt, secretRedactor: redactor,
+	}
+	if run.Mode == domain.RunModePublished && run.WorkflowVersionID != nil {
+		workflow, err := store.GetWorkflow(ctx, run.WorkflowID)
+		if err != nil {
+			return nil, err
+		}
+		_, version, err := store.GetAgentVersion(ctx, workflow.Slug, *run.WorkflowVersionID)
+		if err != nil {
+			return nil, err
+		}
+		prepared.WorkflowVersion = version.Version
+	}
+	return prepared, nil
+}
+
 func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, observer engine.Observer) (engine.RunResult, error) {
 	executionContext, finishTelemetry := service.telemetry.start(ctx, prepared)
 	telemetryStatus := domain.RunFailed

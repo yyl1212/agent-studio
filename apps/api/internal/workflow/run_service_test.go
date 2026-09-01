@@ -367,6 +367,27 @@ func TestPrepareAgentUsesRequestedVersionAfterNewPublish(t *testing.T) {
 	}
 }
 
+func TestLoadPreparedExecutionReusesExistingRunAndRebuildsRedactor(t *testing.T) {
+	_, store := newRunServiceFixture(t)
+	graph := graphReturning(t, "restored")
+	schema, err := inputSchemaForGraph(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := store.AddVersion(graph, schema)
+	run := domain.Run{ID: "existing-run", WorkflowID: store.workflow.ID, WorkflowVersionID: &version.ID, Mode: domain.RunModePublished, StartedAt: time.Now().UTC()}
+	prepared, err := LoadPreparedExecution(context.Background(), store, newRealCompiler(t), run, map[string]any{"token": "top-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.RunID != run.ID || prepared.Plan == nil || prepared.WorkflowVersion != version.Version || len(store.runs) != 0 {
+		t.Fatalf("prepared=%+v created=%d", prepared, len(store.runs))
+	}
+	if got := redactPreparedValue(prepared, map[string]any{"echo": "top-secret"}).Value; fmt.Sprint(got) != "map[echo:[REDACTED]]" {
+		t.Fatalf("redacted=%v", got)
+	}
+}
+
 func TestPrepareAgentOnceReturnsExistingWithoutSecondPreparedRun(t *testing.T) {
 	service, store := newRunServiceFixture(t)
 	graph := graphReturning(t, "v1")
