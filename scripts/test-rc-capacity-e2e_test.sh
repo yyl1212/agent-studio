@@ -89,10 +89,18 @@ validate_script() {
     raise "Worker must not expose ports" if worker.key?("ports")
     raise "Worker concurrency must be string 4" unless worker.dig("environment", "WORKER_MAX_ACTIVE_RUNS") == "4"
 
-    raise "test image must be non-empty and unique" unless lines.count("test_image=\"agent-studio:rc-capacity-e2e\"") == 1
-    docker_builds = commands.select { |command| command.delete("\"\x27").split[0, 2] == %w[docker build] }
-    raise "capacity image must be built exactly once" unless docker_builds == ["docker build -t \"$test_image\" \"$repo_root\""]
-    services_command = "actual_services=$(docker compose -f \"$compose_file\" config --services | sort | tr \x27\\n\x27 \x27 \x27)"
+    image_assignments = lines.grep(/^test_image=/)
+    allowed_images = ["test_image=\"agent-studio:rc-capacity-e2e\"", "test_image=\"agent-studio:rc-capacity-e2e-$$\""]
+    raise "test image must be non-empty and unique" unless image_assignments.length == 1 && allowed_images.include?(image_assignments.first)
+    docker_builds = commands.select { |command| command.delete("\"\x27").split.each_cons(2).any? { |pair| pair == %w[docker build] } }
+    allowed_builds = ["docker build -t \"$test_image\" \"$repo_root\"", "run_bounded \"$cleanup_start_deadline_ms\" docker build -t \"$test_image\" \"$repo_root\""]
+    raise "capacity image must be built exactly once" unless docker_builds.length == 1 && allowed_builds.include?(docker_builds.first)
+    allowed_services_commands = [
+      "actual_services=$(docker compose -f \"$compose_file\" config --services | sort | tr \x27\\n\x27 \x27 \x27)",
+      "actual_services=$(run_bounded \"$cleanup_start_deadline_ms\" docker compose -f \"$compose_file\" config --services | sort | tr \x27\\n\x27 \x27 \x27)",
+    ]
+    services_command = lines.find { |line| allowed_services_commands.include?(line) }
+    raise "Compose config command is missing or malformed" unless services_command
     services_assertion = "[ \"$actual_services\" = \"api db worker \" ] || exit 1"
     raise "Compose must define exactly db/api/worker services" unless lines.include?(services_command) && lines.include?(services_assertion)
     def compose_subcommand(tokens)
@@ -106,7 +114,8 @@ validate_script() {
       tail.first
     end
     compose_ups = commands.select { |command| compose_subcommand(command.delete("\"\x27").split) == "up" }
-    raise "Compose must start db/api/worker exactly once" unless compose_ups == ["docker compose -f \"$compose_file\" up -d db api worker"]
+    allowed_ups = ["docker compose -f \"$compose_file\" up -d db api worker", "run_bounded \"$cleanup_start_deadline_ms\" docker compose -f \"$compose_file\" up -d db api worker"]
+    raise "Compose must start db/api/worker exactly once" unless compose_ups.length == 1 && allowed_ups.include?(compose_ups.first)
     raise "Compose scaling is forbidden" if code.match?(/--scale|scale:/)
     contract_only = "if [ \"${RC_CAPACITY_CONTRACT_ONLY:-}\" = \"1\" ]; then exit 0; fi"
     contract_index = lines.index(contract_only)
@@ -120,7 +129,8 @@ validate_script() {
     cleanup = lines[cleanup_start..cleanup_start + cleanup_end]
     raise "cleanup must receive an explicit status" unless cleanup.include?("status=$1")
     raise "cleanup must not derive signal status from $?" if cleanup.include?("status=$?")
-    raise "cleanup must remove only this Compose project" unless cleanup.include?("docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true")
+    allowed_down = ["docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true", "run_bounded \"$down_deadline_ms\" docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true"]
+    raise "cleanup must remove only this Compose project" unless cleanup.any? { |line| allowed_down.include?(line) }
     raise "cleanup must remove only run_root" unless cleanup.include?("rm -rf \"$run_root\"")
     expected_traps = [
       "trap \x27status=$?; cleanup \"$status\"\x27 EXIT",
@@ -185,6 +195,53 @@ expect_rejected() {
     exit 1
   fi
   case "$output" in *"$expected"*) ;; *) printf '%s\n' "fixture failed for the wrong reason ($candidate): $output" >&2; exit 1;; esac
+}
+
+validate_runtime_isolation_contract() {
+  ruby -e '
+    source = File.read(ARGV.fetch(0))
+    required = [
+      "command_start_epoch_ms=",
+      "total_timeout_ms=590000",
+      "cleanup_reserve_ms=25000",
+      "total_deadline_ms=",
+      "cleanup_start_deadline_ms=",
+      "run_bounded()",
+      "pgroup: true",
+      "scan_sensitive_log()",
+      "capacity-private-",
+      "chmod 600 \"$sensitive_values_file\"",
+      "request_key=$(ruby -rsecurerandom -e",
+      "topic=\"capacity-private-input-$index\"",
+      "printf \x27%s\\n\x27 \"$request_key\" \"$topic\" >>\"$sensitive_values_file\"",
+      "deadline_epoch_ms=$(min_epoch_ms \"$((start_epoch_ms + RC_CAPACITY_DEADLINE_SECONDS * 1000))\" \"$cleanup_start_deadline_ms\")",
+      "run_bounded \"$curl_deadline_ms\" curl",
+      "run_bounded \"$db_deadline_ms\" docker compose",
+      "run_bounded \"$cleanup_start_deadline_ms\" docker build",
+      "run_bounded \"$cleanup_start_deadline_ms\" docker compose",
+      "run_bounded \"$logs_deadline_ms\" docker compose",
+      "run_bounded \"$down_deadline_ms\" docker compose",
+      "run_bounded \"$image_cleanup_deadline_ms\" docker image rm \"$test_image\"",
+    ]
+    required.each { |marker| raise "capacity runtime isolation missing: #{marker}" unless source.include?(marker) }
+    tag = source.lines.find { |line| line.start_with?("test_image=") }
+    raise "capacity image tag must be unique per run" unless tag == "test_image=\"agent-studio:rc-capacity-e2e-$$\"\n"
+    start_index = source.index("command_start_epoch_ms=")
+    project_index = source.index("COMPOSE_PROJECT_NAME=")
+    build_index = source.index("docker build")
+    cleanup_start = source.index("cleanup() {")
+    cleanup_end = source.index("\non_hup() {", cleanup_start)
+    cleanup = source[cleanup_start...cleanup_end]
+    summary_index = cleanup.index(%q(if [ "$summary_persisted" -eq 0 ]))
+    logs_index = cleanup.index("capture_failure_logs")
+    down_index = cleanup.index(%q(run_bounded "$down_deadline_ms" docker compose))
+    image_index = cleanup.index(%q(run_bounded "$image_cleanup_deadline_ms" docker image rm "$test_image"))
+    raise "capacity command clock must be recorded before project setup" unless start_index && project_index && start_index < project_index
+    raise "capacity total deadline must be established before build" unless build_index && start_index < build_index
+    raise "capacity cleanup phases must preserve summary/log/down/image order" unless summary_index && logs_index && down_index && image_index && summary_index < logs_index && logs_index < down_index && down_index < image_index
+    raise "capacity image cleanup must target exactly one unique tag" unless source.lines.count { |line| line.include?(%q(docker image rm "$test_image")) } == 1
+    raise "capacity scanner must be fail-closed for prompt and structured payloads" unless source.include?("authorization") && source.include?("ciphertext") && source.include?("(?:input|output)") && source.include?("/prompt/i") && source.include?(%q(case "$scan_status"))
+  ' "$1"
 }
 
 run_contract_self_test() {
@@ -444,7 +501,14 @@ cleanup_in_progress=0
 summary_persisted=1
 compose_started=1
 started_workload=0
+image_cleanup_required=0
 run_ids_sql=
+logs_deadline_ms=1000
+down_deadline_ms=1000
+image_cleanup_deadline_ms=1000
+now_epoch_ms() { printf '%s\n' 1; }
+min_epoch_ms() { printf '%s\n' "$1"; }
+run_bounded() { shift; "$@"; }
 refresh_metrics_best_effort() { :; }
 capture_failure_logs() { printf '%s\n' failure >"$failure_marker"; }
 docker() { :; }
@@ -527,6 +591,150 @@ HARNESS
   rm -rf "$fixture_root"
 }
 
+run_runtime_isolation_test() {
+  fixture_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-rc-capacity-runtime.XXXXXX")
+  trap 'rm -rf "$fixture_root"' EXIT HUP INT TERM
+
+  scanner_definitions="$fixture_root/scanner-definitions.sh"
+  extract_production_functions scan_sensitive_log >"$scanner_definitions"
+  scanner_harness="$fixture_root/scanner-harness.sh"
+  cat >"$scanner_harness" <<'HARNESS'
+#!/bin/sh
+set -eu
+. "$1"
+sensitive_values_file=$3
+export RUN_PAYLOAD_ENCRYPTION_KEY='fixture-private-key'
+set +e
+scan_sensitive_log "$2" 2>/dev/null
+scan_status=$?
+set -e
+[ "$scan_status" -eq "$4" ] || {
+  printf '%s\n' "scanner returned $scan_status instead of $4 for $2" >&2
+  exit 1
+}
+HARNESS
+  known_values="$fixture_root/known-values"
+  printf '%s\n' 'capacity-private-input-' 'capacity-private-key-' 'capacity-private-prompt' >"$known_values"
+  chmod 600 "$known_values"
+  printf '%s\n' 'ordinary worker shutdown line' >"$fixture_root/safe.log"
+  sh "$scanner_harness" "$scanner_definitions" "$fixture_root/safe.log" "$known_values" 1
+  scanner_case=1
+  for sensitive_line in 'fixture-private-key' 'Authorization: bearer hidden' 'ciphertext=value' 'input: private' 'output=private' 'prompt private' 'capacity-private-input-42'; do
+    printf '%s\n' "$sensitive_line" >"$fixture_root/sensitive-$scanner_case.log"
+    sh "$scanner_harness" "$scanner_definitions" "$fixture_root/sensitive-$scanner_case.log" "$known_values" 0
+    scanner_case=$((scanner_case + 1))
+  done
+  sh "$scanner_harness" "$scanner_definitions" "$fixture_root/missing.log" "$known_values" 2
+
+  fake_bin="$fixture_root/bin"
+  mkdir -p "$fake_bin"
+  fake_docker="$fake_bin/docker"
+  cat >"$fake_docker" <<'HARNESS'
+#!/bin/sh
+set -eu
+printf '%s|%s\n' "${test_image:-unset}" "$*" >>"$FAKE_DOCKER_LOG"
+case "${FAKE_DOCKER_MODE:-contract}:$*" in
+  contract:*'config --services'*) printf '%s\n' worker db api ;;
+  slow:*'docker build'*|slow:build*) exec sleep 2 ;;
+  slow:*' logs '*|slow:*' logs') exec sleep 2 ;;
+  *) : ;;
+esac
+HARNESS
+  chmod 700 "$fake_docker"
+
+  fixed_tag_marker="$fixture_root/preexisting-fixed-tag"
+  printf '%s\n' 'agent-studio:rc-capacity-e2e' >"$fixed_tag_marker"
+  contract_log="$fixture_root/contract-docker.log"
+  : >"$contract_log"
+  FAKE_DOCKER_MODE=contract FAKE_DOCKER_LOG="$contract_log" PATH="$fake_bin:$PATH" RC_CAPACITY_ARTIFACT_DIR="$fixture_root/artifact-one" RC_CAPACITY_CONTRACT_ONLY=1 RUN_PAYLOAD_ENCRYPTION_KEY='fixture-key-one' sh "$script" &
+  contract_pid_one=$!
+  FAKE_DOCKER_MODE=contract FAKE_DOCKER_LOG="$contract_log" PATH="$fake_bin:$PATH" RC_CAPACITY_ARTIFACT_DIR="$fixture_root/artifact-two" RC_CAPACITY_CONTRACT_ONLY=1 RUN_PAYLOAD_ENCRYPTION_KEY='fixture-key-two' sh "$script" &
+  contract_pid_two=$!
+  wait "$contract_pid_one"
+  wait "$contract_pid_two"
+  ruby -e '
+    fixed = ARGV.fetch(0)
+    entries = File.readlines(ARGV.fetch(1), chomp: true)
+    tags = entries.map { |line| line.split("|", 2).first }.grep(/\Aagent-studio:rc-capacity-e2e-[0-9]+\z/).uniq
+    raise "concurrent contract-only runs did not use two unique image tags" unless tags.length == 2
+    raise "contract-only referenced the pre-existing fixed tag" if entries.any? { |line| line.split("|", 2).first == fixed }
+  ' "$(cat "$fixed_tag_marker")" "$contract_log"
+  [ "$(cat "$fixed_tag_marker")" = 'agent-studio:rc-capacity-e2e' ] || exit 1
+
+  budget_definitions="$fixture_root/budget-definitions.sh"
+  extract_production_functions now_epoch_ms min_epoch_ms run_bounded scan_sensitive_log withhold_failure_log capture_failure_logs cleanup >"$budget_definitions"
+  budget_harness="$fixture_root/budget-harness.sh"
+  cat >"$budget_harness" <<'HARNESS'
+#!/bin/sh
+set -eu
+. "$1"
+fixture_root=$2
+fake_bin=$3
+export PATH="$fake_bin:$PATH"
+export FAKE_DOCKER_MODE=slow
+export FAKE_DOCKER_LOG="$fixture_root/budget-docker.log"
+export RUN_PAYLOAD_ENCRYPTION_KEY='budget-private-key'
+run_root="$fixture_root/transient"
+artifact_dir="$fixture_root/budget-artifacts"
+summary_file="$run_root/summary.json"
+compose_file="$run_root/compose.yaml"
+sensitive_values_file="$run_root/sensitive-values"
+mkdir -p "$run_root" "$artifact_dir"
+printf '%s\n' 'capacity-private-' >"$sensitive_values_file"
+cleanup_in_progress=0
+summary_persisted=0
+compose_started=1
+image_cleanup_required=1
+started_workload=0
+run_ids_sql=
+test_image='agent-studio:rc-capacity-e2e-fixture-unique'
+export test_image
+now_ms=$(now_epoch_ms)
+cleanup_start_deadline_ms=$((now_ms + 250))
+logs_deadline_ms=$((now_ms + 550))
+down_deadline_ms=$((now_ms + 850))
+image_cleanup_deadline_ms=$((now_ms + 1100))
+refresh_metrics_best_effort() { :; }
+write_summary() { printf '%s\n' summary >"$summary_file"; }
+persist_summary() { printf '%s\n' persisted >"$fixture_root/summary-persisted"; }
+set +e
+run_bounded "$cleanup_start_deadline_ms" docker build -t "$test_image" .
+build_status=$?
+set -e
+[ "$build_status" -eq 124 ] || exit 1
+cleanup "$build_status"
+HARNESS
+  budget_started_ms=$(ruby -e 'puts (Time.now.to_f * 1000).to_i')
+  set +e
+  sh "$budget_harness" "$budget_definitions" "$fixture_root" "$fake_bin" 2>"$fixture_root/budget-stderr"
+  budget_status=$?
+  set -e
+  budget_elapsed_ms=$(( $(ruby -e 'puts (Time.now.to_f * 1000).to_i') - budget_started_ms ))
+  [ "$budget_status" -eq 124 ] || {
+    printf '%s\n' "bounded cleanup fixture exited $budget_status instead of 124" >&2
+    exit 1
+  }
+  [ "$budget_elapsed_ms" -lt 2000 ] || {
+    printf '%s\n' "bounded cleanup fixture took ${budget_elapsed_ms}ms" >&2
+    exit 1
+  }
+  [ "$(cat "$fixture_root/summary-persisted")" = persisted ] || exit 1
+  [ -f "$fixture_root/budget-artifacts/redaction.log" ] || {
+    printf '%s\n' 'hung log collection did not create withheld marker' >&2
+    exit 1
+  }
+  ruby -e '
+    entries = File.readlines(ARGV.fetch(0), chomp: true)
+    raise "hung logs prevented compose down" unless entries.any? { |line| line.end_with?("|compose -f #{ARGV.fetch(1)} down --remove-orphans") }
+    expected_rm = "agent-studio:rc-capacity-e2e-fixture-unique|image rm agent-studio:rc-capacity-e2e-fixture-unique"
+    raise "cleanup did not remove the exact unique image tag" unless entries.include?(expected_rm)
+    raise "cleanup referenced the old fixed tag" if entries.any? { |line| line.start_with?("agent-studio:rc-capacity-e2e|") }
+  ' "$fixture_root/budget-docker.log" "$fixture_root/transient/compose.yaml"
+
+  trap - EXIT HUP INT TERM
+  rm -rf "$fixture_root"
+}
+
 [ -f "$workflow" ] || { printf '%s\n' "$workflow is missing" >&2; exit 1; }
 ruby -ryaml -e 'YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)' "$workflow"
 [ -f "$makefile" ] || { printf '%s\n' "$makefile is missing" >&2; exit 1; }
@@ -540,7 +748,9 @@ run_contract_self_test
 
 [ -f "$script" ] || { printf '%s\n' "$script is missing (Task 5 must add the 500-run capacity scenario)" >&2; exit 1; }
 validate_script "$script"
+validate_runtime_isolation_contract "$script"
 run_failure_semantics_test
+run_runtime_isolation_test
 
 ruby -ryaml -e '
   workflow = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)

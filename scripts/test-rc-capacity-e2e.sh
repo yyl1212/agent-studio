@@ -1,5 +1,15 @@
 #!/bin/sh
 set -eu
+umask 077
+
+command_start_epoch_ms=$(ruby -e 'puts (Time.now.to_f * 1000).to_i')
+total_timeout_ms=590000
+cleanup_reserve_ms=25000
+total_deadline_ms=$((command_start_epoch_ms + total_timeout_ms))
+cleanup_start_deadline_ms=$((total_deadline_ms - cleanup_reserve_ms))
+logs_deadline_ms=$((total_deadline_ms - 15000))
+down_deadline_ms=$((total_deadline_ms - 8000))
+image_cleanup_deadline_ms=$((total_deadline_ms - 2000))
 
 COMPOSE_PROJECT_NAME="agent_studio_rc_capacity_$$"
 export COMPOSE_PROJECT_NAME
@@ -24,10 +34,15 @@ started_workload=0
 compose_started=0
 summary_persisted=0
 cleanup_in_progress=0
+image_cleanup_required=0
 run_ids_sql=
 
 write_summary() {
-  jq -n -c --argjson submitted "$submitted" --argjson completed "$completed" --argjson nonCompleted "$non_completed" --argjson duplicateTerminalEvents "$duplicate_terminal_events" --argjson remainingLeases "$remaining_leases" --argjson remainingQueueDepth "$remaining_queue_depth" --argjson elapsedMs "$elapsed_ms" --argjson throughputPerSecond "$throughput_per_second" --argjson queueWaitP95Ms "$queue_wait_p95_ms" '{submitted:$submitted,completed:$completed,nonCompleted:$nonCompleted,duplicateTerminalEvents:$duplicateTerminalEvents,remainingLeases:$remainingLeases,remainingQueueDepth:$remainingQueueDepth,elapsedMs:$elapsedMs,throughputPerSecond:$throughputPerSecond,queueWaitP95Ms:$queueWaitP95Ms}' > "$summary_file"
+  if command -v jq >/dev/null 2>&1; then
+    jq -n -c --argjson submitted "$submitted" --argjson completed "$completed" --argjson nonCompleted "$non_completed" --argjson duplicateTerminalEvents "$duplicate_terminal_events" --argjson remainingLeases "$remaining_leases" --argjson remainingQueueDepth "$remaining_queue_depth" --argjson elapsedMs "$elapsed_ms" --argjson throughputPerSecond "$throughput_per_second" --argjson queueWaitP95Ms "$queue_wait_p95_ms" '{submitted:$submitted,completed:$completed,nonCompleted:$nonCompleted,duplicateTerminalEvents:$duplicateTerminalEvents,remainingLeases:$remainingLeases,remainingQueueDepth:$remainingQueueDepth,elapsedMs:$elapsedMs,throughputPerSecond:$throughputPerSecond,queueWaitP95Ms:$queueWaitP95Ms}' > "$summary_file"
+  else
+    SUMMARY_FILE="$summary_file" ruby -rjson -e 'keys=%w[submitted completed nonCompleted duplicateTerminalEvents remainingLeases remainingQueueDepth elapsedMs throughputPerSecond queueWaitP95Ms]; values=ARGV.map { |value| value.include?(".") ? Float(value) : Integer(value) }; File.write(ENV.fetch("SUMMARY_FILE"), JSON.generate(keys.zip(values).to_h))' "$submitted" "$completed" "$non_completed" "$duplicate_terminal_events" "$remaining_leases" "$remaining_queue_depth" "$elapsed_ms" "$throughput_per_second" "$queue_wait_p95_ms"
+  fi
 }
 
 persist_summary() {
@@ -36,6 +51,87 @@ persist_summary() {
 
 now_epoch_ms() {
   ruby -e 'puts (Time.now.to_f * 1000).to_i'
+}
+
+min_epoch_ms() {
+  if [ "$1" -le "$2" ]; then
+    printf '%s\n' "$1"
+  else
+    printf '%s\n' "$2"
+  fi
+}
+
+run_bounded() {
+  bounded_deadline_ms=$1
+  shift
+  ruby -e '
+    def process_tree(root_pid)
+      rows = `ps -axo pid=,ppid=`.lines.map do |line|
+        fields = line.split.map(&:to_i)
+        fields.length == 2 ? fields : nil
+      end.compact
+      descendants = []
+      frontier = [root_pid]
+      until frontier.empty?
+        parent = frontier.shift
+        children = rows.select { |(_, ppid)| ppid == parent }.map(&:first)
+        descendants.concat(children)
+        frontier.concat(children)
+      end
+      descendants.reverse + [root_pid]
+    rescue Errno::EPERM
+      [root_pid]
+    end
+
+    def signal_process_group(signal, group_pid)
+      Process.kill(signal, -group_pid)
+      true
+    rescue Errno::ESRCH
+      true
+    rescue Errno::EPERM
+      false
+    end
+
+    def signal_targets(signal, targets)
+      targets.each do |target|
+        begin
+          Process.kill(signal, target)
+        rescue Errno::ESRCH
+        end
+      end
+    end
+
+    deadline_ms = Integer(ARGV.shift)
+    command = ARGV
+    exit 124 if (Time.now.to_f * 1000).to_i >= deadline_ms
+    pid = Process.spawn(*command, pgroup: true)
+    loop do
+      waited = Process.waitpid(pid, Process::WNOHANG)
+      if waited
+        child_status = $?
+        exit(child_status.exitstatus || 128 + child_status.termsig)
+      end
+      break if (Time.now.to_f * 1000).to_i >= deadline_ms
+      sleep 0.02
+    end
+    group_signaled = signal_process_group("TERM", pid)
+    targets = nil
+    unless group_signaled
+      targets = process_tree(pid)
+      signal_targets("TERM", targets)
+    end
+    sleep 0.05
+    if group_signaled
+      signal_process_group("KILL", pid)
+    else
+      signal_targets("KILL", targets)
+    end
+    begin
+      Process.waitpid(pid)
+    rescue Errno::ECHILD
+    end
+    exit 124
+  ' "$bounded_deadline_ms" "$@"
 }
 
 remaining_budget_ms() {
@@ -61,29 +157,30 @@ curl_with_deadline() {
   curl_deadline_ms=$1
   shift
   curl_max_time=$(remaining_budget_seconds "$curl_deadline_ms") || return $?
-  curl --connect-timeout 2 --max-time "$curl_max_time" "$@" || return $?
+  run_bounded "$curl_deadline_ms" curl --connect-timeout 2 --max-time "$curl_max_time" "$@" || return $?
   before_epoch_deadline "$curl_deadline_ms" || return 124
 }
 
 db_scalar_with_timeout() {
-  db_timeout_ms=$1
-  shift
-  docker compose -f "$compose_file" exec -T \
+  db_deadline_ms=$1
+  db_timeout_ms=$2
+  shift 2
+  run_bounded "$db_deadline_ms" docker compose -f "$compose_file" exec -T \
     -e "PGOPTIONS=-c statement_timeout=${db_timeout_ms}ms -c lock_timeout=${db_timeout_ms}ms" \
     db psql -X -v ON_ERROR_STOP=1 -U agent -d agent_studio -Atc "$1"
 }
 
 db_scalar() {
   db_remaining_ms=$(remaining_budget_ms "$deadline_epoch_ms") || return $?
-  db_result=$(db_scalar_with_timeout "$db_remaining_ms" "$1") || return $?
+  db_result=$(db_scalar_with_timeout "$deadline_epoch_ms" "$db_remaining_ms" "$1") || return $?
   before_deadline || return 124
   printf '%s\n' "$db_result"
 }
 
 db_scalar_best_effort() {
-  docker compose -f "$compose_file" exec -T \
-    -e "PGOPTIONS=-c statement_timeout=1000ms -c lock_timeout=1000ms" \
-    db psql -X -v ON_ERROR_STOP=1 -U agent -d agent_studio -Atc "$1"
+  best_effort_remaining_ms=$(remaining_budget_ms "$cleanup_metrics_deadline_ms") || return $?
+  if [ "$best_effort_remaining_ms" -gt 1000 ]; then best_effort_remaining_ms=1000; fi
+  db_scalar_with_timeout "$cleanup_metrics_deadline_ms" "$best_effort_remaining_ms" "$1"
 }
 
 refresh_metrics_strict() {
@@ -118,14 +215,53 @@ validate_elapsed() {
   [ "$elapsed_ms" -le "$((RC_CAPACITY_DEADLINE_SECONDS * 1000))" ]
 }
 
+scan_sensitive_log() {
+  ruby -e '
+    begin
+      data = File.binread(ARGV.fetch(0))
+      known = File.readlines(ARGV.fetch(1), chomp: true).reject(&:empty?)
+      key = ENV.fetch("RUN_PAYLOAD_ENCRYPTION_KEY", "")
+      literals = known + (key.empty? ? [] : [key])
+      sensitive = literals.any? { |value| data.include?(value) }
+      sensitive ||= data.match?(/authorization/i)
+      sensitive ||= data.match?(/ciphertext/i)
+      sensitive ||= data.match?(/["\x27]?(?:input|output)["\x27]?\s*[:=]/i)
+      sensitive ||= data.match?(/prompt/i)
+      exit(sensitive ? 0 : 1)
+    rescue StandardError
+      warn "capacity sensitive-log scan failed"
+      exit 2
+    end
+  ' "$1" "$sensitive_values_file"
+}
+
+withhold_failure_log() {
+  ruby -rfileutils -e 'FileUtils.mkdir_p(ARGV.fetch(0)); File.write(File.join(ARGV.fetch(0), "redaction.log"), ARGV.fetch(1) + "\n")' "$artifact_dir" "$1"
+}
+
 capture_failure_logs() {
   raw_log="$run_root/compose.log"
-  docker compose -f "$compose_file" logs --no-color api worker >"$raw_log" 2>&1 || true
-  if ruby -rfileutils -e 'data=File.binread(ARGV.fetch(0)); key=ENV.fetch("RUN_PAYLOAD_ENCRYPTION_KEY", ""); forbidden=(!key.empty? && data.include?(key)) || data.match?(/authorization/i) || data.match?(/ciphertext/i) || data.match?(/["\x27](?:input|output)["\x27]\s*[:=]/i); FileUtils.mkdir_p(ARGV.fetch(1)); if forbidden; File.write(File.join(ARGV.fetch(1), "redaction.log"), "failure log withheld after sensitive-data scan\n"); exit 1; end; File.binwrite(File.join(ARGV.fetch(1), "compose.log"), data)' "$raw_log" "$artifact_dir"; then
-    ruby -e 'STDERR.write(File.readlines(ARGV.fetch(0)).last(300).join)' "$artifact_dir/compose.log" || true
-  else
-    printf '%s\n' 'capacity failure log withheld after sensitive-data scan' >&2
+  if ! run_bounded "$logs_deadline_ms" docker compose -f "$compose_file" logs --no-color api worker >"$raw_log" 2>&1; then
+    withhold_failure_log 'failure log withheld after bounded log collection failure'
+    printf '%s\n' 'capacity failure log withheld after bounded log collection failure' >&2
+    return 0
   fi
+  scan_sensitive_log "$raw_log"
+  scan_status=$?
+  case "$scan_status" in
+    1)
+      ruby -rfileutils -e 'FileUtils.mkdir_p(ARGV.fetch(1)); FileUtils.cp(ARGV.fetch(0), File.join(ARGV.fetch(1), "compose.log"))' "$raw_log" "$artifact_dir"
+      ruby -e 'STDERR.write(File.readlines(ARGV.fetch(0)).last(300).join)' "$artifact_dir/compose.log" || true
+      ;;
+    0)
+      withhold_failure_log 'failure log withheld after sensitive-data scan'
+      printf '%s\n' 'capacity failure log withheld after sensitive-data scan' >&2
+      ;;
+    *)
+      withhold_failure_log 'failure log withheld because sensitive-data scan failed'
+      printf '%s\n' 'capacity failure log withheld because sensitive-data scan failed' >&2
+      ;;
+  esac
 }
 
 cleanup() {
@@ -137,6 +273,8 @@ cleanup() {
   cleanup_in_progress=1
   trap - EXIT HUP INT TERM
   set +e
+  cleanup_now_ms=$(now_epoch_ms)
+  cleanup_metrics_deadline_ms=$(min_epoch_ms "$((cleanup_now_ms + 3000))" "$logs_deadline_ms")
   if [ "$status" -ne 0 ]; then
     refresh_metrics_best_effort
     if [ "$started_workload" -eq 1 ]; then
@@ -147,16 +285,20 @@ cleanup() {
         throughput_per_second=$(ruby -e 'puts format("%.6f", ARGV.fetch(0).to_f / (ARGV.fetch(1).to_f / 1000.0))' "$completed" "$elapsed_ms")
       fi
     fi
-    if [ "$compose_started" -eq 1 ]; then
-      capture_failure_logs
-    fi
   fi
-  if [ "$summary_persisted" -eq 0 ] && [ -n "${summary_file:-}" ] && command -v jq >/dev/null 2>&1; then
+  if [ "$summary_persisted" -eq 0 ] && [ -n "${summary_file:-}" ]; then
     write_summary
     persist_summary
+    summary_persisted=1
+  fi
+  if [ "$status" -ne 0 ] && [ "$compose_started" -eq 1 ]; then
+    capture_failure_logs
   fi
   if [ "$compose_started" -eq 1 ]; then
-    docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
+    run_bounded "$down_deadline_ms" docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
+  fi
+  if [ "$image_cleanup_required" -eq 1 ]; then
+    run_bounded "$image_cleanup_deadline_ms" docker image rm "$test_image" >/dev/null 2>&1 || true
   fi
   rm -rf "$run_root"
   exit "$status"
@@ -183,10 +325,15 @@ trap 'status=$?; cleanup "$status"' EXIT
 trap on_hup HUP
 trap on_int INT
 trap on_term TERM
+chmod 700 "$run_root"
 compose_file="$run_root/compose.yaml"
 summary_file="$run_root/summary.json"
 run_ids_file="$run_root/run-ids"
 request_keys_file="$run_root/request-keys"
+sensitive_values_file="$run_root/sensitive-values"
+: >"$sensitive_values_file"
+chmod 600 "$sensitive_values_file"
+printf '%s\n' 'capacity-private-input-' 'capacity-private-key-' 'capacity-private-prompt' >"$sensitive_values_file"
 
 for command in docker curl jq ruby go; do
   command -v "$command" >/dev/null || {
@@ -194,7 +341,7 @@ for command in docker curl jq ruby go; do
     exit 2
   }
 done
-docker compose version >/dev/null
+run_bounded "$cleanup_start_deadline_ms" docker compose version >/dev/null
 
 [ -n "${RUN_PAYLOAD_ENCRYPTION_KEY:-}" ] || {
   printf '%s\n' 'RUN_PAYLOAD_ENCRYPTION_KEY is required' >&2
@@ -221,10 +368,10 @@ esac
 [ "$api_port" -ge 1 ] && [ "$api_port" -le 65535 ] || exit 2
 [ "$db_port" -ge 1 ] && [ "$db_port" -le 65535 ] || exit 2
 base_url="http://127.0.0.1:$api_port"
-test_image="agent-studio:rc-capacity-e2e"
+test_image="agent-studio:rc-capacity-e2e-$$"
 export api_port db_port test_image RUN_PAYLOAD_ENCRYPTION_KEY
 
-ruby -rfileutils -e 'FileUtils.mkdir_p(ARGV.fetch(0)); %w[summary.json compose.log redaction.log].each { |name| path=File.join(ARGV.fetch(0), name); File.delete(path) if File.file?(path) }' "$artifact_dir"
+run_bounded "$cleanup_start_deadline_ms" ruby -rfileutils -e 'FileUtils.mkdir_p(ARGV.fetch(0)); %w[summary.json compose.log redaction.log].each { |name| path=File.join(ARGV.fetch(0), name); File.delete(path) if File.file?(path) }' "$artifact_dir"
 
 cat >"$compose_file" <<'YAML'
 services:
@@ -280,13 +427,14 @@ services:
       retries: 30
 YAML
 
-actual_services=$(docker compose -f "$compose_file" config --services | sort | tr '\n' ' ')
+actual_services=$(run_bounded "$cleanup_start_deadline_ms" docker compose -f "$compose_file" config --services | sort | tr '\n' ' ')
 [ "$actual_services" = "api db worker " ] || exit 1
 if [ "${RC_CAPACITY_CONTRACT_ONLY:-}" = "1" ]; then exit 0; fi
 
-docker build -t "$test_image" "$repo_root"
+image_cleanup_required=1
+run_bounded "$cleanup_start_deadline_ms" docker build -t "$test_image" "$repo_root"
 compose_started=1
-docker compose -f "$compose_file" up -d db api worker
+run_bounded "$cleanup_start_deadline_ms" docker compose -f "$compose_file" up -d db api worker
 
 wait_for_api() {
   while before_epoch_deadline "$readiness_deadline_ms"; do
@@ -295,10 +443,10 @@ wait_for_api() {
   done
   return 124
 }
-readiness_deadline_ms=$(( $(now_epoch_ms) + 60000 ))
+readiness_deadline_ms=$(min_epoch_ms "$(( $(now_epoch_ms) + 60000 ))" "$cleanup_start_deadline_ms")
 wait_for_api
 
-setup_deadline_ms=$(( $(now_epoch_ms) + 60000 ))
+setup_deadline_ms=$(min_epoch_ms "$(( $(now_epoch_ms) + 60000 ))" "$cleanup_start_deadline_ms")
 slug="rc-capacity-$$"
 created=$(jq -nc --arg slug "$slug" '{name:"RC capacity",slug:$slug,description:"rc capacity baseline"}' |
   curl_with_deadline "$setup_deadline_ms" -fsS -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows")
@@ -306,7 +454,7 @@ workflow_id=$(printf '%s' "$created" | jq -er '.id')
 revision=$(printf '%s' "$created" | jq -er '.draftRevision')
 graph=$(jq -nc '{schemaVersion:1,nodes:[
   {id:"start",type:"start",typeVersion:"1",position:{x:0,y:0},config:{fields:[{key:"topic",label:"Topic",type:"text",required:true}]}},
-  {id:"prompt-template",type:"template",typeVersion:"1",position:{x:240,y:0},config:{template:"Answer briefly: {{topic}}"}},
+  {id:"prompt-template",type:"template",typeVersion:"1",position:{x:240,y:0},config:{template:"capacity-private-prompt {{topic}}"}},
   {id:"llm-mock",type:"llm",typeVersion:"1",position:{x:480,y:0},config:{model:"mock",maxTokens:32}},
   {id:"end",type:"end",typeVersion:"1",position:{x:720,y:0},config:{}}
 ],edges:[
@@ -323,8 +471,10 @@ workflow_version_id=$(printf '%s' "$published" | jq -er '.id')
 
 : >"$run_ids_file"
 : >"$request_keys_file"
+chmod 600 "$run_ids_file" "$request_keys_file"
 start_epoch_ms=$(now_epoch_ms)
-deadline_epoch_ms=$((start_epoch_ms + RC_CAPACITY_DEADLINE_SECONDS * 1000))
+deadline_epoch_ms=$(min_epoch_ms "$((start_epoch_ms + RC_CAPACITY_DEADLINE_SECONDS * 1000))" "$cleanup_start_deadline_ms")
+before_epoch_deadline "$deadline_epoch_ms"
 started_workload=1
 
 before_deadline() {
@@ -335,8 +485,10 @@ index=1
 while [ "$index" -le "$RUN_COUNT" ]; do
   before_deadline || exit 1
   request_key=$(ruby -rsecurerandom -e 'puts SecureRandom.uuid')
+  topic="capacity-private-input-$index"
   printf '%s\n' "$request_key" >>"$request_keys_file"
-  response=$(jq -nc --arg version "$workflow_version_id" --arg topic "capacity-$index" '{workflowVersionId:$version,input:{topic:$topic}}' |
+  printf '%s\n' "$request_key" "$topic" >>"$sensitive_values_file"
+  response=$(jq -nc --arg version "$workflow_version_id" --arg topic "$topic" '{workflowVersionId:$version,input:{topic:$topic}}' |
     curl_with_deadline "$deadline_epoch_ms" -fsS -H 'Content-Type: application/json' -H 'Prefer: respond-async' -H "Idempotency-Key: $request_key" --data-binary @- "$base_url/api/agents/$slug/runs")
   before_deadline
   run_id=$(printf '%s' "$response" | jq -er '.runId')
@@ -396,10 +548,10 @@ done <"$run_ids_file"
 assert_equal "$api_completed" 500 api-completed
 
 curl_with_deadline "$deadline_epoch_ms" -fsS "$base_url/readyz" >/dev/null
-api_container=$(docker compose -f "$compose_file" ps -q api)
-worker_container=$(docker compose -f "$compose_file" ps -q worker)
-api_health=$(docker inspect --format '{{.State.Health.Status}}' "$api_container")
-worker_health=$(docker inspect --format '{{.State.Health.Status}}' "$worker_container")
+api_container=$(run_bounded "$deadline_epoch_ms" docker compose -f "$compose_file" ps -q api)
+worker_container=$(run_bounded "$deadline_epoch_ms" docker compose -f "$compose_file" ps -q worker)
+api_health=$(run_bounded "$deadline_epoch_ms" docker inspect --format '{{.State.Health.Status}}' "$api_container")
+worker_health=$(run_bounded "$deadline_epoch_ms" docker inspect --format '{{.State.Health.Status}}' "$worker_container")
 assert_equal "$api_health" healthy api-health
 assert_equal "$worker_health" healthy worker-health
 before_deadline
