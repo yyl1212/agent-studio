@@ -348,12 +348,12 @@ func normalizeOptionalUUID(raw string) (string, error) {
 }
 
 func normalizeRunStatuses(values []domain.RunStatus) ([]domain.RunStatus, error) {
-	if len(values) > 5 {
+	if len(values) > 7 {
 		return nil, ErrInvalidWorkflowInput
 	}
 	result := append([]domain.RunStatus(nil), values...)
 	for _, value := range result {
-		if value != domain.RunRunning && value != domain.RunCancelling && value != domain.RunCompleted && value != domain.RunFailed && value != domain.RunCancelled {
+		if value != domain.RunQueued && value != domain.RunRunning && value != domain.RunRecoveryRequired && value != domain.RunCancelling && value != domain.RunCompleted && value != domain.RunFailed && value != domain.RunCancelled {
 			return nil, ErrInvalidWorkflowInput
 		}
 	}

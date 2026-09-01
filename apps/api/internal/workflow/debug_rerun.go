@@ -133,9 +133,9 @@ func (service *DebugService) buildRerun(ctx context.Context, runID, nodeID strin
 	if _, ok := plan.Nodes[nodeID]; !ok {
 		return rerunBuild{}, ErrRunEntryInputInvalid
 	}
-	started, terminals := indexNodeHistory(events)
-	entryStarts := started[nodeID]
-	if len(entryStarts) != 1 {
+	history := indexNodeAttemptHistory(events)
+	entryHistory, ok := latestNodeAttemptHistory(history, nodeID)
+	if !ok || entryHistory.started == nil {
 		return rerunBuild{}, ErrRunEntryInputInvalid
 	}
 	entryInput := map[string]any{}
@@ -143,7 +143,7 @@ func (service *DebugService) buildRerun(ctx context.Context, runID, nodeID strin
 		if err := decodeJSON(source.Input, &entryInput); err != nil {
 			return rerunBuild{}, ErrRunEntryInputInvalid
 		}
-	} else if err := decodeJSON(entryStarts[0].Input, &entryInput); err != nil {
+	} else if err := decodeJSON(entryHistory.started.Input, &entryInput); err != nil {
 		return rerunBuild{}, ErrRunEntryInputInvalid
 	}
 	active := descendants(plan, nodeID)
@@ -158,7 +158,7 @@ func (service *DebugService) buildRerun(ctx context.Context, runID, nodeID strin
 		SourceRunID:             source.ID,
 		SourceNodeID:            nodeID,
 		EntryInput:              cloneAnyMap(entryInput),
-		EntryInputRedactedPaths: append([]string{}, entryStarts[0].InputRedactedPaths...),
+		EntryInputRedactedPaths: append([]string{}, entryHistory.started.InputRedactedPaths...),
 		ActiveNodes:             []RerunNode{},
 		FrozenEdges:             []FrozenEdgePreview{},
 		EffectiveSafety:         agentnode.ExecutionSafetyPure,
@@ -182,10 +182,11 @@ func (service *DebugService) buildRerun(ctx context.Context, runID, nodeID strin
 		if sourceActive || !targetActive || edge.Target == nodeID {
 			continue
 		}
-		terminal, ok := uniqueTerminal(terminals[edge.Source])
-		if !ok {
+		sourceHistory, ok := latestNodeAttemptHistory(history, edge.Source)
+		if !ok || sourceHistory.terminal == nil {
 			return rerunBuild{}, ErrRunFrozenEdgeUnavailable
 		}
+		terminal := *sourceHistory.terminal
 		frozen := engine.FrozenEdge{}
 		if terminal.Type == "node.completed" {
 			output := map[string]any{}
@@ -215,25 +216,38 @@ func (service *DebugService) buildRerun(ctx context.Context, runID, nodeID strin
 	return rerunBuild{source: source, rawGraph: rawGraph, plan: plan, input: entryInput, scope: scope, preview: preview}, nil
 }
 
-func indexNodeHistory(events []domain.RunEvent) (map[string][]domain.RunEvent, map[string][]domain.RunEvent) {
-	started := make(map[string][]domain.RunEvent)
-	terminals := make(map[string][]domain.RunEvent)
+func indexNodeAttemptHistory(events []domain.RunEvent) map[nodeAttemptKey]attemptHistory {
+	result := make(map[nodeAttemptKey]attemptHistory)
 	for _, event := range events {
+		if event.NodeID == "" {
+			continue
+		}
+		key := nodeAttemptKey{NodeID: event.NodeID, Attempt: historyEventAttempt(event)}
+		history := result[key]
 		switch event.Type {
 		case "node.started":
-			started[event.NodeID] = append(started[event.NodeID], event)
+			copy := event
+			history.started = &copy
 		case "node.completed", "node.skipped", "node.failed", "node.cancelled":
-			terminals[event.NodeID] = append(terminals[event.NodeID], event)
+			copy := event
+			history.terminal = &copy
+		case "node.retry_confirmed":
+			history.confirmed = true
 		}
+		result[key] = history
 	}
-	return started, terminals
+	return result
 }
 
-func uniqueTerminal(events []domain.RunEvent) (domain.RunEvent, bool) {
-	if len(events) != 1 {
-		return domain.RunEvent{}, false
+func latestNodeAttemptHistory(history map[nodeAttemptKey]attemptHistory, nodeID string) (attemptHistory, bool) {
+	latestAttempt := 0
+	var latest attemptHistory
+	for key, value := range history {
+		if key.NodeID == nodeID && key.Attempt > latestAttempt {
+			latestAttempt, latest = key.Attempt, value
+		}
 	}
-	return events[0], true
+	return latest, latestAttempt > 0
 }
 
 func descendants(plan *engine.Plan, entry string) map[string]struct{} {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
@@ -29,9 +30,7 @@ func (service *DebugService) Overview(ctx context.Context, runID string) (DebugO
 	if err != nil {
 		return DebugOverview{}, err
 	}
-	if nodeRuns == nil {
-		nodeRuns = []domain.NodeRun{}
-	}
+	nodeRuns = latestNodeRunAttempts(nodeRuns)
 	overview := DebugOverview{Run: run, Graph: graph, NodeRuns: nodeRuns, SourceChain: sources}
 	if _, err := service.loadCompleteHistory(ctx, run); err != nil {
 		if errors.Is(err, errIncompleteRunHistory) {
@@ -43,6 +42,22 @@ func (service *DebugService) Overview(ctx context.Context, runID string) (DebugO
 	overview.ReplayAvailable = true
 	overview.RerunAvailable = true
 	return overview, nil
+}
+
+func latestNodeRunAttempts(values []domain.NodeRun) []domain.NodeRun {
+	latest := make(map[string]domain.NodeRun, len(values))
+	for _, value := range values {
+		current, exists := latest[value.NodeID]
+		if !exists || value.Attempt > current.Attempt {
+			latest[value.NodeID] = value
+		}
+	}
+	result := make([]domain.NodeRun, 0, len(latest))
+	for _, value := range latest {
+		result = append(result, value)
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left].NodeID < result[right].NodeID })
+	return result
 }
 
 func (service *DebugService) Events(ctx context.Context, runID string, afterSequence int64) (RunEventPage, error) {
@@ -145,16 +160,109 @@ func (service *DebugService) loadCompleteHistory(ctx context.Context, run domain
 			break
 		}
 	}
-	if len(events) == 0 || events[0].Type != "run.started" {
+	return service.validateCompleteHistory(run, events)
+}
+
+type nodeAttemptKey struct {
+	NodeID  string
+	Attempt int
+}
+
+type attemptHistory struct {
+	started   *domain.RunEvent
+	terminal  *domain.RunEvent
+	confirmed bool
+}
+
+func (service *DebugService) validateCompleteHistory(run domain.Run, events []domain.RunEvent) ([]domain.RunEvent, error) {
+	if len(events) == 0 || (events[0].Type != "run.queued" && events[0].Type != "run.started") {
 		return nil, errIncompleteRunHistory
 	}
 	wantTerminal := map[domain.RunStatus]string{
 		domain.RunCompleted: "run.completed", domain.RunFailed: "run.failed", domain.RunCancelled: "run.cancelled",
 	}[run.Status]
-	if events[len(events)-1].Type != wantTerminal {
+	if wantTerminal == "" || events[len(events)-1].Type != wantTerminal {
+		return nil, errIncompleteRunHistory
+	}
+	runStarted := false
+	attempts := make(map[nodeAttemptKey]attemptHistory)
+	maxAttempt := make(map[string]int)
+	for index := range events {
+		event := &events[index]
+		if event.RunID != run.ID || event.Sequence != int64(index+1) {
+			return nil, errIncompleteRunHistory
+		}
+		switch event.Type {
+		case "run.queued", "run.recovery_required":
+			if event.NodeID != "" || event.NodeAttempt != nil {
+				return nil, errIncompleteRunHistory
+			}
+		case "run.started":
+			if runStarted || event.NodeID != "" || event.NodeAttempt != nil {
+				return nil, errIncompleteRunHistory
+			}
+			runStarted = true
+		case "run.completed", "run.failed", "run.cancelled":
+			if !runStarted || index != len(events)-1 || event.Type != wantTerminal || event.NodeID != "" || event.NodeAttempt != nil {
+				return nil, errIncompleteRunHistory
+			}
+		case "node.started", "node.completed", "node.failed", "node.skipped", "node.cancelled", "node.retry_confirmed":
+			if !runStarted || event.NodeID == "" {
+				return nil, errIncompleteRunHistory
+			}
+			attempt := historyEventAttempt(*event)
+			if attempt < 1 || attempt > 3 || attempt < maxAttempt[event.NodeID] {
+				return nil, errIncompleteRunHistory
+			}
+			key := nodeAttemptKey{NodeID: event.NodeID, Attempt: attempt}
+			history := attempts[key]
+			if attempt > maxAttempt[event.NodeID] && maxAttempt[event.NodeID] > 0 {
+				previous := attempts[nodeAttemptKey{NodeID: event.NodeID, Attempt: maxAttempt[event.NodeID]}]
+				if previous.terminal == nil && !previous.confirmed {
+					return nil, errIncompleteRunHistory
+				}
+			}
+			if attempt > maxAttempt[event.NodeID] {
+				maxAttempt[event.NodeID] = attempt
+			}
+			switch event.Type {
+			case "node.started":
+				if history.started != nil || history.terminal != nil || history.confirmed {
+					return nil, errIncompleteRunHistory
+				}
+				history.started = event
+			case "node.skipped":
+				if history.terminal != nil || history.confirmed {
+					return nil, errIncompleteRunHistory
+				}
+				history.terminal = event
+			case "node.completed", "node.failed", "node.cancelled":
+				if history.started == nil || history.terminal != nil || history.confirmed {
+					return nil, errIncompleteRunHistory
+				}
+				history.terminal = event
+			case "node.retry_confirmed":
+				if history.started == nil || history.terminal != nil || history.confirmed {
+					return nil, errIncompleteRunHistory
+				}
+				history.confirmed = true
+			}
+			attempts[key] = history
+		default:
+			return nil, errIncompleteRunHistory
+		}
+	}
+	if !runStarted {
 		return nil, errIncompleteRunHistory
 	}
 	return events, nil
+}
+
+func historyEventAttempt(event domain.RunEvent) int {
+	if event.NodeAttempt == nil {
+		return 1
+	}
+	return *event.NodeAttempt
 }
 
 func (service *DebugService) loadSourceChain(ctx context.Context, run domain.Run) ([]DebugSource, error) {

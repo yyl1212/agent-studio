@@ -487,7 +487,7 @@ func TestRunManagementListParsesStrictQuery(t *testing.T) {
 	dependencies := fixtureDeps()
 	workflowID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	runID := "11111111-1111-4111-8111-111111111111"
-	path := "/api/runs?workflowId=" + workflowID + "&runId=" + runID + "&status=failed&status=running&mode=test&startedAfter=2026-08-01T00:00:00%2B08:00&startedBefore=2026-08-25T00:00:00%2B08:00&limit=20"
+	path := "/api/runs?workflowId=" + workflowID + "&runId=" + runID + "&status=queued&status=recovery_required&mode=test&startedAfter=2026-08-01T00:00:00%2B08:00&startedBefore=2026-08-25T00:00:00%2B08:00&limit=20"
 	recorder := performRequest(NewRouter(dependencies), http.MethodGet, path, "")
 	request := dependencies.RunManagement.(*fixtureRunManager).request
 	if recorder.Code != http.StatusOK || request.WorkflowID != workflowID || request.RunID != runID || len(request.Statuses) != 2 || len(request.Modes) != 1 || request.Limit != 20 || request.StartedAfter == nil || request.StartedAfter.Location() != time.UTC {
@@ -498,7 +498,7 @@ func TestRunManagementListParsesStrictQuery(t *testing.T) {
 func TestRunManagementListRejectsInvalidQuery(t *testing.T) {
 	tests := []string{
 		"?workflowId=a&workflowId=b", "?runId=a&runId=b", "?cursor=a&cursor=b", "?limit=1&limit=2",
-		"?status=running&status=cancelling&status=completed&status=failed&status=cancelled&status=failed",
+		"?status=queued&status=running&status=recovery_required&status=cancelling&status=completed&status=failed&status=cancelled&status=failed",
 		"?mode=test&mode=published&mode=debug&mode=test", "?workflowId=bad", "?runId=bad",
 		"?startedAfter=2026-01-01T00:00:00Z&startedBefore=2026-04-02T00:00:00Z",
 		"?startedAfter=2026-01-02T00:00:00Z&startedBefore=2026-01-01T00:00:00Z",

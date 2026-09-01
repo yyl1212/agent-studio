@@ -73,6 +73,44 @@ func TestPreviewRerunRejectsMissingOrRedactedFrozenValue(t *testing.T) {
 	}
 }
 
+func TestPreviewRerunUsesLatestCompletedAttemptForEntryAndFrozenEdge(t *testing.T) {
+	service, store, _ := newRerunFixture(t)
+	now := time.Now().UTC()
+	attempt := 2
+	terminal := store.runEvents[len(store.runEvents)-1]
+	store.runEvents = append(store.runEvents[:len(store.runEvents)-1],
+		domain.RunEvent{Type: "node.started", NodeID: "left", NodeAttempt: &attempt, Status: domain.NodeRunning, Input: json.RawMessage(`{"seed":["new-left"]}`), Timestamp: now},
+		domain.RunEvent{Type: "node.completed", NodeID: "left", NodeAttempt: &attempt, Status: domain.NodeCompleted, Output: json.RawMessage(`{"text":"L-new"}`), Timestamp: now},
+		domain.RunEvent{Type: "node.started", NodeID: "right", NodeAttempt: &attempt, Status: domain.NodeRunning, Input: json.RawMessage(`{"seed":["new-right"]}`), Timestamp: now},
+		domain.RunEvent{Type: "node.completed", NodeID: "right", NodeAttempt: &attempt, Status: domain.NodeCompleted, Output: json.RawMessage(`{"text":"R-new"}`), Timestamp: now},
+		terminal,
+	)
+	for index := range store.runEvents {
+		store.runEvents[index].RunID = "source-run"
+		store.runEvents[index].Sequence = int64(index + 1)
+	}
+	entry, err := service.PreviewRerun(context.Background(), "source-run", "left")
+	if err != nil || entry.EntryInput["seed"].([]any)[0] != "new-left" || entry.FrozenEdges[0].Value != "R-new" {
+		t.Fatalf("preview=%+v error=%v", entry, err)
+	}
+}
+
+func TestPreviewRerunRejectsFrozenNodeWithLaterUnresolvedAttempt(t *testing.T) {
+	service, store, _ := newRerunFixture(t)
+	attempt := 2
+	terminal := store.runEvents[len(store.runEvents)-1]
+	store.runEvents = append(store.runEvents[:len(store.runEvents)-1], domain.RunEvent{
+		Type: "node.started", NodeID: "right", NodeAttempt: &attempt, Status: domain.NodeRunning, Input: json.RawMessage(`{"seed":["uncertain"]}`), Timestamp: time.Now().UTC(),
+	}, terminal)
+	for index := range store.runEvents {
+		store.runEvents[index].RunID = "source-run"
+		store.runEvents[index].Sequence = int64(index + 1)
+	}
+	if _, err := service.PreviewRerun(context.Background(), "source-run", "left"); !errors.Is(err, ErrRunFrozenEdgeUnavailable) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestPrepareRerunUsesEditedEntryInputAndCreatesDebugRun(t *testing.T) {
 	service, store, graph := newRerunFixture(t)
 	before := len(store.runs)

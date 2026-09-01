@@ -404,7 +404,7 @@ func TestRunManagementListRejectsInvalidFiltersBeforeStore(t *testing.T) {
 	}{
 		{name: "workflow uuid", request: RunSummaryRequest{WorkflowID: "bad"}},
 		{name: "run uuid", request: RunSummaryRequest{RunID: "bad"}},
-		{name: "sixth status", request: RunSummaryRequest{Statuses: []domain.RunStatus{domain.RunRunning, domain.RunCancelling, domain.RunCompleted, domain.RunFailed, domain.RunCancelled, domain.RunFailed}}},
+		{name: "eighth status", request: RunSummaryRequest{Statuses: []domain.RunStatus{domain.RunQueued, domain.RunRunning, domain.RunRecoveryRequired, domain.RunCancelling, domain.RunCompleted, domain.RunFailed, domain.RunCancelled, domain.RunFailed}}},
 		{name: "unknown status", request: RunSummaryRequest{Statuses: []domain.RunStatus{"paused"}}},
 		{name: "fourth mode", request: RunSummaryRequest{Modes: []domain.RunMode{domain.RunModeTest, domain.RunModePublished, domain.RunModeDebug, domain.RunModeTest}}},
 		{name: "unknown mode", request: RunSummaryRequest{Modes: []domain.RunMode{"batch"}}},
@@ -421,6 +421,14 @@ func TestRunManagementListRejectsInvalidFiltersBeforeStore(t *testing.T) {
 				t.Fatalf("error=%v calls=%d", err, store.calls)
 			}
 		})
+	}
+}
+
+func TestRunManagementListAcceptsQueuedAndRecoveryStatuses(t *testing.T) {
+	store := &fakeRunManagementStore{}
+	_, err := NewRunManagementService(store, nil).List(context.Background(), RunSummaryRequest{Statuses: []domain.RunStatus{domain.RunRecoveryRequired, domain.RunQueued}})
+	if err != nil || !reflect.DeepEqual(store.query.Statuses, []domain.RunStatus{domain.RunQueued, domain.RunRecoveryRequired}) {
+		t.Fatalf("statuses=%v error=%v", store.query.Statuses, err)
 	}
 }
 
