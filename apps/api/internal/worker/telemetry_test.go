@@ -61,23 +61,36 @@ func TestWorkerTelemetryUsesOnlyBoundedLabels(t *testing.T) {
 }
 
 func TestWorkerTelemetryClampsNegativeQueueStatsToZero(t *testing.T) {
-	reader := sdkmetric.NewManualReader()
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	telemetry := newTelemetry(observability.Providers{MeterProvider: provider})
-	telemetry.queue(context.Background(), -3, -2*time.Second)
+	for _, test := range []struct {
+		name       string
+		depth      int64
+		oldest     time.Duration
+		wantDepth  int64
+		wantOldest float64
+	}{
+		{name: "negative depth preserves oldest age", depth: -3, oldest: 4 * time.Second, wantDepth: 0, wantOldest: 4},
+		{name: "negative oldest age preserves depth", depth: 5, oldest: -2 * time.Second, wantDepth: 5, wantOldest: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader := sdkmetric.NewManualReader()
+			provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			telemetry := newTelemetry(observability.Providers{MeterProvider: provider})
+			telemetry.queue(context.Background(), test.depth, test.oldest)
 
-	var collected metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &collected); err != nil {
-		t.Fatal(err)
-	}
-	metrics := queueSamplerMetrics(collected)
-	depth, ok := metrics["agent_studio.worker.queue_depth"].Data.(metricdata.Gauge[int64])
-	if !ok || len(depth.DataPoints) != 1 || depth.DataPoints[0].Value != 0 {
-		t.Fatalf("queue depth=%#v", metrics["agent_studio.worker.queue_depth"])
-	}
-	oldest, ok := metrics["agent_studio.worker.oldest_queued_age"].Data.(metricdata.Gauge[float64])
-	if !ok || len(oldest.DataPoints) != 1 || oldest.DataPoints[0].Value != 0 {
-		t.Fatalf("oldest queued age=%#v", metrics["agent_studio.worker.oldest_queued_age"])
+			var collected metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &collected); err != nil {
+				t.Fatal(err)
+			}
+			metrics := queueSamplerMetrics(collected)
+			depth, ok := metrics["agent_studio.worker.queue_depth"].Data.(metricdata.Gauge[int64])
+			if !ok || len(depth.DataPoints) != 1 || depth.DataPoints[0].Value != test.wantDepth {
+				t.Fatalf("queue depth=%#v want=%d", metrics["agent_studio.worker.queue_depth"], test.wantDepth)
+			}
+			oldest, ok := metrics["agent_studio.worker.oldest_queued_age"].Data.(metricdata.Gauge[float64])
+			if !ok || len(oldest.DataPoints) != 1 || oldest.DataPoints[0].Value != test.wantOldest {
+				t.Fatalf("oldest queued age=%#v want=%v", metrics["agent_studio.worker.oldest_queued_age"], test.wantOldest)
+			}
+		})
 	}
 }
 
