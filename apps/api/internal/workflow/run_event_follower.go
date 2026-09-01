@@ -47,10 +47,14 @@ func (follower *RunEventFollower) Follow(ctx context.Context, runID string, obse
 				return err
 			}
 			afterSequence = event.Sequence
-			if isRunTerminal(event.Type) {
+			if isRunFollowerTerminal(event.Type) {
 				return nil
 			}
 		}
 		timer.Reset(follower.pollInterval)
 	}
+}
+
+func isRunFollowerTerminal(eventType string) bool {
+	return eventType == "run.recovery_required" || isRunTerminal(eventType)
 }

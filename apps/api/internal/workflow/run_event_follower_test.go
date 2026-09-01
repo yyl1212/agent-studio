@@ -15,7 +15,9 @@ func TestRunEventFollowerPollsExclusivelyUntilTerminal(t *testing.T) {
 		{{RunID: "run", Sequence: 2, Type: "run.started"}, {RunID: "run", Sequence: 3, Type: "run.completed"}},
 	}}
 	observer := &recordingObserver{}
-	if err := NewRunEventFollower(store, time.Millisecond).Follow(context.Background(), "run", observer); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := NewRunEventFollower(store, time.Millisecond).Follow(ctx, "run", observer); err != nil {
 		t.Fatal(err)
 	}
 	if len(observer.events) != 3 || len(store.cursors) != 2 || store.cursors[0] != 0 || store.cursors[1] != 1 {
@@ -41,6 +43,22 @@ func TestRunEventFollowerRejectsSequenceGap(t *testing.T) {
 	err := NewRunEventFollower(store, time.Millisecond).Follow(context.Background(), "run", &recordingObserver{})
 	if !errors.Is(err, domain.ErrRunEventSequence) {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRunEventFollowerStopsAfterRecoveryRequired(t *testing.T) {
+	store := &followerStore{pages: [][]domain.RunEvent{{
+		{RunID: "run", Sequence: 1, Type: "run.queued"},
+		{RunID: "run", Sequence: 2, Type: "run.recovery_required"},
+	}}}
+	observer := &recordingObserver{}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := NewRunEventFollower(store, time.Millisecond).Follow(ctx, "run", observer); err != nil {
+		t.Fatal(err)
+	}
+	if len(observer.events) != 2 || len(store.cursors) != 1 {
+		t.Fatalf("events=%+v cursors=%v", observer.events, store.cursors)
 	}
 }
 
