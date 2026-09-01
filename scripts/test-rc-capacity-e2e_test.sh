@@ -65,7 +65,7 @@ validate_script() {
     commands = lines.flat_map { |line| split_commands(line) }
     code = lines.join("\n")
     require_marker = ->(marker) { raise "rc capacity scenario is missing: #{marker}" unless code.include?(marker) }
-    ["set -eu", "tmpfs:", "WORKER_MAX_ACTIVE_RUNS: \"4\"", "RUN_COUNT=${RUN_COUNT:-500}", "RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}", "trap cleanup EXIT HUP INT TERM", "duplicateTerminalEvents", "remainingLeases", "remainingQueueDepth", "queueWaitP95Ms"].each { |marker| require_marker.call(marker) }
+    ["set -eu", "tmpfs:", "WORKER_MAX_ACTIVE_RUNS: \"4\"", "RUN_COUNT=${RUN_COUNT:-500}", "RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}", "refresh_metrics_strict()", "refresh_metrics_best_effort()", "validate_elapsed()", "--connect-timeout", "--max-time", "statement_timeout", "lock_timeout", "duplicateTerminalEvents", "remainingLeases", "remainingQueueDepth", "queueWaitP95Ms"].each { |marker| require_marker.call(marker) }
 
     project_assignments = lines.grep(/^COMPOSE_PROJECT_NAME=/)
     raise "COMPOSE_PROJECT_NAME must be assigned exactly once" unless project_assignments.length == 1
@@ -118,10 +118,22 @@ validate_script() {
     cleanup_end = cleanup_start && lines[(cleanup_start + 1)..].index("}")
     raise "cleanup block missing" unless cleanup_start && cleanup_end
     cleanup = lines[cleanup_start..cleanup_start + cleanup_end]
+    raise "cleanup must receive an explicit status" unless cleanup.include?("status=$1")
+    raise "cleanup must not derive signal status from $?" if cleanup.include?("status=$?")
     raise "cleanup must remove only this Compose project" unless cleanup.include?("docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true")
     raise "cleanup must remove only run_root" unless cleanup.include?("rm -rf \"$run_root\"")
-    trap_index = lines.index("trap cleanup EXIT HUP INT TERM")
-    raise "cleanup trap must immediately follow run_root" unless trap_index == lines.index(expected_run_root) + 1
+    expected_traps = [
+      "trap \x27status=$?; cleanup \"$status\"\x27 EXIT",
+      "trap on_hup HUP",
+      "trap on_int INT",
+      "trap on_term TERM",
+    ]
+    trap_index = lines.index(expected_traps.first)
+    raise "explicit cleanup traps must immediately follow run_root" unless trap_index == lines.index(expected_run_root) + 1 && lines[trap_index, expected_traps.length] == expected_traps
+    {"on_hup() {" => "cleanup 129", "on_int() {" => "cleanup 130", "on_term() {" => "cleanup 143"}.each do |handler, exit_call|
+      handler_index = lines.index(handler)
+      raise "signal handler missing: #{handler}" unless handler_index && lines[(handler_index + 1), 2].include?(exit_call)
+    end
 
     run_default = "RUN_COUNT=${RUN_COUNT:-500}"
     deadline_default = "RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}"
@@ -185,11 +197,25 @@ set -eu
 COMPOSE_PROJECT_NAME="agent_studio_rc_capacity_$$"
 export COMPOSE_PROJECT_NAME
 cleanup() {
+  status=$1
   docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$run_root"
+  exit "$status"
+}
+on_hup() {
+  cleanup 129
+}
+on_int() {
+  cleanup 130
+}
+on_term() {
+  cleanup 143
 }
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-rc-capacity.XXXXXX")
-trap cleanup EXIT HUP INT TERM
+trap 'status=$?; cleanup "$status"' EXIT
+trap on_hup HUP
+trap on_int INT
+trap on_term TERM
 compose_file="$run_root/compose.yaml"
 RUN_COUNT=${RUN_COUNT:-500}
 RC_CAPACITY_DEADLINE_SECONDS=${RC_CAPACITY_DEADLINE_SECONDS:-570}
@@ -202,6 +228,21 @@ validate_deadline() {
   if [ "$RC_CAPACITY_DEADLINE_SECONDS" -gt 570 ]; then exit 1; fi
 }
 validate_deadline "$RC_CAPACITY_DEADLINE_SECONDS"
+refresh_metrics_strict() {
+  :
+}
+refresh_metrics_best_effort() {
+  :
+}
+validate_elapsed() {
+  [ "$elapsed_ms" -le "$((RC_CAPACITY_DEADLINE_SECONDS * 1000))" ]
+}
+curl_budget_probe() {
+  curl --connect-timeout 1 --max-time 1 "$@"
+}
+db_budget_probe() {
+  PGOPTIONS="-c statement_timeout=1ms -c lock_timeout=1ms" :
+}
 test_image="agent-studio:rc-capacity-e2e"
 docker build -t "$test_image" "$repo_root"
 cat >"$compose_file" <<'YAML'
@@ -247,7 +288,7 @@ FIXTURE
       contract_after_up) ruby -e 'p=ARGV[0]; s=File.read(p); c="if [ \"${RC_CAPACITY_CONTRACT_ONLY:-}\" = \"1\" ]; then exit 0; fi\n"; File.write(p, s.sub(c, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{c}"))' "$candidate"; expected='Compose verification order';;
       worker_port) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("    environment:\n", "    ports:\n      - \"127.0.0.1:$worker_port:8080\"\n    environment:\n"))' "$candidate"; expected='Worker must not expose ports';;
       no_cleanup) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("  docker compose -f \"$compose_file\" down --remove-orphans >/dev/null 2>&1 || true", "  :"))' "$candidate"; expected='cleanup must remove only this Compose project';;
-      late_trap) ruby -e 'p=ARGV[0]; s=File.read(p); t="trap cleanup EXIT HUP INT TERM\n"; File.write(p, s.sub(t, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{t}"))' "$candidate"; expected='immediately follow';;
+      late_trap) ruby -e 'p=ARGV[0]; s=File.read(p); t="trap \x27status=$?; cleanup \"$status\"\x27 EXIT\ntrap on_hup HUP\ntrap on_int INT\ntrap on_term TERM\n"; File.write(p, s.sub(t, "").sub("docker compose -f \"$compose_file\" up -d db api worker\n", "docker compose -f \"$compose_file\" up -d db api worker\n#{t}"))' "$candidate"; expected='immediately follow';;
       defaults_reassign) ruby -e 'p=ARGV[0]; s=File.read(p); marker="[ \"$RUN_COUNT\" = \"500\" ] || exit 1\n"; injection="RUN_COUNT=1\nRC_CAPACITY_DEADLINE_SECONDS=60\nvalidate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\"\n"; File.write(p, s.sub(marker, marker + injection))' "$candidate"; expected='defaults must be the only assignments';;
       exported_defaults_reassign) ruby -e 'p=ARGV[0]; s=File.read(p); marker="[ \"$RUN_COUNT\" = \"500\" ] || exit 1\n"; injection="export   RUN_COUNT=1\nexport\tRC_CAPACITY_DEADLINE_SECONDS=60\nvalidate_deadline \"$RC_CAPACITY_DEADLINE_SECONDS\"\n"; File.write(p, s.sub(marker, marker + injection))' "$candidate"; expected='defaults must be the only assignments';;
       deadline_noop) ruby -e 'p=ARGV[0]; s=File.read(p); File.write(p, s.sub("exit 1 ;;", ": ;;"))' "$candidate"; expected='deadline must reject non-integers directly';;

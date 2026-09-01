@@ -23,6 +23,7 @@ queue_wait_p95_ms=0
 started_workload=0
 compose_started=0
 summary_persisted=0
+cleanup_in_progress=0
 run_ids_sql=
 
 write_summary() {
@@ -33,25 +34,88 @@ persist_summary() {
   ruby -rfileutils -e 'FileUtils.mkdir_p(File.dirname(ARGV.fetch(1))); FileUtils.cp(ARGV.fetch(0), ARGV.fetch(1))' "$summary_file" "$artifact_dir/summary.json"
 }
 
-db_scalar() {
-  docker compose -f "$compose_file" exec -T db psql -X -v ON_ERROR_STOP=1 -U agent -d agent_studio -Atc "$1"
+now_epoch_ms() {
+  ruby -e 'puts (Time.now.to_f * 1000).to_i'
 }
 
-refresh_metrics() {
+remaining_budget_ms() {
+  budget_deadline_ms=$1
+  budget_now_ms=$(now_epoch_ms)
+  budget_remaining_ms=$((budget_deadline_ms - budget_now_ms))
+  [ "$budget_remaining_ms" -gt 0 ] || return 124
+  printf '%s\n' "$budget_remaining_ms"
+}
+
+remaining_budget_seconds() {
+  budget_remaining_ms=$(remaining_budget_ms "$1") || return $?
+  budget_remaining_seconds=$((budget_remaining_ms / 1000))
+  [ "$budget_remaining_seconds" -ge 1 ] || budget_remaining_seconds=1
+  printf '%s\n' "$budget_remaining_seconds"
+}
+
+before_epoch_deadline() {
+  remaining_budget_ms "$1" >/dev/null
+}
+
+curl_with_deadline() {
+  curl_deadline_ms=$1
+  shift
+  curl_max_time=$(remaining_budget_seconds "$curl_deadline_ms") || return $?
+  curl --connect-timeout 2 --max-time "$curl_max_time" "$@" || return $?
+  before_epoch_deadline "$curl_deadline_ms" || return 124
+}
+
+db_scalar_with_timeout() {
+  db_timeout_ms=$1
+  shift
+  docker compose -f "$compose_file" exec -T \
+    -e "PGOPTIONS=-c statement_timeout=${db_timeout_ms}ms -c lock_timeout=${db_timeout_ms}ms" \
+    db psql -X -v ON_ERROR_STOP=1 -U agent -d agent_studio -Atc "$1"
+}
+
+db_scalar() {
+  db_remaining_ms=$(remaining_budget_ms "$deadline_epoch_ms") || return $?
+  db_result=$(db_scalar_with_timeout "$db_remaining_ms" "$1") || return $?
+  before_deadline || return 124
+  printf '%s\n' "$db_result"
+}
+
+db_scalar_best_effort() {
+  docker compose -f "$compose_file" exec -T \
+    -e "PGOPTIONS=-c statement_timeout=1000ms -c lock_timeout=1000ms" \
+    db psql -X -v ON_ERROR_STOP=1 -U agent -d agent_studio -Atc "$1"
+}
+
+refresh_metrics_strict() {
+  [ -n "$run_ids_sql" ] || return 2
+  value=$(db_scalar "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND status='completed'") || return $?
+  completed=$value
+  value=$(db_scalar "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND status <> 'completed'") || return $?
+  non_completed=$value
+  value=$(db_scalar "SELECT count(*) FROM (SELECT r.id FROM runs r LEFT JOIN run_events e ON e.run_id=r.id AND e.type IN ('run.completed','run.failed','run.cancelled') WHERE r.id = ANY(ARRAY[$run_ids_sql]::uuid[]) GROUP BY r.id HAVING count(e.*) <> 1) invalid") || return $?
+  duplicate_terminal_events=$value
+  value=$(db_scalar "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND lease_owner IS NOT NULL") || return $?
+  remaining_leases=$value
+  value=$(db_scalar "SELECT count(*) FROM runs WHERE status='queued' AND execution_protocol=1") || return $?
+  remaining_queue_depth=$value
+  value=$(db_scalar "SELECT COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (started.timestamp-queued.timestamp))*1000),0) FROM run_events queued JOIN run_events started USING(run_id) WHERE queued.type='run.queued' AND started.type='run.started' AND queued.run_id = ANY(ARRAY[$run_ids_sql]::uuid[])") || return $?
+  queue_wait_p95_ms=$value
+}
+
+refresh_metrics_best_effort() {
   [ "$compose_started" -eq 1 ] || return 0
   [ -n "$run_ids_sql" ] || return 0
-  value=$(db_scalar "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND status='completed'" 2>/dev/null) || return 0
-  completed=$value
-  value=$(db_scalar "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND status <> 'completed'" 2>/dev/null) || return 0
-  non_completed=$value
-  value=$(db_scalar "SELECT count(*) FROM (SELECT r.id FROM runs r LEFT JOIN run_events e ON e.run_id=r.id AND e.type IN ('run.completed','run.failed','run.cancelled') WHERE r.id = ANY(ARRAY[$run_ids_sql]::uuid[]) GROUP BY r.id HAVING count(e.*) <> 1) invalid" 2>/dev/null) || return 0
-  duplicate_terminal_events=$value
-  value=$(db_scalar "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND lease_owner IS NOT NULL" 2>/dev/null) || return 0
-  remaining_leases=$value
-  value=$(db_scalar "SELECT count(*) FROM runs WHERE status='queued' AND execution_protocol=1" 2>/dev/null) || return 0
-  remaining_queue_depth=$value
-  value=$(db_scalar "SELECT COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (started.timestamp-queued.timestamp))*1000),0) FROM run_events queued JOIN run_events started USING(run_id) WHERE queued.type='run.queued' AND started.type='run.started' AND queued.run_id = ANY(ARRAY[$run_ids_sql]::uuid[])" 2>/dev/null) || return 0
-  queue_wait_p95_ms=$value
+  best_effort_value=$(db_scalar_best_effort "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND status='completed'" 2>/dev/null) && completed=$best_effort_value
+  best_effort_value=$(db_scalar_best_effort "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND status <> 'completed'" 2>/dev/null) && non_completed=$best_effort_value
+  best_effort_value=$(db_scalar_best_effort "SELECT count(*) FROM (SELECT r.id FROM runs r LEFT JOIN run_events e ON e.run_id=r.id AND e.type IN ('run.completed','run.failed','run.cancelled') WHERE r.id = ANY(ARRAY[$run_ids_sql]::uuid[]) GROUP BY r.id HAVING count(e.*) <> 1) invalid" 2>/dev/null) && duplicate_terminal_events=$best_effort_value
+  best_effort_value=$(db_scalar_best_effort "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND lease_owner IS NOT NULL" 2>/dev/null) && remaining_leases=$best_effort_value
+  best_effort_value=$(db_scalar_best_effort "SELECT count(*) FROM runs WHERE status='queued' AND execution_protocol=1" 2>/dev/null) && remaining_queue_depth=$best_effort_value
+  best_effort_value=$(db_scalar_best_effort "SELECT COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (started.timestamp-queued.timestamp))*1000),0) FROM run_events queued JOIN run_events started USING(run_id) WHERE queued.type='run.queued' AND started.type='run.started' AND queued.run_id = ANY(ARRAY[$run_ids_sql]::uuid[])" 2>/dev/null) && queue_wait_p95_ms=$best_effort_value
+  return 0
+}
+
+validate_elapsed() {
+  [ "$elapsed_ms" -le "$((RC_CAPACITY_DEADLINE_SECONDS * 1000))" ]
 }
 
 capture_failure_logs() {
@@ -65,13 +129,18 @@ capture_failure_logs() {
 }
 
 cleanup() {
-  status=$?
+  status=$1
+  if [ "$cleanup_in_progress" -eq 1 ]; then
+    trap - EXIT HUP INT TERM
+    exit "$status"
+  fi
+  cleanup_in_progress=1
   trap - EXIT HUP INT TERM
   set +e
   if [ "$status" -ne 0 ]; then
-    refresh_metrics
+    refresh_metrics_best_effort
     if [ "$started_workload" -eq 1 ]; then
-      now_ms=$(ruby -e 'puts (Time.now.to_f * 1000).to_i')
+      now_ms=$(now_epoch_ms)
       elapsed_ms=$((now_ms - start_epoch_ms))
       [ "$elapsed_ms" -ge 0 ] || elapsed_ms=0
       if [ "$elapsed_ms" -gt 0 ]; then
@@ -93,12 +162,27 @@ cleanup() {
   exit "$status"
 }
 
+on_hup() {
+  cleanup 129
+}
+
+on_int() {
+  cleanup 130
+}
+
+on_term() {
+  cleanup 143
+}
+
 validate_summary() {
   jq -e 'keys == ["completed","duplicateTerminalEvents","elapsedMs","nonCompleted","queueWaitP95Ms","remainingLeases","remainingQueueDepth","submitted","throughputPerSecond"]' "$summary_file" >/dev/null
 }
 
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-rc-capacity.XXXXXX")
-trap cleanup EXIT HUP INT TERM
+trap 'status=$?; cleanup "$status"' EXIT
+trap on_hup HUP
+trap on_int INT
+trap on_term TERM
 compose_file="$run_root/compose.yaml"
 summary_file="$run_root/summary.json"
 run_ids_file="$run_root/run-ids"
@@ -205,19 +289,19 @@ compose_started=1
 docker compose -f "$compose_file" up -d db api worker
 
 wait_for_api() {
-  attempts=0
-  while [ "$attempts" -lt 60 ]; do
-    curl -fsS "$base_url/readyz" >/dev/null 2>&1 && return 0
-    attempts=$((attempts + 1))
+  while before_epoch_deadline "$readiness_deadline_ms"; do
+    curl_with_deadline "$readiness_deadline_ms" -fsS "$base_url/readyz" >/dev/null 2>&1 && return 0
     sleep 1
   done
-  return 1
+  return 124
 }
+readiness_deadline_ms=$(( $(now_epoch_ms) + 60000 ))
 wait_for_api
 
+setup_deadline_ms=$(( $(now_epoch_ms) + 60000 ))
 slug="rc-capacity-$$"
 created=$(jq -nc --arg slug "$slug" '{name:"RC capacity",slug:$slug,description:"rc capacity baseline"}' |
-  curl -fsS -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows")
+  curl_with_deadline "$setup_deadline_ms" -fsS -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows")
 workflow_id=$(printf '%s' "$created" | jq -er '.id')
 revision=$(printf '%s' "$created" | jq -er '.draftRevision')
 graph=$(jq -nc '{schemaVersion:1,nodes:[
@@ -231,20 +315,20 @@ graph=$(jq -nc '{schemaVersion:1,nodes:[
   {id:"llm-end",source:"llm-mock",sourcePort:"text",target:"end",targetPort:"result"}
 ]}')
 saved=$(jq -nc --argjson revision "$revision" --argjson graph "$graph" '{draftRevision:$revision,graph:$graph}' |
-  curl -fsS -X PUT -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows/$workflow_id")
+  curl_with_deadline "$setup_deadline_ms" -fsS -X PUT -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows/$workflow_id")
 revision=$(printf '%s' "$saved" | jq -er '.draftRevision')
 published=$(jq -nc --argjson revision "$revision" '{draftRevision:$revision}' |
-  curl -fsS -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows/$workflow_id/publish")
+  curl_with_deadline "$setup_deadline_ms" -fsS -H 'Content-Type: application/json' --data-binary @- "$base_url/api/workflows/$workflow_id/publish")
 workflow_version_id=$(printf '%s' "$published" | jq -er '.id')
 
 : >"$run_ids_file"
 : >"$request_keys_file"
-start_epoch_ms=$(ruby -e 'puts (Time.now.to_f * 1000).to_i')
-deadline_epoch=$(( $(date +%s) + RC_CAPACITY_DEADLINE_SECONDS ))
+start_epoch_ms=$(now_epoch_ms)
+deadline_epoch_ms=$((start_epoch_ms + RC_CAPACITY_DEADLINE_SECONDS * 1000))
 started_workload=1
 
 before_deadline() {
-  [ "$(date +%s)" -lt "$deadline_epoch" ]
+  before_epoch_deadline "$deadline_epoch_ms"
 }
 
 index=1
@@ -253,7 +337,8 @@ while [ "$index" -le "$RUN_COUNT" ]; do
   request_key=$(ruby -rsecurerandom -e 'puts SecureRandom.uuid')
   printf '%s\n' "$request_key" >>"$request_keys_file"
   response=$(jq -nc --arg version "$workflow_version_id" --arg topic "capacity-$index" '{workflowVersionId:$version,input:{topic:$topic}}' |
-    curl -fsS -H 'Content-Type: application/json' -H 'Prefer: respond-async' -H "Idempotency-Key: $request_key" --data-binary @- "$base_url/api/agents/$slug/runs")
+    curl_with_deadline "$deadline_epoch_ms" -fsS -H 'Content-Type: application/json' -H 'Prefer: respond-async' -H "Idempotency-Key: $request_key" --data-binary @- "$base_url/api/agents/$slug/runs")
+  before_deadline
   run_id=$(printf '%s' "$response" | jq -er '.runId')
   ruby -e 'exit(ARGV.fetch(0).match?(/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/i) ? 0 : 1)' "$run_id"
   printf '%s\n' "$run_id" >>"$run_ids_file"
@@ -269,7 +354,6 @@ wait_for_completion() {
   while before_deadline; do
     completed=$(db_scalar "SELECT count(*) FROM runs WHERE id = ANY(ARRAY[$run_ids_sql]::uuid[]) AND status='completed'")
     if [ "$completed" -eq "$RUN_COUNT" ]; then
-      completion_epoch_ms=$(ruby -e 'puts (Time.now.to_f * 1000).to_i')
       return 0
     fi
     sleep 1
@@ -277,11 +361,7 @@ wait_for_completion() {
   return 1
 }
 wait_for_completion
-
-elapsed_ms=$((completion_epoch_ms - start_epoch_ms))
-[ "$elapsed_ms" -ge 0 ] && [ "$elapsed_ms" -lt 600000 ] || exit 1
-throughput_per_second=$(ruby -e 'elapsed=[ARGV.fetch(1).to_i,1].max; puts format("%.6f", ARGV.fetch(0).to_f / (elapsed.to_f / 1000.0))' "$completed" "$elapsed_ms")
-refresh_metrics
+refresh_metrics_strict
 
 assert_equal() {
   actual=$1
@@ -308,19 +388,26 @@ assert_equal "$remaining_queue_depth" 0 remaining-queue-depth
 
 api_completed=0
 while IFS= read -r run_id; do
-  api_status=$(curl -fsS "$base_url/api/runs/$run_id" | jq -er '.run.status')
+  api_status=$(curl_with_deadline "$deadline_epoch_ms" -fsS "$base_url/api/runs/$run_id" | jq -er '.run.status')
+  before_deadline
   [ "$api_status" = completed ] || exit 1
   api_completed=$((api_completed + 1))
 done <"$run_ids_file"
 assert_equal "$api_completed" 500 api-completed
 
-curl -fsS "$base_url/readyz" >/dev/null
+curl_with_deadline "$deadline_epoch_ms" -fsS "$base_url/readyz" >/dev/null
 api_container=$(docker compose -f "$compose_file" ps -q api)
 worker_container=$(docker compose -f "$compose_file" ps -q worker)
 api_health=$(docker inspect --format '{{.State.Health.Status}}' "$api_container")
 worker_health=$(docker inspect --format '{{.State.Health.Status}}' "$worker_container")
 assert_equal "$api_health" healthy api-health
 assert_equal "$worker_health" healthy worker-health
+before_deadline
+
+elapsed_ms=$(( $(now_epoch_ms) - start_epoch_ms ))
+[ "$elapsed_ms" -ge 0 ] || exit 1
+validate_elapsed
+throughput_per_second=$(ruby -e 'elapsed=[ARGV.fetch(1).to_i,1].max; puts format("%.6f", ARGV.fetch(0).to_f / (elapsed.to_f / 1000.0))' "$completed" "$elapsed_ms")
 
 write_summary
 persist_summary
