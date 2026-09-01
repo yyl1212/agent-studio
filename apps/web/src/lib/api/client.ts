@@ -36,6 +36,7 @@ export type RunSummary = components['schemas']['RunSummary']
 export type RunSummaryPage = components['schemas']['RunSummaryPage']
 export type RunRetryPreview = components['schemas']['RunRetryPreview']
 export type RunRetryRequest = components['schemas']['RunRetryRequest']
+export type RunRecoveryView = components['schemas']['RunRecoveryView']
 export type UpdateWorkflowRequest = components['schemas']['UpdateWorkflowRequest']
 export type CopyWorkflowRequest = components['schemas']['CopyWorkflowRequest']
 export type WorkflowSnapshotRef = components['schemas']['WorkflowSnapshotRef']
@@ -240,6 +241,16 @@ export const api = {
     request<RunRetryPreview>(`/api/runs/${encodeURIComponent(id)}/retry-preview`, { signal }),
   cancelRun: (id: string, signal?: AbortSignal) =>
     request<RunSummary>(`/api/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST', signal }),
+  getRunRecovery: (runID: string, signal?: AbortSignal) =>
+    request<RunRecoveryView>(`/api/runs/${encodeURIComponent(runID)}/recovery`, { signal }),
+  confirmRunNodeRetry: (runID: string, nodeID: string, nodeAttempt: number, expectedSequence: number, signal?: AbortSignal) =>
+    request<RunSummary>(`/api/runs/${encodeURIComponent(runID)}/recovery/nodes/${encodeURIComponent(nodeID)}/retry`, {
+      method: 'POST', body: jsonBody({ nodeAttempt, expectedSequence }), signal,
+    }),
+  terminateRunRecovery: (runID: string, expectedSequence: number, signal?: AbortSignal) =>
+    request<RunSummary>(`/api/runs/${encodeURIComponent(runID)}/recovery/terminate`, {
+      method: 'POST', body: jsonBody({ expectedSequence }), signal,
+    }),
   retryRun: (id: string, idempotencyKey: string, body: RunRetryRequest, signal?: AbortSignal) =>
     streamRequest(`/api/runs/${encodeURIComponent(id)}/retries`, {
       method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: jsonBody(body), signal,

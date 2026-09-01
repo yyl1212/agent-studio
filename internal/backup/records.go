@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -162,6 +163,36 @@ type WorkflowDraftCheckpointRecord struct {
 	CreatedAt             time.Time       `json:"createdAt"`
 }
 
+type RunRecordV1Alpha2 struct {
+	RunRecord
+	ExecutionProtocol   int16      `json:"executionProtocol"`
+	LeaseToken          int64      `json:"leaseToken"`
+	RecoveryReason      *string    `json:"recoveryReason"`
+	RecoveryRequestedAt *time.Time `json:"recoveryRequestedAt"`
+}
+
+type NodeRunRecordV1Alpha2 struct {
+	NodeRunRecord
+	Attempt int `json:"attempt"`
+}
+
+type RunEventRecordV1Alpha2 struct {
+	RunEventRecord
+	NodeAttempt *int `json:"nodeAttempt"`
+}
+
+type RunPayloadRecord struct {
+	RunID             string    `json:"runId"`
+	Sequence          int64     `json:"sequence"`
+	Kind              string    `json:"kind"`
+	NodeID            *string   `json:"nodeId"`
+	NodeAttempt       *int      `json:"nodeAttempt"`
+	ExecutionProtocol int16     `json:"executionProtocol"`
+	CipherVersion     int16     `json:"cipherVersion"`
+	Ciphertext        string    `json:"ciphertext"`
+	CreatedAt         time.Time `json:"createdAt"`
+}
+
 var recordFields = map[TableName][]string{
 	TableWorkflows:                {"id", "name", "slug", "description", "draftGraph", "draftRevision", "publishedVersionId", "createdAt", "updatedAt", "archivedAt", "agentPresentation"},
 	TableWorkflowVersions:         {"id", "workflowId", "version", "graph", "inputSchema", "createdAt", "agentPresentation"},
@@ -169,6 +200,16 @@ var recordFields = map[TableName][]string{
 	TableNodeRuns:                 {"id", "runId", "nodeId", "nodeType", "status", "input", "output", "error", "startedAt", "endedAt"},
 	TableRunEvents:                {"runId", "sequence", "type", "nodeId", "status", "input", "output", "activePorts", "error", "inputRedactedPaths", "outputRedactedPaths", "dataBytes", "timestamp"},
 	TableWorkflowDraftCheckpoints: {"workflowId", "sourceRevision", "restoredRevision", "graph", "agentPresentation", "restoredFromVersionId", "createdAt"},
+}
+
+var recordFieldsV1Alpha2 = map[TableName][]string{
+	TableWorkflows:                recordFields[TableWorkflows],
+	TableWorkflowVersions:         recordFields[TableWorkflowVersions],
+	TableRuns:                     append(append([]string{}, recordFields[TableRuns]...), "executionProtocol", "leaseToken", "recoveryReason", "recoveryRequestedAt"),
+	TableNodeRuns:                 append(append([]string{}, recordFields[TableNodeRuns]...), "attempt"),
+	TableRunEvents:                append(append([]string{}, recordFields[TableRunEvents]...), "nodeAttempt"),
+	TableRunPayloads:              {"runId", "sequence", "kind", "nodeId", "nodeAttempt", "executionProtocol", "cipherVersion", "ciphertext", "createdAt"},
+	TableWorkflowDraftCheckpoints: recordFields[TableWorkflowDraftCheckpoints],
 }
 
 func decodeRecord[T any](raw json.RawMessage) (T, error) {
@@ -224,16 +265,20 @@ func decodeRunRecord(raw json.RawMessage) (RunRecord, error) {
 	if err != nil {
 		return RunRecord{}, err
 	}
-	if !validUUID(record.ID) || !validUUID(record.WorkflowID) || !validOptionalUUID(record.WorkflowVersionID) ||
-		!validOptionalUUID(record.SourceRunID) || !validOptionalUUID(record.RetryOfRunID) || !validOptionalUUID(record.RetryKey) ||
-		!validOptionalUUID(record.AgentRequestKey) || (record.DraftRevision != nil && *record.DraftRevision <= 0) ||
-		!oneOf(record.Mode, "test", "published", "debug") || !oneOf(record.Status, "running", "cancelling", "completed", "failed", "cancelled") ||
-		!jsonObject(record.Input) || !validNullableJSONB(record.GraphSnapshot) || !validNullableJSONB(record.Output) ||
-		!validNullableJSONB(record.Error) || record.InputRedactedPaths == nil || !validUTC(record.StartedAt) ||
-		!validOptionalUTC(record.EndedAt) || !validOptionalUTC(record.CancelRequestedAt) || !validOptionalUTC(record.HeartbeatAt) {
+	if !validRunRecord(record) || !oneOf(record.Status, "running", "cancelling", "completed", "failed", "cancelled") {
 		return RunRecord{}, invalidRecord()
 	}
 	return record, nil
+}
+
+func validRunRecord(record RunRecord) bool {
+	return validUUID(record.ID) && validUUID(record.WorkflowID) && validOptionalUUID(record.WorkflowVersionID) &&
+		validOptionalUUID(record.SourceRunID) && validOptionalUUID(record.RetryOfRunID) && validOptionalUUID(record.RetryKey) &&
+		validOptionalUUID(record.AgentRequestKey) && (record.DraftRevision == nil || *record.DraftRevision > 0) &&
+		oneOf(record.Mode, "test", "published", "debug") && oneOf(record.Status, "queued", "running", "recovery_required", "cancelling", "completed", "failed", "cancelled") &&
+		jsonObject(record.Input) && validNullableJSONB(record.GraphSnapshot) && validNullableJSONB(record.Output) &&
+		validNullableJSONB(record.Error) && record.InputRedactedPaths != nil && validUTC(record.StartedAt) &&
+		validOptionalUTC(record.EndedAt) && validOptionalUTC(record.CancelRequestedAt) && validOptionalUTC(record.HeartbeatAt)
 }
 
 func validRunLocalSemantics(record RunRecord) bool {
@@ -266,13 +311,16 @@ func decodeNodeRunRecord(raw json.RawMessage) (NodeRunRecord, error) {
 	if err != nil {
 		return NodeRunRecord{}, err
 	}
-	if !validUUID(record.ID) || !validUUID(record.RunID) || record.NodeID == "" || record.NodeType == "" ||
-		!nodeStatus(record.Status) || !validNullableJSONB(record.Input) || !validNullableJSONB(record.Output) ||
-		!validNullableJSONB(record.Error) ||
-		!validOptionalUTC(record.StartedAt) || !validOptionalUTC(record.EndedAt) {
+	if !validNodeRunRecord(record) {
 		return NodeRunRecord{}, invalidRecord()
 	}
 	return record, nil
+}
+
+func validNodeRunRecord(record NodeRunRecord) bool {
+	return validUUID(record.ID) && validUUID(record.RunID) && record.NodeID != "" && record.NodeType != "" &&
+		nodeStatus(record.Status) && validNullableJSONB(record.Input) && validNullableJSONB(record.Output) &&
+		validNullableJSONB(record.Error) && validOptionalUTC(record.StartedAt) && validOptionalUTC(record.EndedAt)
 }
 
 func decodeRunEventRecord(raw json.RawMessage) (RunEventRecord, error) {
@@ -283,15 +331,19 @@ func decodeRunEventRecord(raw json.RawMessage) (RunEventRecord, error) {
 	if err != nil {
 		return RunEventRecord{}, err
 	}
-	if !validUUID(record.RunID) || record.Sequence <= 0 || !oneOf(record.Type,
-		"run.started", "node.started", "node.completed", "node.failed", "node.skipped", "node.cancelled", "run.completed", "run.failed", "run.cancelled") ||
-		(record.Status != nil && !nodeStatus(*record.Status)) || !validNullableJSONB(record.Input) ||
-		!validNullableJSONB(record.Output) || !validNullableJSONB(record.Error) ||
-		record.ActivePorts == nil || record.InputRedactedPaths == nil || record.OutputRedactedPaths == nil ||
-		record.DataBytes < 0 || !validUTC(record.Timestamp) {
+	if !validRunEventRecord(record) || !oneOf(record.Type,
+		"run.started", "node.started", "node.completed", "node.failed", "node.skipped", "node.cancelled", "run.completed", "run.failed", "run.cancelled") {
 		return RunEventRecord{}, invalidRecord()
 	}
 	return record, nil
+}
+
+func validRunEventRecord(record RunEventRecord) bool {
+	return validUUID(record.RunID) && record.Sequence > 0 && oneOf(record.Type,
+		"run.queued", "run.started", "run.recovery_required", "node.started", "node.completed", "node.failed", "node.skipped", "node.cancelled", "node.retry_confirmed", "run.completed", "run.failed", "run.cancelled") &&
+		(record.Status == nil || nodeStatus(*record.Status)) && validNullableJSONB(record.Input) &&
+		validNullableJSONB(record.Output) && validNullableJSONB(record.Error) && record.ActivePorts != nil &&
+		record.InputRedactedPaths != nil && record.OutputRedactedPaths != nil && record.DataBytes >= 0 && validUTC(record.Timestamp)
 }
 
 func decodeWorkflowDraftCheckpointRecord(raw json.RawMessage) (WorkflowDraftCheckpointRecord, error) {
@@ -310,7 +362,102 @@ func decodeWorkflowDraftCheckpointRecord(raw json.RawMessage) (WorkflowDraftChec
 	return record, nil
 }
 
+func decodeRunRecordV1Alpha2(raw json.RawMessage) (RunRecordV1Alpha2, error) {
+	if err := requireRecordFieldsForVersion(APIVersionV1Alpha2, TableRuns, raw); err != nil {
+		return RunRecordV1Alpha2{}, err
+	}
+	record, err := decodeRecord[RunRecordV1Alpha2](raw)
+	if err != nil || !validRunRecord(record.RunRecord) || record.ExecutionProtocol < 0 || record.LeaseToken < 0 ||
+		!validOptionalUTC(record.RecoveryRequestedAt) || !validRecoveryFields(record.Status, record.RecoveryReason, record.RecoveryRequestedAt) {
+		return RunRecordV1Alpha2{}, invalidRecord()
+	}
+	return record, nil
+}
+
+func decodeNodeRunRecordV1Alpha2(raw json.RawMessage) (NodeRunRecordV1Alpha2, error) {
+	if err := requireRecordFieldsForVersion(APIVersionV1Alpha2, TableNodeRuns, raw); err != nil {
+		return NodeRunRecordV1Alpha2{}, err
+	}
+	record, err := decodeRecord[NodeRunRecordV1Alpha2](raw)
+	if err != nil || record.Attempt < 1 || record.Attempt > 3 || !validNodeRunRecord(record.NodeRunRecord) {
+		return NodeRunRecordV1Alpha2{}, invalidRecord()
+	}
+	return record, nil
+}
+
+func decodeRunEventRecordV1Alpha2(raw json.RawMessage) (RunEventRecordV1Alpha2, error) {
+	if err := requireRecordFieldsForVersion(APIVersionV1Alpha2, TableRunEvents, raw); err != nil {
+		return RunEventRecordV1Alpha2{}, err
+	}
+	record, err := decodeRecord[RunEventRecordV1Alpha2](raw)
+	if err != nil || !validRunEventRecord(record.RunEventRecord) || !validEventAttempt(record.Type, record.NodeID, record.NodeAttempt) {
+		return RunEventRecordV1Alpha2{}, invalidRecord()
+	}
+	return record, nil
+}
+
+func decodeRunPayloadRecord(raw json.RawMessage) (RunPayloadRecord, error) {
+	if err := requireRecordFieldsForVersion(APIVersionV1Alpha2, TableRunPayloads, raw); err != nil {
+		return RunPayloadRecord{}, err
+	}
+	record, err := decodeRecord[RunPayloadRecord](raw)
+	if err != nil || !validUUID(record.RunID) || record.ExecutionProtocol <= 0 || record.CipherVersion <= 0 || !validUTC(record.CreatedAt) ||
+		!validPayloadMetadata(record) {
+		return RunPayloadRecord{}, invalidRecord()
+	}
+	ciphertext, err := base64.StdEncoding.Strict().DecodeString(record.Ciphertext)
+	if err != nil || len(ciphertext) == 0 || len(ciphertext) > MaxRecordBytes || base64.StdEncoding.EncodeToString(ciphertext) != record.Ciphertext {
+		return RunPayloadRecord{}, invalidRecord()
+	}
+	return record, nil
+}
+
+func validRecoveryFields(status string, reason *string, requestedAt *time.Time) bool {
+	if status == "recovery_required" {
+		return reason != nil && requestedAt != nil && oneOf(*reason, "legacy_active_run", "uncertain_read_only", "uncertain_side_effect", "attempt_limit_reached", "payload_unavailable", "event_history_invalid", "node_version_unavailable")
+	}
+	return reason == nil && requestedAt == nil
+}
+
+func validPayloadMetadata(record RunPayloadRecord) bool {
+	switch record.Kind {
+	case "run_input":
+		return record.Sequence == 0 && record.NodeID == nil && record.NodeAttempt == nil
+	case "node_input", "node_output":
+		return record.Sequence > 0 && record.NodeID != nil && *record.NodeID != "" && record.NodeAttempt != nil && *record.NodeAttempt >= 1 && *record.NodeAttempt <= 3
+	default:
+		return false
+	}
+}
+
+func validEventAttempt(eventType string, nodeID *string, attempt *int) bool {
+	if len(eventType) >= 4 && eventType[:4] == "run." {
+		return nodeID == nil && attempt == nil
+	}
+	return nodeID != nil && *nodeID != "" && attempt != nil && *attempt >= 1 && *attempt <= 3
+}
+
 func validateTableRecord(name TableName, raw json.RawMessage) error {
+	return validateTableRecordForVersion(APIVersionV1Alpha1, name, raw)
+}
+
+func validateTableRecordForVersion(version string, name TableName, raw json.RawMessage) error {
+	if version == APIVersionV1Alpha2 {
+		switch name {
+		case TableRuns:
+			_, err := decodeRunRecordV1Alpha2(raw)
+			return err
+		case TableNodeRuns:
+			_, err := decodeNodeRunRecordV1Alpha2(raw)
+			return err
+		case TableRunEvents:
+			_, err := decodeRunEventRecordV1Alpha2(raw)
+			return err
+		case TableRunPayloads:
+			_, err := decodeRunPayloadRecord(raw)
+			return err
+		}
+	}
 	switch name {
 	case TableWorkflows:
 		_, err := decodeWorkflowRecord(raw)
@@ -336,7 +483,15 @@ func validateTableRecord(name TableName, raw json.RawMessage) error {
 }
 
 func requireRecordFields(name TableName, raw json.RawMessage) error {
-	want, ok := recordFields[name]
+	return requireRecordFieldsForVersion(APIVersionV1Alpha1, name, raw)
+}
+
+func requireRecordFieldsForVersion(version string, name TableName, raw json.RawMessage) error {
+	fieldSet := recordFields
+	if version == APIVersionV1Alpha2 {
+		fieldSet = recordFieldsV1Alpha2
+	}
+	want, ok := fieldSet[name]
 	if !ok {
 		return invalidRecord()
 	}

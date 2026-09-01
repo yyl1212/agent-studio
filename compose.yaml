@@ -15,6 +15,45 @@ services:
       timeout: 3s
       retries: 30
 
+  api:
+    image: agent-studio:dev
+    build:
+      context: .
+    entrypoint: ["/app/agent-studio-api"]
+    environment: &runtime-environment
+      DATABASE_URL: postgres://agent:agent@db:5432/agent_studio?sslmode=disable
+      RUN_PAYLOAD_ENCRYPTION_KEY: ${RUN_PAYLOAD_ENCRYPTION_KEY:?must be set}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-mock}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-}
+      HTTP_NODE_ALLOW_PRIVATE: ${HTTP_NODE_ALLOW_PRIVATE:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-deployment.environment=local}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  worker:
+    image: agent-studio:dev
+    build:
+      context: .
+    entrypoint: ["/app/agent-studio-worker"]
+    environment:
+      <<: *runtime-environment
+      WORKER_MAX_ACTIVE_RUNS: "1"
+      OTEL_SERVICE_NAME: agent-studio-worker
+    depends_on:
+      db:
+        condition: service_healthy
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.159.0
     profiles: [observability]

@@ -26,8 +26,8 @@ func TestDryRunPlansMigrationsWithoutMutatingEmptyDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.TargetMigrationVersion != 0 || plan.LatestMigrationVersion != 6 ||
-		!slices.Equal(plan.PendingMigrations, []int64{1, 2, 3, 4, 5, 6}) || !plan.TargetEmpty {
+	if plan.TargetMigrationVersion != 0 || plan.LatestMigrationVersion != 7 ||
+		!slices.Equal(plan.PendingMigrations, []int64{1, 2, 3, 4, 5, 6, 7}) || !plan.TargetEmpty {
 		t.Fatalf("plan=%+v", plan)
 	}
 	if plan.Archive.Path != archivePath || plan.Archive.MigrationVersion != 6 {
@@ -115,9 +115,9 @@ func TestDryRunPlansOnlyMissingMigrations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantPending := []int64{4, 5, 6}
+			wantPending := []int64{4, 5, 6, 7}
 			if targetVersion == 6 {
-				wantPending = nil
+				wantPending = []int64{7}
 			}
 			if plan.TargetMigrationVersion != targetVersion || !slices.Equal(plan.PendingMigrations, wantPending) || !plan.TargetEmpty {
 				t.Fatalf("plan=%+v", plan)
@@ -129,7 +129,7 @@ func TestDryRunPlansOnlyMissingMigrations(t *testing.T) {
 
 func TestDryRunCompatibilityRejectsUnsupportedMigrationPairsAndNewerRuntime(t *testing.T) {
 	t.Run("archive migration newer than runtime", func(t *testing.T) {
-		_, err := DryRun(context.Background(), openUnmigratedTarget(t), referenceArchivePath(t, 7))
+		_, err := DryRun(context.Background(), openUnmigratedTarget(t), referenceArchivePath(t, 8))
 		if CodeOf(err) != CodeRuntimeTooOld {
 			t.Fatalf("code=%q err=%v", CodeOf(err), err)
 		}
@@ -140,7 +140,7 @@ func TestDryRunCompatibilityRejectsUnsupportedMigrationPairsAndNewerRuntime(t *t
 		if _, err := pool.Exec(context.Background(), `CREATE TABLE schema_migrations(version bigint PRIMARY KEY)`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pool.Exec(context.Background(), `INSERT INTO schema_migrations(version) VALUES(7)`); err != nil {
+		if _, err := pool.Exec(context.Background(), `INSERT INTO schema_migrations(version) VALUES(8)`); err != nil {
 			t.Fatal(err)
 		}
 		_, err := DryRun(context.Background(), pool, referenceArchivePath(t, 6))
@@ -214,7 +214,7 @@ func TestDryRunRejectsInvalidReferencesWithoutPersistentWrites(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_class relation
 		JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
 		WHERE namespace.nspname LIKE 'pg_temp_%' AND relation.relname = ANY($1)`, []string{
-		"backup_workflow_refs", "backup_version_refs", "backup_run_refs", "backup_node_run_refs", "backup_event_refs", "backup_checkpoint_refs",
+		"backup_workflow_refs", "backup_version_refs", "backup_run_refs", "backup_node_run_refs", "backup_event_refs", "backup_payload_refs", "backup_checkpoint_refs",
 	}).Scan(&temporaryReferences); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestDryRunRejectsSharedMaintenanceLeases(t *testing.T) {
 		if CodeOf(err) != CodeAPIRunning {
 			t.Fatalf("code=%q err=%v", CodeOf(err), err)
 		}
-		assertTargetVersionAndBusinessRows(t, pool, 6, 0)
+		assertTargetVersionAndBusinessRows(t, pool, 7, 0)
 	})
 
 	t.Run("backup create lease", func(t *testing.T) {
@@ -272,7 +272,7 @@ func TestDryRunRejectsSharedMaintenanceLeases(t *testing.T) {
 		if err := <-createResult; err != nil {
 			t.Fatal(err)
 		}
-		assertTargetVersionAndBusinessRows(t, pool, 6, 0)
+		assertTargetVersionAndBusinessRows(t, pool, 7, 0)
 	})
 }
 
@@ -368,7 +368,7 @@ func setTargetMigrationVersion(t *testing.T, pool *pgxpool.Pool, version int64) 
 	if err := database.Migrate(context.Background(), pool); err != nil {
 		t.Fatal(err)
 	}
-	if version < 6 {
+	if version < 7 {
 		if _, err := pool.Exec(context.Background(), `DELETE FROM schema_migrations WHERE version > $1`, version); err != nil {
 			t.Fatal(err)
 		}

@@ -25,7 +25,7 @@ func TestWriteAndOpenArchiveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Path != output || summary.CompressedBytes <= 0 || len(summary.Tables) != len(TableOrder) {
+	if summary.Path != output || summary.CompressedBytes <= 0 || len(summary.Tables) != len(TableOrderV1Alpha1) {
 		t.Fatalf("summary=%+v", summary)
 	}
 
@@ -214,13 +214,12 @@ func TestValidateOpenedArchiveRejectsPathReplacement(t *testing.T) {
 	}
 }
 
-func TestValidateZipEntriesRejectsMissingDuplicateExtraAndSymlink(t *testing.T) {
+func TestValidateZipEntriesAcceptsBothVersionCountsAndRejectsDuplicateExtraAndSymlink(t *testing.T) {
 	valid := zipEntriesFixture()
 	for _, test := range []struct {
 		name    string
 		entries []*zip.File
 	}{
-		{name: "missing", entries: valid[:len(valid)-1]},
 		{name: "duplicate", entries: append(append([]*zip.File(nil), valid[:len(valid)-1]...), valid[0])},
 		{name: "extra", entries: append(append([]*zip.File(nil), valid...), zipFileFixture("extra.txt", 0o600))},
 		{name: "symlink", entries: replaceZipEntry(valid, 0, zipFileFixture(manifestPath, os.ModeSymlink|0o600))},
@@ -231,12 +230,15 @@ func TestValidateZipEntriesRejectsMissingDuplicateExtraAndSymlink(t *testing.T) 
 			}
 		})
 	}
+	if _, err := validateZipEntries(valid[:len(valid)-1]); err != nil {
+		t.Fatalf("legacy entry count: %v", err)
+	}
 }
 
 func TestDecodeManifestRejectsUnknownFieldsAndInvalidDigest(t *testing.T) {
 	valid := manifestFixture(time.Now().UTC())
 	valid.DatasetDigest = digestPrefix + strings.Repeat("0", 64)
-	for _, name := range TableOrder {
+	for _, name := range TableOrderV1Alpha1 {
 		path, _ := tablePath(name)
 		valid.Tables = append(valid.Tables, TableManifest{Name: name, Path: path, Digest: digestPrefix + strings.Repeat("0", 64)})
 	}
@@ -381,7 +383,7 @@ func FuzzOpenArchive(f *testing.F) {
 
 func manifestFixture(createdAt time.Time) Manifest {
 	return Manifest{
-		APIVersion:               APIVersion,
+		APIVersion:               APIVersionV1Alpha1,
 		CreatedAt:                createdAt,
 		RuntimeVersion:           "0.5.0-test",
 		DatabaseMigrationVersion: 6,
@@ -390,8 +392,8 @@ func manifestFixture(createdAt time.Time) Manifest {
 }
 
 func tableWritersFixture(body []byte) map[TableName]TableWriter {
-	writers := make(map[TableName]TableWriter, len(TableOrder))
-	for _, name := range TableOrder {
+	writers := make(map[TableName]TableWriter, len(TableOrderV1Alpha1))
+	for _, name := range TableOrderV1Alpha1 {
 		name := name
 		writers[name] = func(ctx context.Context, writer io.Writer) (TableManifest, error) {
 			if err := ctx.Err(); err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/apps/api/internal/runpayload"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -72,6 +73,44 @@ func TestPreviewRerunRejectsMissingOrRedactedFrozenValue(t *testing.T) {
 	}
 }
 
+func TestPreviewRerunUsesLatestCompletedAttemptForEntryAndFrozenEdge(t *testing.T) {
+	service, store, _ := newRerunFixture(t)
+	now := time.Now().UTC()
+	attempt := 2
+	terminal := store.runEvents[len(store.runEvents)-1]
+	store.runEvents = append(store.runEvents[:len(store.runEvents)-1],
+		domain.RunEvent{Type: "node.started", NodeID: "left", NodeAttempt: &attempt, Status: domain.NodeRunning, Input: json.RawMessage(`{"seed":["new-left"]}`), Timestamp: now},
+		domain.RunEvent{Type: "node.completed", NodeID: "left", NodeAttempt: &attempt, Status: domain.NodeCompleted, Output: json.RawMessage(`{"text":"L-new"}`), Timestamp: now},
+		domain.RunEvent{Type: "node.started", NodeID: "right", NodeAttempt: &attempt, Status: domain.NodeRunning, Input: json.RawMessage(`{"seed":["new-right"]}`), Timestamp: now},
+		domain.RunEvent{Type: "node.completed", NodeID: "right", NodeAttempt: &attempt, Status: domain.NodeCompleted, Output: json.RawMessage(`{"text":"R-new"}`), Timestamp: now},
+		terminal,
+	)
+	for index := range store.runEvents {
+		store.runEvents[index].RunID = "source-run"
+		store.runEvents[index].Sequence = int64(index + 1)
+	}
+	entry, err := service.PreviewRerun(context.Background(), "source-run", "left")
+	if err != nil || entry.EntryInput["seed"].([]any)[0] != "new-left" || entry.FrozenEdges[0].Value != "R-new" {
+		t.Fatalf("preview=%+v error=%v", entry, err)
+	}
+}
+
+func TestPreviewRerunRejectsFrozenNodeWithLaterUnresolvedAttempt(t *testing.T) {
+	service, store, _ := newRerunFixture(t)
+	attempt := 2
+	terminal := store.runEvents[len(store.runEvents)-1]
+	store.runEvents = append(store.runEvents[:len(store.runEvents)-1], domain.RunEvent{
+		Type: "node.started", NodeID: "right", NodeAttempt: &attempt, Status: domain.NodeRunning, Input: json.RawMessage(`{"seed":["uncertain"]}`), Timestamp: time.Now().UTC(),
+	}, terminal)
+	for index := range store.runEvents {
+		store.runEvents[index].RunID = "source-run"
+		store.runEvents[index].Sequence = int64(index + 1)
+	}
+	if _, err := service.PreviewRerun(context.Background(), "source-run", "left"); !errors.Is(err, ErrRunFrozenEdgeUnavailable) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestPrepareRerunUsesEditedEntryInputAndCreatesDebugRun(t *testing.T) {
 	service, store, graph := newRerunFixture(t)
 	before := len(store.runs)
@@ -98,6 +137,47 @@ func TestPrepareRerunUsesEditedEntryInputAndCreatesDebugRun(t *testing.T) {
 		t.Fatalf("entry inputs=%#v", prepared.Scope.EntryNodeInputs)
 	}
 	if frozen := prepared.Scope.FrozenEdges["right-join"]; !frozen.Active || frozen.Value != "R-old" {
+		t.Fatalf("frozen=%+v", frozen)
+	}
+}
+
+func TestSubmitRerunQueuesAtomicallyWithoutLegacyCreate(t *testing.T) {
+	legacy, store, _ := newRerunFixture(t)
+	before := len(store.runs)
+	cipher, err := runpayload.New("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable := &submissionStore{}
+	service := NewQueuedDebugService(store, legacy.compiler, NewRunSubmissionService(durable, cipher))
+	result, err := service.SubmitRerun(context.Background(), "source-run", "left", RerunRequest{EntryInput: map[string]any{"seed": []any{"edited"}}})
+	if err != nil || result.Status != domain.RunQueued || durable.calls != 1 || len(store.runs) != before {
+		t.Fatalf("result=%+v calls=%d runs=%d before=%d error=%v", result, durable.calls, len(store.runs), before, err)
+	}
+	if durable.submission.Run.SourceRunID == nil || durable.submission.Run.SourceNodeID == nil || durable.submission.Run.Mode != domain.RunModeDebug {
+		t.Fatalf("submission=%+v", durable.submission)
+	}
+}
+
+func TestLoadPreparedExecutionRebuildsDurableDebugScope(t *testing.T) {
+	service, store, _ := newRerunFixture(t)
+	original, run, err := service.buildPreparedRerun(context.Background(), "source-run", "left", RerunRequest{
+		EntryInput: map[string]any{"seed": []any{"edited"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadPreparedExecution(context.Background(), store, service.compiler, run, original.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Scope == nil || loaded.Scope.EntryNodeID != "left" {
+		t.Fatalf("scope=%+v", loaded.Scope)
+	}
+	if got := loaded.Scope.EntryNodeInputs["seed"]; len(got) != 1 || got[0] != "edited" {
+		t.Fatalf("entry inputs=%#v", loaded.Scope.EntryNodeInputs)
+	}
+	if frozen := loaded.Scope.FrozenEdges["right-join"]; !frozen.Active || frozen.Value != "R-old" {
 		t.Fatalf("frozen=%+v", frozen)
 	}
 }

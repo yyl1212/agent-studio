@@ -1,11 +1,14 @@
 package config
 
 import (
+	"encoding/base64"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+var testRunPayloadEncryptionKey = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 
 func clearOTelEnv(t *testing.T) {
 	t.Helper()
@@ -16,8 +19,55 @@ func clearOTelEnv(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_TIMEOUT",
 		"OTEL_EXPORTER_OTLP_COMPRESSION",
 		"OTEL_METRIC_EXPORT_INTERVAL",
+		"WORKER_MAX_ACTIVE_RUNS",
+		"WORKER_LEASE_DURATION",
+		"WORKER_HEARTBEAT_INTERVAL",
+		"WORKER_CLAIM_INTERVAL",
+		"WORKER_SHUTDOWN_TIMEOUT",
+		"RUN_EVENT_POLL_INTERVAL",
 	} {
 		t.Setenv(key, "")
+	}
+	t.Setenv("RUN_PAYLOAD_ENCRYPTION_KEY", testRunPayloadEncryptionKey)
+}
+
+func TestLoadRequiresValidRunPayloadEncryptionKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "missing"},
+		{name: "invalid base64", key: "secret-not-base64"},
+		{name: "wrong length", key: base64.StdEncoding.EncodeToString(make([]byte, 31))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearOTelEnv(t)
+			t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+			t.Setenv("RUN_PAYLOAD_ENCRYPTION_KEY", tt.key)
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load() accepted invalid RUN_PAYLOAD_ENCRYPTION_KEY")
+			}
+			if !strings.Contains(err.Error(), "RUN_PAYLOAD_ENCRYPTION_KEY") {
+				t.Fatalf("Load() error lacks variable name: %v", err)
+			}
+			if tt.key != "" && strings.Contains(err.Error(), tt.key) {
+				t.Fatalf("Load() error disclosed encryption key: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadKeepsValidatedRunPayloadEncryptionKey(t *testing.T) {
+	clearOTelEnv(t)
+	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RunPayloadEncryptionKey != testRunPayloadEncryptionKey {
+		t.Fatalf("RunPayloadEncryptionKey was not preserved")
 	}
 }
 
@@ -71,21 +121,51 @@ func TestLoadResolvesNodeIndexCacheDir(t *testing.T) {
 	}
 }
 
-func TestLoadValidatesMaxActiveAgentRuns(t *testing.T) {
+func TestLoadUsesDurableWorkerDefaults(t *testing.T) {
 	clearOTelEnv(t)
 	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
-	t.Setenv("MODEL_PROVIDER", "")
-	t.Setenv("OPENAI_BASE_URL", "")
-	t.Setenv("MAX_ACTIVE_AGENT_RUNS", "")
 	cfg, err := Load()
-	if err != nil || cfg.MaxActiveAgentRuns != 8 {
+	if err != nil {
 		t.Fatalf("config=%+v error=%v", cfg, err)
 	}
-	for _, value := range []string{"0", "129", "bad"} {
-		t.Setenv("MAX_ACTIVE_AGENT_RUNS", value)
-		if _, err := Load(); err == nil {
-			t.Fatalf("MAX_ACTIVE_AGENT_RUNS=%q should fail", value)
-		}
+	if cfg.WorkerMaxActiveRuns != 1 || cfg.WorkerLeaseDuration != 30*time.Second || cfg.WorkerHeartbeatInterval != 10*time.Second ||
+		cfg.WorkerClaimInterval != 500*time.Millisecond || cfg.WorkerShutdownTimeout != 30*time.Second || cfg.RunEventPollInterval != 250*time.Millisecond {
+		t.Fatalf("unexpected worker defaults: %+v", cfg)
+	}
+}
+
+func TestLoadValidatesDurableWorkerBoundsAndRelationships(t *testing.T) {
+	tests := []struct{ key, value string }{
+		{"WORKER_MAX_ACTIVE_RUNS", "0"}, {"WORKER_MAX_ACTIVE_RUNS", "33"}, {"WORKER_MAX_ACTIVE_RUNS", "bad"},
+		{"WORKER_LEASE_DURATION", "14s"}, {"WORKER_LEASE_DURATION", "5m1s"},
+		{"WORKER_HEARTBEAT_INTERVAL", "0s"}, {"WORKER_HEARTBEAT_INTERVAL", "11s"},
+		{"WORKER_CLAIM_INTERVAL", "99ms"}, {"WORKER_CLAIM_INTERVAL", "5s1ms"},
+		{"WORKER_SHUTDOWN_TIMEOUT", "999ms"}, {"WORKER_SHUTDOWN_TIMEOUT", "5m1s"},
+		{"RUN_EVENT_POLL_INTERVAL", "99ms"}, {"RUN_EVENT_POLL_INTERVAL", "2s1ms"},
+	}
+	for _, test := range tests {
+		t.Run(test.key+"="+test.value, func(t *testing.T) {
+			clearOTelEnv(t)
+			t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+			t.Setenv(test.key, test.value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), test.key) {
+				t.Fatalf("Load(%s=%s) error=%v", test.key, test.value, err)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsDurableWorkerBoundaries(t *testing.T) {
+	clearOTelEnv(t)
+	t.Setenv("AGENT_STUDIO_NODE_INDEX_CACHE_DIR", "")
+	t.Setenv("WORKER_MAX_ACTIVE_RUNS", "32")
+	t.Setenv("WORKER_LEASE_DURATION", "15s")
+	t.Setenv("WORKER_HEARTBEAT_INTERVAL", "5s")
+	t.Setenv("WORKER_CLAIM_INTERVAL", "100ms")
+	t.Setenv("WORKER_SHUTDOWN_TIMEOUT", "5m")
+	t.Setenv("RUN_EVENT_POLL_INTERVAL", "2s")
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
 	}
 }
 

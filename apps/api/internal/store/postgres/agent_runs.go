@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -77,13 +78,35 @@ func (store *Store) RequestAgentRunCancel(ctx context.Context, slug, runID strin
 		return workflowservice.AgentRunRecord{}, mapNotFound(err)
 	}
 	switch run.Status {
+	case domain.RunQueued, domain.RunRecoveryRequired:
+		now := time.Now().UTC()
+		var nextSequence int64
+		if err := transaction.QueryRow(ctx, `SELECT COALESCE(max(sequence),0)+1 FROM run_events WHERE run_id=$1`, run.ID).Scan(&nextSequence); err != nil {
+			return workflowservice.AgentRunRecord{}, fmt.Errorf("read agent cancellation event sequence: %w", err)
+		}
+		if _, err := transaction.Exec(ctx, `UPDATE runs SET cancel_requested_at=$2 WHERE id=$1`, run.ID, now); err != nil {
+			return workflowservice.AgentRunRecord{}, fmt.Errorf("request inactive agent run cancellation: %w", err)
+		}
+		if _, err := store.finalizeRunTx(ctx, transaction, workflowservice.RunFinalization{
+			RunID: run.ID, Status: domain.RunCancelled, EndedAt: now,
+			TerminalEvent: domain.RunEvent{RunID: run.ID, Sequence: nextSequence, Type: "run.cancelled", Timestamp: now},
+			Budget:        domain.RunEventBudget{MaxEvents: 16, MaxTotalDataBytes: 32 << 20},
+		}, true); err != nil {
+			return workflowservice.AgentRunRecord{}, err
+		}
+		run, err = scanRun(transaction.QueryRow(ctx, `SELECT `+runSelectColumns+` FROM runs WHERE id=$1`, run.ID))
+		if err != nil {
+			return workflowservice.AgentRunRecord{}, err
+		}
 	case domain.RunRunning:
 		run.Status = domain.RunCancelling
 		if err := transaction.QueryRow(ctx, `UPDATE runs SET status='cancelling',cancel_requested_at=clock_timestamp()
 			WHERE id=$1 RETURNING cancel_requested_at`, run.ID).Scan(&run.CancelRequestedAt); err != nil {
 			return workflowservice.AgentRunRecord{}, fmt.Errorf("request agent run cancellation: %w", err)
 		}
-	case domain.RunCancelling, domain.RunCompleted, domain.RunFailed, domain.RunCancelled:
+	case domain.RunCancelling:
+	case domain.RunCompleted, domain.RunFailed, domain.RunCancelled:
+		return workflowservice.AgentRunRecord{}, workflowservice.ErrRunNotCancellable
 	default:
 		return workflowservice.AgentRunRecord{}, fmt.Errorf("invalid agent run status %q", run.Status)
 	}
@@ -145,7 +168,7 @@ func loadAgentRunVersion(ctx context.Context, queryer agentRunQueryer, run domai
 }
 
 func loadAgentRunEvents(ctx context.Context, queryer agentRunQueryer, runID string, afterSequence int64, limit int) ([]domain.RunEvent, bool, error) {
-	rows, err := queryer.Query(ctx, `SELECT run_id::text,sequence,type,node_id,status,input,output,
+	rows, err := queryer.Query(ctx, `SELECT run_id::text,sequence,type,node_id,node_attempt,status,input,output,
 		active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
 		FROM run_events WHERE run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3`, runID, afterSequence, limit+1)
 	if err != nil {

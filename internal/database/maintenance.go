@@ -45,6 +45,19 @@ func TryExclusive(ctx context.Context, pool *pgxpool.Pool) (*MaintenanceLease, e
 	return tryMaintenanceLock(ctx, pool, lockModeExclusive)
 }
 
+// TrySharedTransaction prevents a claim transaction from overlapping an
+// exclusive migration or restore maintenance window.
+func TrySharedTransaction(ctx context.Context, tx pgx.Tx) error {
+	var acquired bool
+	if err := tx.QueryRow(ctx, "SELECT pg_try_advisory_xact_lock_shared($1)", maintenanceLockKey).Scan(&acquired); err != nil {
+		return fmt.Errorf("check database maintenance lock: %w", err)
+	}
+	if !acquired {
+		return ErrMaintenanceBusy
+	}
+	return nil
+}
+
 func tryMaintenanceLock(ctx context.Context, pool *pgxpool.Pool, mode lockMode) (*MaintenanceLease, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {

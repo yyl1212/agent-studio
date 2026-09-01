@@ -2,7 +2,11 @@ package backup
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"net/url"
 	"os"
@@ -31,6 +35,11 @@ func TestBackupRestoreE2E(t *testing.T) {
 
 	source, target := openE2ESchemas(t, databaseURL)
 	seedCompleteRestoreFixture(t, source)
+	plaintext := []byte(`{"secret":"e2e"}`)
+	ciphertext := sealE2EPayload(t, os.Getenv("RUN_PAYLOAD_ENCRYPTION_KEY"), plaintext)
+	if _, err := source.Exec(context.Background(), `UPDATE run_payloads SET ciphertext=$1 WHERE run_id=$2 AND sequence=0 AND kind='run_input'`, ciphertext, backupRun1); err != nil {
+		t.Fatal(err)
+	}
 	archivePath := filepath.Join(t.TempDir(), "instance.asbak")
 
 	created, err := Create(context.Background(), source, CreateOptions{Output: archivePath, RuntimeVersion: "0.5.0-e2e"})
@@ -52,6 +61,13 @@ func TestBackupRestoreE2E(t *testing.T) {
 
 	assertSummariesAgree(t, created, inspected, plan.Archive, restored.Summary)
 	assertDomainSnapshotsEqual(t, source, target)
+	var restoredCiphertext []byte
+	if err := target.QueryRow(context.Background(), `SELECT ciphertext FROM run_payloads WHERE run_id=$1 AND sequence=0 AND kind='run_input'`, backupRun1).Scan(&restoredCiphertext); err != nil {
+		t.Fatal(err)
+	}
+	if got := openE2EPayload(t, os.Getenv("RUN_PAYLOAD_ENCRYPTION_KEY"), restoredCiphertext); !reflect.DeepEqual(got, plaintext) {
+		t.Fatalf("restored plaintext=%q want=%q", got, plaintext)
+	}
 }
 
 func openE2ESchemas(t *testing.T, databaseURL string) (*pgxpool.Pool, *pgxpool.Pool) {
@@ -147,10 +163,65 @@ func assertDomainSnapshotsEqual(t *testing.T, source, target *pgxpool.Pool) {
 var backupE2EDomainSnapshotQueries = map[TableName]string{
 	TableWorkflows:                `SELECT row_to_json(snapshot)::text FROM (SELECT * FROM workflows ORDER BY id) snapshot`,
 	TableWorkflowVersions:         `SELECT row_to_json(snapshot)::text FROM (SELECT * FROM workflow_versions ORDER BY workflow_id, version, id) snapshot`,
-	TableRuns:                     `SELECT row_to_json(snapshot)::text FROM (SELECT * FROM runs ORDER BY id) snapshot`,
+	TableRuns:                     `SELECT row_to_json(snapshot)::text FROM (SELECT id,workflow_id,workflow_version_id,draft_revision,graph_snapshot,mode,status,input,output,error,started_at,ended_at,source_run_id,source_node_id,retry_of_run_id,retry_key,input_redacted_paths,cancel_requested_at,heartbeat_at,agent_request_key,execution_protocol,recovery_reason,recovery_requested_at FROM runs ORDER BY id) snapshot`,
 	TableNodeRuns:                 `SELECT row_to_json(snapshot)::text FROM (SELECT * FROM node_runs ORDER BY run_id, id) snapshot`,
 	TableRunEvents:                `SELECT row_to_json(snapshot)::text FROM (SELECT * FROM run_events ORDER BY run_id, sequence) snapshot`,
+	TableRunPayloads:              `SELECT row_to_json(snapshot)::text FROM (SELECT * FROM run_payloads ORDER BY run_id, sequence, kind) snapshot`,
 	TableWorkflowDraftCheckpoints: `SELECT row_to_json(snapshot)::text FROM (SELECT * FROM workflow_draft_checkpoints ORDER BY workflow_id, source_revision) snapshot`,
+}
+
+func sealE2EPayload(t *testing.T, encodedKey string, plaintext []byte) []byte {
+	t.Helper()
+	aead := e2eAEAD(t, encodedKey)
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	authenticated := aead.Seal(nil, nonce, plaintext, e2ePayloadAAD())
+	return append(append([]byte{1}, nonce...), authenticated...)
+}
+
+func openE2EPayload(t *testing.T, encodedKey string, envelope []byte) []byte {
+	t.Helper()
+	aead := e2eAEAD(t, encodedKey)
+	if len(envelope) < 1+aead.NonceSize()+aead.Overhead() || envelope[0] != 1 {
+		t.Fatal("invalid encrypted fixture envelope")
+	}
+	plaintext, err := aead.Open(nil, envelope[1:1+aead.NonceSize()], envelope[1+aead.NonceSize():], e2ePayloadAAD())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plaintext
+}
+
+func e2eAEAD(t *testing.T, encodedKey string) cipher.AEAD {
+	t.Helper()
+	key, err := base64.StdEncoding.DecodeString(encodedKey)
+	if err != nil || len(key) != 32 {
+		t.Fatal("RUN_PAYLOAD_ENCRYPTION_KEY must contain 32 Base64 bytes")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return aead
+}
+
+func e2ePayloadAAD() []byte {
+	values := [][]byte{[]byte(backupRun1), make([]byte, 8), []byte("run_input"), []byte{}, make([]byte, 8), make([]byte, 2)}
+	binary.BigEndian.PutUint16(values[5], 1)
+	var result []byte
+	for _, value := range values {
+		var size [4]byte
+		binary.BigEndian.PutUint32(size[:], uint32(len(value)))
+		result = append(result, size[:]...)
+		result = append(result, value...)
+	}
+	return result
 }
 
 func backupE2EDomainSnapshot(t *testing.T, pool *pgxpool.Pool, query string) []string {

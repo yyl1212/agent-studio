@@ -137,7 +137,7 @@ func canonicalStoreUUID(value string) (string, error) {
 func storeRunStatuses(values []domain.RunStatus) ([]string, error) {
 	result := make([]string, len(values))
 	for index, value := range values {
-		if value != domain.RunRunning && value != domain.RunCancelling && value != domain.RunCompleted && value != domain.RunFailed && value != domain.RunCancelled {
+		if value != domain.RunQueued && value != domain.RunRunning && value != domain.RunRecoveryRequired && value != domain.RunCancelling && value != domain.RunCompleted && value != domain.RunFailed && value != domain.RunCancelled {
 			return nil, workflowservice.ErrInvalidWorkflowInput
 		}
 		result[index] = string(value)

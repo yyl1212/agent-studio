@@ -187,7 +187,7 @@ ruby -e '
 
 ruby -e '
   wrapper = File.read(ARGV.fetch(0))
-  expected = "go test ./internal/backup -run '\''^(TestBackupRestoreE2E|TestCurrentRuntimeRestoresV1Alpha1GoldenArchive)$'\'' -count=1 -v"
+  expected = "go test ./internal/backup -run '\''^(TestBackupRestoreE2E|TestCurrentRuntimeRestoresV1Alpha1GoldenArchive|TestCurrentRuntimeRestoresV1Alpha2GoldenArchive)$'\'' -count=1 -v"
   raise "backup E2E wrapper must run round-trip and golden compatibility tests" unless wrapper.include?(expected)
 ' scripts/test-backup-e2e.sh
 

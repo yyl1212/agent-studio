@@ -62,6 +62,18 @@ func writeError(writer http.ResponseWriter, request *http.Request, err error) {
 		status, response.Code, response.Message = http.StatusBadRequest, "CURSOR_INVALID", "分页游标无效，请刷新后重试"
 	case errors.Is(err, workflow.ErrRunNotCancellable):
 		status, response.Code, response.Message = http.StatusConflict, "RUN_NOT_CANCELLABLE", "运行已结束，不能取消"
+	case errors.Is(err, workflow.ErrRunRecoveryNotRequired):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_NOT_REQUIRED", "当前运行不需要恢复"
+	case errors.Is(err, workflow.ErrRunRecoveryConflict):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_CONFLICT", "恢复状态已变化，请刷新后重试"
+	case errors.Is(err, workflow.ErrRunRecoveryNodeNotFound):
+		status, response.Code, response.Message = http.StatusNotFound, "RUN_RECOVERY_NODE_NOT_FOUND", "待恢复节点不存在"
+	case errors.Is(err, workflow.ErrRunRecoveryRetryUnavailable):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_RETRY_UNAVAILABLE", "当前节点不能确认重试"
+	case errors.Is(err, workflow.ErrRunRecoveryRetryExhausted):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_RETRY_EXHAUSTED", "节点重试次数已用尽"
+	case errors.Is(err, workflow.ErrRunRecoveryPayloadUnavailable):
+		status, response.Code, response.Message = http.StatusConflict, "RUN_RECOVERY_PAYLOAD_UNAVAILABLE", "运行负载不可用，不能重试"
 	case errors.Is(err, workflow.ErrRunNotRetryable):
 		status, response.Code, response.Message = http.StatusConflict, "RUN_NOT_RETRYABLE", "当前运行不能完整重试"
 	case errors.Is(err, workflow.ErrRunRetrySecretRequired):
@@ -112,11 +124,6 @@ func writeAgentError(writer http.ResponseWriter, request *http.Request, err erro
 		status, response.Code, response.Message = http.StatusConflict, "WORKFLOW_ARCHIVED", "该 Agent 已归档，暂时不能运行"
 	case errors.Is(err, workflow.ErrInputValidation):
 		status, response.Code, response.Message = http.StatusUnprocessableEntity, "INPUT_VALIDATION_FAILED", "输入内容不符合要求"
-	case errors.Is(err, workflow.ErrAgentRunCapacity):
-		status, response.Code, response.Message = http.StatusTooManyRequests, "RUN_CAPACITY_EXCEEDED", "当前运行较多，请稍后重试"
-		writer.Header().Set("Retry-After", "2")
-	case errors.Is(err, workflow.ErrAgentRunUnavailable):
-		status, response.Code, response.Message = http.StatusServiceUnavailable, "RUN_START_UNAVAILABLE", "服务正在关闭，暂时不能启动运行"
 	case errors.Is(err, workflow.ErrInvalidWorkflowInput):
 		status, response.Code, response.Message = http.StatusBadRequest, "REQUEST_INVALID", "请求内容无效"
 	default:

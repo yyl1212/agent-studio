@@ -113,15 +113,6 @@ type RunFinalization struct {
 	Budget        domain.RunEventBudget
 }
 
-type RunCoordinationStore interface {
-	HeartbeatRuns(context.Context, []string) ([]string, error)
-	FinalizeInterruptedRuns(context.Context, int, int) (int, error)
-}
-
-type RunExecutionCoordinator interface {
-	Register(context.Context, string) (context.Context, func())
-}
-
 type RunManagementStore interface {
 	ListRunSummaries(context.Context, RunSummaryStoreQuery) ([]domain.RunSummary, error)
 	RequestRunCancel(context.Context, string) (domain.RunSummary, error)
@@ -129,8 +120,4 @@ type RunManagementStore interface {
 	GetWorkflow(context.Context, string) (domain.Workflow, error)
 	GetAgentVersion(context.Context, string, string) (domain.Workflow, domain.WorkflowVersion, error)
 	CreateRetryRun(context.Context, domain.Run) (string, error)
-}
-
-type LocalRunCanceller interface {
-	CancelLocal(string) bool
 }

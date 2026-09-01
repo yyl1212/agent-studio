@@ -30,6 +30,47 @@ describe('useAgentRun', () => {
     expect(result.current.events.map((event) => event.sequence)).toEqual([1, 2])
   })
 
+  it('接受运行后稳定展示 queued，直到服务状态推进', async () => {
+    let resolvePoll!: (value: AgentRunPublicView) => void
+    vi.spyOn(api, 'startAgentRun').mockResolvedValue(view('queued').run)
+    vi.spyOn(api, 'getAgentRunView').mockImplementation(() => new Promise((resolve) => { resolvePoll = resolve }))
+    const { result } = renderHook(() => useAgentRun({ slug: 'demo', onAccepted: vi.fn() }))
+    act(() => { void result.current.start(manifest, { topic: '排队任务' }) })
+    await waitFor(() => expect(result.current.phase).toBe('queued'))
+    expect(result.current.servicePhase).toBe('queued')
+    act(() => resolvePoll(view('completed')))
+  })
+
+  it('刷新恢复 queued 运行并继续轮询', async () => {
+    vi.useFakeTimers()
+    const get = vi.spyOn(api, 'getAgentRunView').mockResolvedValueOnce(view('queued')).mockResolvedValueOnce(view('running'))
+    const { result } = renderHook(() => useAgentRun({ slug: 'demo', runId: 'run-1', onAccepted: vi.fn() }))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.phase).toBe('queued')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(result.current.phase).toBe('running')
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it('recovery_required 使用低频轮询且网络瞬态不丢失服务状态', async () => {
+    vi.useFakeTimers()
+    const get = vi.spyOn(api, 'getAgentRunView')
+      .mockResolvedValueOnce(view('recovery_required'))
+      .mockRejectedValueOnce(new TypeError('offline'))
+      .mockResolvedValueOnce(view('queued'))
+    const { result } = renderHook(() => useAgentRun({ slug: 'demo', runId: 'run-1', onAccepted: vi.fn() }))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.phase).toBe('recovery_required')
+    expect(result.current.servicePhase).toBe('recovery_required')
+    await act(async () => { await vi.advanceTimersByTimeAsync(4999) })
+    expect(get).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(result.current.phase).toBe('reconnecting')
+    expect(result.current.servicePhase).toBe('recovery_required')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(result.current.phase).toBe('queued')
+  })
+
   it('终态仍有分页时追平全部事件后再停止', async () => {
     const get = vi.spyOn(api, 'getAgentRunView')
       .mockResolvedValueOnce(view('completed', { events: [{ sequence: 1, type: 'node.started', timestamp: 't' }], nextSequence: 1, hasMore: true }))
@@ -111,6 +152,18 @@ describe('useAgentRun', () => {
     expect(cancel).toHaveBeenCalledTimes(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(result.current.phase).toBe('cancelled')
+  })
+
+  it('queued 状态可以取消并推进到取消中', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getAgentRunView').mockResolvedValueOnce(view('queued')).mockResolvedValueOnce(view('cancelled'))
+    const cancel = vi.spyOn(api, 'cancelAgentRun').mockResolvedValue(view('cancelling').run)
+    const { result } = renderHook(() => useAgentRun({ slug: 'demo', runId: 'run-1', onAccepted: vi.fn() }))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.phase).toBe('queued')
+    await act(async () => { await result.current.cancel() })
+    expect(result.current.phase).toBe('cancelling')
+    expect(cancel).toHaveBeenCalledTimes(1)
   })
 
   it('取消响应丢失时转为重连并继续观察真实终态', async () => {

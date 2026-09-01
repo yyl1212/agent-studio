@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestV1Alpha1TableOrderAndLimitsAreStable(t *testing.T) {
+func TestVersionedTableOrdersAndLimitsAreStable(t *testing.T) {
 	want := []TableName{
 		TableWorkflows,
 		TableWorkflowVersions,
@@ -16,10 +16,14 @@ func TestV1Alpha1TableOrderAndLimitsAreStable(t *testing.T) {
 		TableRunEvents,
 		TableWorkflowDraftCheckpoints,
 	}
-	if !slices.Equal(TableOrder, want) {
-		t.Fatalf("TableOrder = %v; want %v", TableOrder, want)
+	if !slices.Equal(TableOrderV1Alpha1, want) {
+		t.Fatalf("TableOrderV1Alpha1 = %v; want %v", TableOrderV1Alpha1, want)
 	}
-	if APIVersion != "agent-studio.dev/backup/v1alpha1" || MaxManifestBytes != 1<<20 ||
+	wantV2 := append(append([]TableName{}, want[:5]...), TableRunPayloads, TableWorkflowDraftCheckpoints)
+	if !slices.Equal(TableOrderV1Alpha2, wantV2) || !slices.Equal(TableOrder, wantV2) {
+		t.Fatalf("v1alpha2 order=%v current=%v want=%v", TableOrderV1Alpha2, TableOrder, wantV2)
+	}
+	if APIVersionV1Alpha1 != "agent-studio.dev/backup/v1alpha1" || APIVersion != "agent-studio.dev/backup/v1alpha2" || MaxManifestBytes != 1<<20 ||
 		MaxChecksumsBytes != 1<<20 || MaxCentralDirectoryBytes != 1<<20 ||
 		MaxRecordBytes != 16<<20 || MaxArchiveBytes != 64<<30 {
 		t.Fatalf("version=%q manifest=%d checksums=%d central=%d record=%d archive=%d",
@@ -34,6 +38,7 @@ func TestTablePathMapsOnlyPublishedTableNames(t *testing.T) {
 		TableRuns:                     "data/runs.jsonl",
 		TableNodeRuns:                 "data/node_runs.jsonl",
 		TableRunEvents:                "data/run_events.jsonl",
+		TableRunPayloads:              "data/run_payloads.jsonl",
 		TableWorkflowDraftCheckpoints: "data/workflow_draft_checkpoints.jsonl",
 	}
 	for name, expected := range want {
@@ -51,7 +56,7 @@ func TestTablePathMapsOnlyPublishedTableNames(t *testing.T) {
 
 func TestManifestUsesPublishedJSONFieldNames(t *testing.T) {
 	manifest := Manifest{
-		APIVersion:               APIVersion,
+		APIVersion:               APIVersionV1Alpha1,
 		CreatedAt:                time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC),
 		RuntimeVersion:           "0.5.0-test",
 		DatabaseMigrationVersion: 6,

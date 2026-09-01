@@ -2,8 +2,10 @@ package backup
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -89,6 +91,16 @@ func importV1Alpha1Migration6(
 	return restoreTransaction(ctx, lease, archive, plan, hooks)
 }
 
+func importV1Alpha2Migration7(
+	ctx context.Context,
+	lease *database.MaintenanceLease,
+	archive *Archive,
+	plan RestorePlan,
+	hooks restoreHooks,
+) (RestoreResult, error) {
+	return restoreTransaction(ctx, lease, archive, plan, hooks)
+}
+
 func restoreTransaction(
 	ctx context.Context,
 	lease *database.MaintenanceLease,
@@ -117,7 +129,8 @@ func restoreTransaction(
 		return RestoreResult{}, Wrap(CodeRestoreFailed, "validate migrated target version", nil)
 	}
 
-	counts := make(map[TableName]uint64, len(TableOrder))
+	tableOrder, _ := tableOrderForVersion(archive.manifest.APIVersion)
+	counts := make(map[TableName]uint64, len(tableOrder))
 	counts[TableWorkflows], err = copyWorkflows(ctx, transaction, archive)
 	if err != nil {
 		return RestoreResult{}, err
@@ -160,6 +173,15 @@ func restoreTransaction(
 	}
 	if err := callAfterTable(hooks, TableRunEvents); err != nil {
 		return RestoreResult{}, err
+	}
+	if archive.manifest.APIVersion == APIVersionV1Alpha2 {
+		counts[TableRunPayloads], err = copyRunPayloads(ctx, transaction, archive)
+		if err != nil {
+			return RestoreResult{}, err
+		}
+		if err := callAfterTable(hooks, TableRunPayloads); err != nil {
+			return RestoreResult{}, err
+		}
 	}
 	counts[TableWorkflowDraftCheckpoints], err = copyWorkflowDraftCheckpoints(ctx, transaction, archive)
 	if err != nil {
@@ -247,37 +269,99 @@ WHERE workflow.id=mapping.workflow_id AND mapping.version_id IS NOT NULL`)
 }
 
 func copyRuns(ctx context.Context, tx pgx.Tx, archive *Archive) (uint64, error) {
+	if archive.manifest.APIVersion == APIVersionV1Alpha2 {
+		return copyRecords(ctx, tx, archive, TableRuns,
+			[]string{"id", "workflow_id", "workflow_version_id", "draft_revision", "graph_snapshot", "mode", "status", "input", "output", "error", "started_at", "ended_at", "source_run_id", "source_node_id", "retry_of_run_id", "retry_key", "input_redacted_paths", "cancel_requested_at", "heartbeat_at", "agent_request_key", "execution_protocol", "lease_token", "recovery_reason", "recovery_requested_at"},
+			decodeRunRecordV1Alpha2,
+			func(record RunRecordV1Alpha2) ([]any, error) {
+				return []any{referenceUUID(record.ID), referenceUUID(record.WorkflowID), optionalReferenceUUID(record.WorkflowVersionID),
+					record.DraftRevision, record.GraphSnapshot.databaseValue(), record.Mode, record.Status, record.Input,
+					record.Output.databaseValue(), record.Error.databaseValue(), record.StartedAt, record.EndedAt,
+					optionalReferenceUUID(record.SourceRunID), record.SourceNodeID, optionalReferenceUUID(record.RetryOfRunID),
+					optionalReferenceUUID(record.RetryKey), record.InputRedactedPaths, record.CancelRequestedAt, record.HeartbeatAt,
+					optionalReferenceUUID(record.AgentRequestKey), record.ExecutionProtocol, int64(0), record.RecoveryReason, record.RecoveryRequestedAt}, nil
+			})
+	}
 	return copyRecords(ctx, tx, archive, TableRuns,
-		[]string{"id", "workflow_id", "workflow_version_id", "draft_revision", "graph_snapshot", "mode", "status", "input", "output", "error", "started_at", "ended_at", "source_run_id", "source_node_id", "retry_of_run_id", "retry_key", "input_redacted_paths", "cancel_requested_at", "heartbeat_at", "agent_request_key"},
+		[]string{"id", "workflow_id", "workflow_version_id", "draft_revision", "graph_snapshot", "mode", "status", "input", "output", "error", "started_at", "ended_at", "source_run_id", "source_node_id", "retry_of_run_id", "retry_key", "input_redacted_paths", "cancel_requested_at", "heartbeat_at", "agent_request_key", "execution_protocol", "lease_token", "recovery_reason", "recovery_requested_at"},
 		decodeRunRecord,
 		func(record RunRecord) ([]any, error) {
+			status := record.Status
+			var recoveryReason *string
+			var recoveryAt *time.Time
+			if status == "running" {
+				status = "recovery_required"
+				reason, requestedAt := "legacy_active_run", record.StartedAt
+				recoveryReason, recoveryAt = &reason, &requestedAt
+				record.HeartbeatAt = nil
+			}
 			return []any{referenceUUID(record.ID), referenceUUID(record.WorkflowID), optionalReferenceUUID(record.WorkflowVersionID),
-				record.DraftRevision, record.GraphSnapshot.databaseValue(), record.Mode, record.Status, record.Input,
+				record.DraftRevision, record.GraphSnapshot.databaseValue(), record.Mode, status, record.Input,
 				record.Output.databaseValue(), record.Error.databaseValue(), record.StartedAt, record.EndedAt,
 				optionalReferenceUUID(record.SourceRunID), record.SourceNodeID, optionalReferenceUUID(record.RetryOfRunID),
 				optionalReferenceUUID(record.RetryKey), record.InputRedactedPaths, record.CancelRequestedAt, record.HeartbeatAt,
-				optionalReferenceUUID(record.AgentRequestKey)}, nil
+				optionalReferenceUUID(record.AgentRequestKey), int16(0), int64(0), recoveryReason, recoveryAt}, nil
 		})
 }
 
 func copyNodeRuns(ctx context.Context, tx pgx.Tx, archive *Archive) (uint64, error) {
+	if archive.manifest.APIVersion == APIVersionV1Alpha2 {
+		return copyRecords(ctx, tx, archive, TableNodeRuns,
+			[]string{"id", "run_id", "node_id", "node_type", "status", "input", "output", "error", "started_at", "ended_at", "attempt"},
+			decodeNodeRunRecordV1Alpha2,
+			func(record NodeRunRecordV1Alpha2) ([]any, error) {
+				return []any{referenceUUID(record.ID), referenceUUID(record.RunID), record.NodeID, record.NodeType, record.Status,
+					record.Input.databaseValue(), record.Output.databaseValue(), record.Error.databaseValue(), record.StartedAt, record.EndedAt, record.Attempt}, nil
+			})
+	}
 	return copyRecords(ctx, tx, archive, TableNodeRuns,
-		[]string{"id", "run_id", "node_id", "node_type", "status", "input", "output", "error", "started_at", "ended_at"},
+		[]string{"id", "run_id", "node_id", "node_type", "status", "input", "output", "error", "started_at", "ended_at", "attempt"},
 		decodeNodeRunRecord,
 		func(record NodeRunRecord) ([]any, error) {
 			return []any{referenceUUID(record.ID), referenceUUID(record.RunID), record.NodeID, record.NodeType, record.Status,
-				record.Input.databaseValue(), record.Output.databaseValue(), record.Error.databaseValue(), record.StartedAt, record.EndedAt}, nil
+				record.Input.databaseValue(), record.Output.databaseValue(), record.Error.databaseValue(), record.StartedAt, record.EndedAt, 1}, nil
 		})
 }
 
 func copyRunEvents(ctx context.Context, tx pgx.Tx, archive *Archive) (uint64, error) {
+	if archive.manifest.APIVersion == APIVersionV1Alpha2 {
+		return copyRecords(ctx, tx, archive, TableRunEvents,
+			[]string{"run_id", "sequence", "type", "node_id", "status", "input", "output", "active_ports", "error", "input_redacted_paths", "output_redacted_paths", "data_bytes", "timestamp", "node_attempt"},
+			decodeRunEventRecordV1Alpha2,
+			func(record RunEventRecordV1Alpha2) ([]any, error) {
+				return []any{referenceUUID(record.RunID), record.Sequence, record.Type, record.NodeID, record.Status,
+					record.Input.databaseValue(), record.Output.databaseValue(), record.ActivePorts, record.Error.databaseValue(),
+					record.InputRedactedPaths, record.OutputRedactedPaths, record.DataBytes, record.Timestamp, record.NodeAttempt}, nil
+			})
+	}
 	return copyRecords(ctx, tx, archive, TableRunEvents,
-		[]string{"run_id", "sequence", "type", "node_id", "status", "input", "output", "active_ports", "error", "input_redacted_paths", "output_redacted_paths", "data_bytes", "timestamp"},
+		[]string{"run_id", "sequence", "type", "node_id", "status", "input", "output", "active_ports", "error", "input_redacted_paths", "output_redacted_paths", "data_bytes", "timestamp", "node_attempt"},
 		decodeRunEventRecord,
 		func(record RunEventRecord) ([]any, error) {
 			return []any{referenceUUID(record.RunID), record.Sequence, record.Type, record.NodeID, record.Status,
 				record.Input.databaseValue(), record.Output.databaseValue(), record.ActivePorts, record.Error.databaseValue(),
-				record.InputRedactedPaths, record.OutputRedactedPaths, record.DataBytes, record.Timestamp}, nil
+				record.InputRedactedPaths, record.OutputRedactedPaths, record.DataBytes, record.Timestamp, legacyNodeAttempt(record.NodeID)}, nil
+		})
+}
+
+func legacyNodeAttempt(nodeID *string) any {
+	if nodeID == nil {
+		return nil
+	}
+	return 1
+}
+
+func copyRunPayloads(ctx context.Context, tx pgx.Tx, archive *Archive) (uint64, error) {
+	return copyRecords(ctx, tx, archive, TableRunPayloads,
+		[]string{"run_id", "sequence", "kind", "node_id", "node_attempt", "execution_protocol", "cipher_version", "ciphertext", "created_at"},
+		decodeRunPayloadRecord,
+		func(record RunPayloadRecord) ([]any, error) {
+			ciphertext, err := base64.StdEncoding.Strict().DecodeString(record.Ciphertext)
+			if err != nil {
+				return nil, invalidRecord()
+			}
+			return []any{referenceUUID(record.RunID), record.Sequence, record.Kind, record.NodeID, record.NodeAttempt,
+				record.ExecutionProtocol, record.CipherVersion, ciphertext, record.CreatedAt}, nil
 		})
 }
 
@@ -361,7 +445,8 @@ func combineCopyAndCloseErrors(resultErr, closeErr error) error {
 }
 
 func validateRestoredData(ctx context.Context, tx pgx.Tx, archive *Archive, counts map[TableName]uint64) error {
-	for _, table := range TableOrder {
+	tableOrder, _ := tableOrderForVersion(archive.manifest.APIVersion)
+	for _, table := range tableOrder {
 		var actual uint64
 		statement := "SELECT count(*) FROM " + pgx.Identifier{string(table)}.Sanitize()
 		if err := tx.QueryRow(ctx, statement).Scan(&actual); err != nil {

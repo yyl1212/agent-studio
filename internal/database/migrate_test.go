@@ -29,8 +29,8 @@ func TestMigrationVersionsAndEmptyDatabase(t *testing.T) {
 		t.Fatalf("CurrentVersion() = %d, %v; want 0, nil", gotCurrent, err)
 	}
 	gotLatest, err := LatestVersion()
-	if err != nil || gotLatest != 6 {
-		t.Fatalf("LatestVersion() = %d, %v; want 6, nil", gotLatest, err)
+	if err != nil || gotLatest != 7 {
+		t.Fatalf("LatestVersion() = %d, %v; want 7, nil", gotLatest, err)
 	}
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
@@ -56,19 +56,31 @@ func TestCurrentVersionRejectsMigrationGap(t *testing.T) {
 }
 
 func TestValidateCurrentSchemaChecksRequiredColumns(t *testing.T) {
-	pool := openIsolatedPool(t)
-	ctx := context.Background()
-	if err := Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name   string
+		damage string
+	}{
+		{name: "existing run column", damage: "ALTER TABLE runs DROP COLUMN agent_request_key CASCADE"},
+		{name: "durable run column", damage: "ALTER TABLE runs DROP COLUMN execution_protocol CASCADE"},
+		{name: "private payload table", damage: "DROP TABLE run_payloads"},
 	}
-	if err := ValidateCurrentSchema(ctx, pool); err != nil {
-		t.Fatalf("valid schema error=%v", err)
-	}
-	if _, err := pool.Exec(ctx, "ALTER TABLE runs DROP COLUMN agent_request_key CASCADE"); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateCurrentSchema(ctx, pool); !errors.Is(err, ErrSchemaIncomplete) {
-		t.Fatalf("damaged schema error=%v; want ErrSchemaIncomplete", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := openIsolatedPool(t)
+			ctx := context.Background()
+			if err := Migrate(ctx, pool); err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateCurrentSchema(ctx, pool); err != nil {
+				t.Fatalf("valid schema error=%v", err)
+			}
+			if _, err := pool.Exec(ctx, tt.damage); err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateCurrentSchema(ctx, pool); !errors.Is(err, ErrSchemaIncomplete) {
+				t.Fatalf("damaged schema error=%v; want ErrSchemaIncomplete", err)
+			}
+		})
 	}
 }
 
@@ -87,8 +99,8 @@ func TestMigrateUpgradesPreviousSchemaWithVersionGovernance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 6 {
-		t.Fatalf("migration files = %d; want 6", len(files))
+	if len(files) != 7 {
+		t.Fatalf("migration files = %d; want 7", len(files))
 	}
 	for _, migration := range files[:2] {
 		if err := applyMigration(ctx, pool, migration); err != nil {
@@ -167,7 +179,9 @@ func TestMigrateUpgradesPreviousSchemaWithVersionGovernance(t *testing.T) {
 	if len(inputPaths) != 0 {
 		t.Fatalf("historical input_redacted_paths = %v; want empty", inputPaths)
 	}
-	if _, err := pool.Exec(ctx, "UPDATE runs SET status='cancelling' WHERE id=$1", historicalRunID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE runs
+		SET status='cancelling',recovery_reason=NULL,recovery_requested_at=NULL
+		WHERE id=$1`, historicalRunID); err != nil {
 		t.Fatalf("cancelling should be accepted: %v", err)
 	}
 	if _, err := pool.Exec(ctx, "UPDATE runs SET status='unknown' WHERE id=$1", historicalRunID); err == nil {

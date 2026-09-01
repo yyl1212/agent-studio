@@ -32,10 +32,21 @@ type WorkflowService interface {
 	ImportTemplate(context.Context, workflow.ImportWorkflowTemplateInput) (domain.Workflow, error)
 }
 
-type Runner interface {
-	PrepareDraft(context.Context, string, int64, map[string]any) (*workflow.PreparedRun, error)
-	PrepareAgent(context.Context, string, string, map[string]any) (*workflow.PreparedRun, error)
-	Execute(context.Context, *workflow.PreparedRun, engine.Observer) (engine.RunResult, error)
+type RunSubmitter interface {
+	SubmitDraft(context.Context, string, int64, map[string]any) (workflow.SubmittedRun, error)
+	SubmitAgent(context.Context, string, string, map[string]any) (workflow.SubmittedRun, error)
+}
+
+type RunFollower interface {
+	Follow(context.Context, string, engine.Observer) error
+}
+
+type RetrySubmitter interface {
+	SubmitRetry(context.Context, string, string, workflow.RunRetryRequest) (workflow.SubmittedRun, error)
+}
+
+type RerunSubmitter interface {
+	SubmitRerun(context.Context, string, string, workflow.RerunRequest) (workflow.SubmittedRun, error)
 }
 
 type RunReader interface {
@@ -68,14 +79,18 @@ type RunManager interface {
 	List(context.Context, workflow.RunSummaryRequest) (workflow.RunSummaryPage, error)
 	Cancel(context.Context, string) (domain.RunSummary, error)
 	RetryPreview(context.Context, string) (workflow.RunRetryPreview, error)
-	PrepareRetry(context.Context, string, string, workflow.RunRetryRequest) (*workflow.PreparedRun, error)
+}
+
+type RunRecoveryAPI interface {
+	Get(context.Context, string) (workflow.RunRecoveryView, error)
+	ConfirmNodeRetry(context.Context, string, string, workflow.ConfirmNodeRetryRequest) (domain.RunSummary, error)
+	Terminate(context.Context, string, workflow.TerminateRecoveryRequest) (domain.RunSummary, error)
 }
 
 type Debugger interface {
 	Overview(context.Context, string) (workflow.DebugOverview, error)
 	Events(context.Context, string, int64) (workflow.RunEventPage, error)
 	PreviewRerun(context.Context, string, string) (workflow.RerunPreview, error)
-	PrepareRerun(context.Context, string, string, workflow.RerunRequest) (*workflow.PreparedRun, error)
 }
 
 type Readiness interface {
@@ -93,11 +108,15 @@ type Dependencies struct {
 	Workflows          WorkflowService
 	WorkflowManagement WorkflowManager
 	VersionGovernance  VersionGovernance
-	Runner             Runner
+	RunSubmissions     RunSubmitter
+	RunFollower        RunFollower
 	Runs               RunReader
 	AgentRuns          AgentRunAPI
 	RunManagement      RunManager
+	RunRecovery        RunRecoveryAPI
+	RetrySubmissions   RetrySubmitter
 	Debugger           Debugger
+	RerunSubmissions   RerunSubmitter
 	Readiness          Readiness
 	NodePackages       NodePackageCatalog
 	WebOrigin          string
@@ -158,6 +177,9 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		api.Get("/runs/{id}", handler.getRun)
 		api.Get("/runs", handler.listRunSummaries)
 		api.Post("/runs/{id}/cancel", handler.cancelRun)
+		api.Get("/runs/{runId}/recovery", handler.getRunRecovery)
+		api.Post("/runs/{runId}/recovery/nodes/{nodeId}/retry", handler.confirmRunNodeRetry)
+		api.Post("/runs/{runId}/recovery/terminate", handler.terminateRunRecovery)
 		api.Get("/runs/{id}/retry-preview", handler.previewRunRetry)
 		api.Post("/runs/{id}/retries", handler.retryRun)
 		api.Get("/runs/{id}/debug", handler.getRunDebug)

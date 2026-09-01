@@ -27,7 +27,8 @@ type importerKey struct {
 type importer func(context.Context, *database.MaintenanceLease, *Archive, RestorePlan, restoreHooks) (RestoreResult, error)
 
 var importers = map[importerKey]importer{
-	{APIVersion: APIVersion, MigrationVersion: 6}: importV1Alpha1Migration6,
+	{APIVersion: APIVersionV1Alpha1, MigrationVersion: 6}: importV1Alpha1Migration6,
+	{APIVersion: APIVersionV1Alpha2, MigrationVersion: 7}: importV1Alpha2Migration7,
 }
 
 type dryRunHooks struct {
@@ -82,9 +83,6 @@ func preflightWithLeaseAndHooks(ctx context.Context, lease *database.Maintenance
 	latest, err := database.LatestVersion()
 	if err != nil {
 		return RestorePlan{}, Wrap(CodeRestoreFailed, "read runtime migration version", err)
-	}
-	if archive.manifest.APIVersion != APIVersion {
-		return RestorePlan{}, Wrap(CodeFormatUnsupported, "validate backup api version", nil)
 	}
 	if archive.manifest.DatabaseMigrationVersion > latest {
 		return RestorePlan{}, Wrap(CodeRuntimeTooOld, "backup migration is newer than runtime", nil)

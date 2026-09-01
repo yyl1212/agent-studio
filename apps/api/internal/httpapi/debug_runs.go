@@ -50,10 +50,10 @@ func (handler *handler) rerunFromNode(writer http.ResponseWriter, request *http.
 		writeRequestError(writer, request, err)
 		return
 	}
-	prepared, err := handler.dependencies.Debugger.PrepareRerun(request.Context(), chi.URLParam(request, "id"), chi.URLParam(request, "nodeId"), body)
+	submitted, err := handler.dependencies.RerunSubmissions.SubmitRerun(request.Context(), chi.URLParam(request, "id"), chi.URLParam(request, "nodeId"), body)
 	if err != nil {
 		writeError(writer, request, err)
 		return
 	}
-	handler.streamRun(writer, request, prepared)
+	handler.streamSubmittedRun(writer, request, submitted)
 }

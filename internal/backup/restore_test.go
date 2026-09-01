@@ -2,6 +2,7 @@ package backup
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,11 +27,39 @@ func TestRestoreRoundTripPreservesAllDomainData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.MigrationVersion != 6 || result.Summary.DatasetDigest != created.DatasetDigest || result.Tables[TableRuns] != 3 {
+	if result.MigrationVersion != 7 || result.Summary.DatasetDigest != created.DatasetDigest || result.Tables[TableRuns] != 3 {
 		t.Fatalf("result=%+v", result)
 	}
 	assertRestoredArchiveEqual(t, target, created)
 	assertRestoredSpecialValues(t, target)
+	assertRestoredDurableState(t, target)
+}
+
+func TestRestoreV1Alpha1PreservesCancellationAndRequiresRecoveryForRunning(t *testing.T) {
+	data := newReferenceFixtureData()
+	data.runs[0].Status = "running"
+	data.runs[1].Status = "cancelling"
+	path := filepath.Join(t.TempDir(), "legacy-active.asbak")
+	if _, err := WriteArchive(context.Background(), path, manifestFixture(time.Now().UTC()), referenceFixtureWriters(t, data)); err != nil {
+		t.Fatal(err)
+	}
+	target := openUnmigratedTarget(t)
+	if _, err := Restore(context.Background(), target, path); err != nil {
+		t.Fatal(err)
+	}
+	var runningStatus, reason string
+	var requestedAt time.Time
+	if err := target.QueryRow(context.Background(), `SELECT status,recovery_reason,recovery_requested_at FROM runs WHERE id=$1`, data.runs[0].ID).
+		Scan(&runningStatus, &reason, &requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	var cancellingStatus string
+	if err := target.QueryRow(context.Background(), `SELECT status FROM runs WHERE id=$1`, data.runs[1].ID).Scan(&cancellingStatus); err != nil {
+		t.Fatal(err)
+	}
+	if runningStatus != "recovery_required" || reason != "legacy_active_run" || requestedAt.IsZero() || cancellingStatus != "cancelling" {
+		t.Fatalf("running=%s reason=%s requestedAt=%s cancelling=%s", runningStatus, reason, requestedAt, cancellingStatus)
+	}
 }
 
 func TestRestoreAndDryRunPublicErrorsRemoveUnsafeUnwrapCauses(t *testing.T) {
@@ -98,7 +127,7 @@ func TestRestoreUsesExclusiveLeaseSessionWithSingleConnection(t *testing.T) {
 	if _, err := Restore(ctx, target, archivePath); err != nil {
 		t.Fatal(err)
 	}
-	assertBusinessRows(t, target, 8)
+	assertBusinessRows(t, target, 9)
 }
 
 func TestRestoreInjectedFailuresRollbackAllBusinessTables(t *testing.T) {
@@ -402,7 +431,13 @@ func seedCompleteRestoreFixture(t *testing.T, source *pgxpool.Pool) {
 	}
 	if _, err := source.Exec(ctx, `UPDATE runs SET status='running',input='{"secret":"x"}'::jsonb,
 		output='null'::jsonb,input_redacted_paths=ARRAY['/secret'],started_at=$1::timestamptz + interval '4 microseconds',
-		heartbeat_at=$1::timestamptz + interval '5 microseconds' WHERE id=$2`, precise, backupRun1); err != nil {
+		heartbeat_at=$1::timestamptz + interval '5 microseconds',execution_protocol=1,lease_owner='fixture-worker',
+		lease_token=9,lease_expires_at=$1::timestamptz + interval '1 hour' WHERE id=$2`, precise, backupRun1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec(ctx, `INSERT INTO run_payloads(
+		run_id,sequence,kind,node_id,node_attempt,execution_protocol,cipher_version,ciphertext,created_at
+	) VALUES($1,0,'run_input',NULL,NULL,1,1,$2,$3)`, backupRun1, bytes.Repeat([]byte{0, 1, 2, 0xff}, 32), precise.Add(10*time.Microsecond)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := source.Exec(ctx, `UPDATE runs SET status='cancelling',input_redacted_paths='{}'::text[],
@@ -437,8 +472,27 @@ func assertRestoredArchiveEqual(t *testing.T, target *pgxpool.Pool, want Summary
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.DatasetDigest != want.DatasetDigest {
-		t.Fatalf("restored digest=%s want=%s", got.DatasetDigest, want.DatasetDigest)
+	if got.APIVersion != want.APIVersion || len(got.Tables) != len(want.Tables) {
+		t.Fatalf("restored=%+v want=%+v", got, want)
+	}
+}
+
+func assertRestoredDurableState(t *testing.T, target *pgxpool.Pool) {
+	t.Helper()
+	var owner *string
+	var token int64
+	var expires *time.Time
+	if err := target.QueryRow(context.Background(), `SELECT lease_owner,lease_token,lease_expires_at FROM runs WHERE id=$1`, backupRun1).
+		Scan(&owner, &token, &expires); err != nil {
+		t.Fatal(err)
+	}
+	var ciphertext []byte
+	if err := target.QueryRow(context.Background(), `SELECT ciphertext FROM run_payloads WHERE run_id=$1 AND sequence=0 AND kind='run_input'`, backupRun1).
+		Scan(&ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	if owner != nil || expires != nil || token != 0 || !bytes.Equal(ciphertext, bytes.Repeat([]byte{0, 1, 2, 0xff}, 32)) {
+		t.Fatalf("owner=%v token=%d expires=%v ciphertext=%x", owner, token, expires, ciphertext)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yyl1212/agent-studio/apps/api/internal/runpayload"
 	"github.com/yyl1212/agent-studio/internal/nodeindex"
 )
 
@@ -32,26 +33,59 @@ type Config struct {
 	HTTPNodeAllowPrivate     bool
 	NodeIndexCacheDir        string
 	MaxParallelNodes         int
-	MaxActiveAgentRuns       int
 	WorkflowTimeout          time.Duration
+	WorkerMaxActiveRuns      int
+	WorkerLeaseDuration      time.Duration
+	WorkerHeartbeatInterval  time.Duration
+	WorkerClaimInterval      time.Duration
+	WorkerShutdownTimeout    time.Duration
+	RunEventPollInterval     time.Duration
 	OTelEndpoint             string
 	OTelServiceName          string
 	OTelResourceAttributes   string
 	OTelExportTimeout        time.Duration
 	OTelCompression          string
 	OTelMetricExportInterval time.Duration
+	RunPayloadEncryptionKey  string
 }
 
 func Load() (Config, error) {
+	runPayloadEncryptionKey := os.Getenv("RUN_PAYLOAD_ENCRYPTION_KEY")
+	if _, err := runpayload.New(runPayloadEncryptionKey); err != nil {
+		return Config{}, fmt.Errorf("RUN_PAYLOAD_ENCRYPTION_KEY is invalid: %w", err)
+	}
 	maxParallelNodes, err := intEnv("MAX_PARALLEL_NODES", 4)
 	if err != nil {
 		return Config{}, err
 	}
-	maxActiveAgentRuns, err := boundedIntEnv("MAX_ACTIVE_AGENT_RUNS", 8, 1, 128)
+	workflowTimeout, err := durationEnv("WORKFLOW_TIMEOUT", 120*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
-	workflowTimeout, err := durationEnv("WORKFLOW_TIMEOUT", 120*time.Second)
+	workerMaxActiveRuns, err := boundedIntEnv("WORKER_MAX_ACTIVE_RUNS", 1, 1, 32)
+	if err != nil {
+		return Config{}, err
+	}
+	workerLeaseDuration, err := boundedDurationEnv("WORKER_LEASE_DURATION", 30*time.Second, 15*time.Second, 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	workerHeartbeatInterval, err := durationEnv("WORKER_HEARTBEAT_INTERVAL", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	if workerHeartbeatInterval > workerLeaseDuration/3 {
+		return Config{}, fmt.Errorf("WORKER_HEARTBEAT_INTERVAL must not exceed one third of WORKER_LEASE_DURATION")
+	}
+	workerClaimInterval, err := boundedDurationEnv("WORKER_CLAIM_INTERVAL", 500*time.Millisecond, 100*time.Millisecond, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	workerShutdownTimeout, err := boundedDurationEnv("WORKER_SHUTDOWN_TIMEOUT", 30*time.Second, time.Second, 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	runEventPollInterval, err := boundedDurationEnv("RUN_EVENT_POLL_INTERVAL", 250*time.Millisecond, 100*time.Millisecond, 2*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
@@ -95,14 +129,20 @@ func Load() (Config, error) {
 		HTTPNodeAllowPrivate:     allowPrivate,
 		NodeIndexCacheDir:        nodeIndexCacheDir,
 		MaxParallelNodes:         maxParallelNodes,
-		MaxActiveAgentRuns:       maxActiveAgentRuns,
 		WorkflowTimeout:          workflowTimeout,
+		WorkerMaxActiveRuns:      workerMaxActiveRuns,
+		WorkerLeaseDuration:      workerLeaseDuration,
+		WorkerHeartbeatInterval:  workerHeartbeatInterval,
+		WorkerClaimInterval:      workerClaimInterval,
+		WorkerShutdownTimeout:    workerShutdownTimeout,
+		RunEventPollInterval:     runEventPollInterval,
 		OTelEndpoint:             otelEndpoint,
 		OTelServiceName:          stringEnv("OTEL_SERVICE_NAME", defaultOTelServiceName),
 		OTelResourceAttributes:   otelResourceAttributes,
 		OTelExportTimeout:        otelExportTimeout,
 		OTelCompression:          otelCompression,
 		OTelMetricExportInterval: otelMetricExportInterval,
+		RunPayloadEncryptionKey:  runPayloadEncryptionKey,
 	}
 
 	if cfg.ModelProvider == "openai-compatible" && cfg.OpenAIBaseURL == "" {
@@ -204,6 +244,18 @@ func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive duration", key)
+	}
+	return parsed, nil
+}
+
+func boundedDurationEnv(key string, fallback, minimum, maximum time.Duration) (time.Duration, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be a duration between %s and %s", key, minimum, maximum)
 	}
 	return parsed, nil
 }

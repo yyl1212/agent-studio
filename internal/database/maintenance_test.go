@@ -153,7 +153,7 @@ func TestPrepareRuntimeRejectsSchemaNewerThanRuntime(t *testing.T) {
 	)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(context.Background(), "INSERT INTO schema_migrations(version,name) VALUES(7,'future')"); err != nil {
+	if _, err := pool.Exec(context.Background(), "INSERT INTO schema_migrations(version,name) VALUES(8,'future')"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := PrepareRuntime(context.Background(), pool); !errors.Is(err, ErrSchemaTooNew) {
@@ -216,8 +216,8 @@ func TestPrepareRuntimeMigratesOutdatedSchemaBeforeDowngrade(t *testing.T) {
 	}
 	defer lease.Release(context.Background())
 	current, err := CurrentVersion(context.Background(), pool)
-	if err != nil || current != 6 {
-		t.Fatalf("CurrentVersion() = %d, %v; want 6, nil", current, err)
+	if err != nil || current != 7 {
+		t.Fatalf("CurrentVersion() = %d, %v; want 7, nil", current, err)
 	}
 	second, err := TryShared(context.Background(), pool)
 	if err != nil {

@@ -109,6 +109,81 @@ func TestDebugOverviewRejectsUnsupportedSnapshot(t *testing.T) {
 	}
 }
 
+func TestDebugHistoryAcceptsQueuedPrefixAndMultipleNodeAttempts(t *testing.T) {
+	store := newFakeStore(t)
+	now := time.Now().UTC()
+	run := domain.Run{ID: "attempt-history", Status: domain.RunCompleted}
+	first, second := 1, 2
+	store.runEvents = []domain.RunEvent{
+		{RunID: run.ID, Sequence: 1, Type: "run.queued", Timestamp: now},
+		{RunID: run.ID, Sequence: 2, Type: "run.started", Timestamp: now},
+		{RunID: run.ID, Sequence: 3, Type: "node.started", NodeID: "work", NodeAttempt: &first, Status: domain.NodeRunning, Timestamp: now},
+		{RunID: run.ID, Sequence: 4, Type: "node.failed", NodeID: "work", NodeAttempt: &first, Status: domain.NodeFailed, Timestamp: now},
+		{RunID: run.ID, Sequence: 5, Type: "node.started", NodeID: "work", NodeAttempt: &second, Status: domain.NodeRunning, Timestamp: now},
+		{RunID: run.ID, Sequence: 6, Type: "node.completed", NodeID: "work", NodeAttempt: &second, Status: domain.NodeCompleted, Timestamp: now},
+		{RunID: run.ID, Sequence: 7, Type: "run.completed", Timestamp: now},
+	}
+	events, err := NewDebugService(store, nil).loadCompleteHistory(context.Background(), run)
+	if err != nil || len(events) != 7 {
+		t.Fatalf("events=%v error=%v", events, err)
+	}
+}
+
+func TestDebugHistoryAcceptsCancellationOfNodeThatNeverStarted(t *testing.T) {
+	store := newFakeStore(t)
+	now := time.Now().UTC()
+	run := domain.Run{ID: "failed-with-pending", Status: domain.RunFailed}
+	attempt := 1
+	store.runEvents = []domain.RunEvent{
+		{RunID: run.ID, Sequence: 1, Type: "run.queued", Timestamp: now},
+		{RunID: run.ID, Sequence: 2, Type: "run.started", Timestamp: now},
+		{RunID: run.ID, Sequence: 3, Type: "node.started", NodeID: "work", NodeAttempt: &attempt, Status: domain.NodeRunning, Timestamp: now},
+		{RunID: run.ID, Sequence: 4, Type: "node.failed", NodeID: "work", NodeAttempt: &attempt, Status: domain.NodeFailed, Timestamp: now},
+		{RunID: run.ID, Sequence: 5, Type: "node.cancelled", NodeID: "pending", NodeAttempt: &attempt, Status: domain.NodeCancelled, Timestamp: now},
+		{RunID: run.ID, Sequence: 6, Type: "run.failed", Timestamp: now},
+	}
+	events, err := NewDebugService(store, nil).loadCompleteHistory(context.Background(), run)
+	if err != nil || len(events) != 6 {
+		t.Fatalf("events=%v error=%v", events, err)
+	}
+}
+
+func TestDebugHistoryRejectsDuplicateRunStartAndAttemptTerminal(t *testing.T) {
+	now := time.Now().UTC()
+	attempt := 1
+	for _, test := range []struct {
+		name   string
+		events []domain.RunEvent
+	}{
+		{name: "duplicate run start", events: []domain.RunEvent{{Type: "run.queued"}, {Type: "run.started"}, {Type: "run.started"}, {Type: "run.completed"}}},
+		{name: "duplicate attempt terminal", events: []domain.RunEvent{{Type: "run.started"}, {Type: "node.started", NodeID: "work", NodeAttempt: &attempt}, {Type: "node.completed", NodeID: "work", NodeAttempt: &attempt}, {Type: "node.failed", NodeID: "work", NodeAttempt: &attempt}, {Type: "run.completed"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeStore(t)
+			for index := range test.events {
+				test.events[index].RunID = "invalid-history"
+				test.events[index].Sequence = int64(index + 1)
+				test.events[index].Timestamp = now
+			}
+			run := domain.Run{ID: "invalid-history", Status: domain.RunCompleted}
+			if _, err := NewDebugService(store, nil).validateCompleteHistory(run, test.events); !errors.Is(err, errIncompleteRunHistory) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestDebugOverviewProjectionKeepsLatestNodeAttempt(t *testing.T) {
+	projected := latestNodeRunAttempts([]domain.NodeRun{
+		{NodeID: "work", Attempt: 1, Status: domain.NodeFailed},
+		{NodeID: "other", Attempt: 1, Status: domain.NodeCompleted},
+		{NodeID: "work", Attempt: 2, Status: domain.NodeCompleted},
+	})
+	if len(projected) != 2 || projected[0].NodeID != "other" || projected[1].NodeID != "work" || projected[1].Attempt != 2 {
+		t.Fatalf("projected=%+v", projected)
+	}
+}
+
 func TestDebugSourceChainAllows32AndRejects33OrCycle(t *testing.T) {
 	for _, test := range []struct {
 		name    string

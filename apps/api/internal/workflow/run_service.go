@@ -16,6 +16,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
+	"github.com/yyl1212/agent-studio/apps/api/internal/runpayload"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -39,13 +40,23 @@ type PreparedRun struct {
 }
 
 type RunService struct {
-	store       Store
-	compiler    Compiler
-	engine      Engine
-	logger      *slog.Logger
-	coordinator RunExecutionCoordinator
-	telemetry   *runTelemetry
+	store      Store
+	compiler   Compiler
+	engine     Engine
+	logger     *slog.Logger
+	telemetry  *runTelemetry
+	submission *RunSubmissionService
 }
+
+type checkpointEngine interface {
+	RunFromCheckpoint(context.Context, string, *engine.Plan, map[string]any, engine.Observer, engine.Checkpoint) (engine.RunResult, error)
+}
+
+type scopedCheckpointEngine interface {
+	RunFromCheckpointWithScope(context.Context, string, *engine.Plan, map[string]any, engine.Observer, engine.Checkpoint, engine.ExecutionScope) (engine.RunResult, error)
+}
+
+var ErrRunExecutionInterrupted = errors.New("durable run execution interrupted")
 
 type RunOption func(*RunService)
 
@@ -57,16 +68,14 @@ func WithLogger(logger *slog.Logger) RunOption {
 	}
 }
 
-func WithRunCoordinator(coordinator RunExecutionCoordinator) RunOption {
-	return func(service *RunService) {
-		service.coordinator = coordinator
-	}
-}
-
 func WithRunTelemetry(providers observability.Providers) RunOption {
 	return func(service *RunService) {
 		service.telemetry = newRunTelemetry(providers)
 	}
+}
+
+func WithRunSubmission(submission *RunSubmissionService) RunOption {
+	return func(service *RunService) { service.submission = submission }
 }
 
 func NewRunService(store Store, compiler Compiler, runtime Engine, options ...RunOption) *RunService {
@@ -84,32 +93,54 @@ func NewRunService(store Store, compiler Compiler, runtime Engine, options ...Ru
 }
 
 func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, revision int64, input map[string]any) (*PreparedRun, error) {
-	workflow, err := service.store.GetWorkflow(ctx, workflowID)
+	prepared, run, err := service.prepareDraft(ctx, workflowID, revision, input)
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureWorkflowActive(workflow); err != nil {
+	if err := service.store.CreateRun(ctx, run); err != nil {
 		return nil, err
 	}
+	return prepared, nil
+}
+
+func (service *RunService) SubmitDraft(ctx context.Context, workflowID string, revision int64, input map[string]any) (SubmittedRun, error) {
+	if service.submission == nil {
+		return SubmittedRun{}, errors.New("run submission service is unavailable")
+	}
+	prepared, run, err := service.prepareDraft(ctx, workflowID, revision, input)
+	if err != nil {
+		return SubmittedRun{}, err
+	}
+	return service.submission.Submit(ctx, run, prepared.Input)
+}
+
+func (service *RunService) prepareDraft(ctx context.Context, workflowID string, revision int64, input map[string]any) (*PreparedRun, domain.Run, error) {
+	workflow, err := service.store.GetWorkflow(ctx, workflowID)
+	if err != nil {
+		return nil, domain.Run{}, err
+	}
+	if err := ensureWorkflowActive(workflow); err != nil {
+		return nil, domain.Run{}, err
+	}
 	if workflow.DraftRevision != revision {
-		return nil, domain.ErrRevisionConflict
+		return nil, domain.Run{}, domain.ErrRevisionConflict
 	}
 	graph, plan, err := compileRunGraph(service.compiler, workflow.DraftGraph)
 	if err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	inputSchema, err := deriveInputSchema(graph)
 	if err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	input = normalizeInput(input)
 	if err := validateInput(inputSchema, input); err != nil {
-		return nil, err
+		return nil, domain.Run{}, err
 	}
 	runID := uuid.NewString()
 	inputJSON, inputPaths, secretRedactor, err := persistedRunInput(input)
 	if err != nil {
-		return nil, fmt.Errorf("encode run input: %w", err)
+		return nil, domain.Run{}, fmt.Errorf("encode run input: %w", err)
 	}
 	run := domain.Run{
 		ID:                 runID,
@@ -122,10 +153,7 @@ func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, 
 		InputRedactedPaths: inputPaths,
 		StartedAt:          time.Now().UTC(),
 	}
-	if err := service.store.CreateRun(ctx, run); err != nil {
-		return nil, err
-	}
-	return &PreparedRun{
+	prepared := &PreparedRun{
 		RunID:          runID,
 		Plan:           plan,
 		Input:          input,
@@ -133,7 +161,8 @@ func (service *RunService) PrepareDraft(ctx context.Context, workflowID string, 
 		WorkflowID:     workflow.ID,
 		DraftRevision:  &revision,
 		secretRedactor: secretRedactor,
-	}, nil
+	}
+	return prepared, run, nil
 }
 
 func (service *RunService) PrepareAgent(ctx context.Context, slug, workflowVersionID string, input map[string]any) (*PreparedRun, error) {
@@ -145,6 +174,40 @@ func (service *RunService) PrepareAgent(ctx context.Context, slug, workflowVersi
 		return nil, err
 	}
 	return prepared, nil
+}
+
+func (service *RunService) SubmitAgent(ctx context.Context, slug, workflowVersionID string, input map[string]any) (SubmittedRun, error) {
+	if service.submission == nil {
+		return SubmittedRun{}, errors.New("run submission service is unavailable")
+	}
+	prepared, run, err := service.prepareAgent(ctx, slug, workflowVersionID, nil, input)
+	if err != nil {
+		return SubmittedRun{}, err
+	}
+	result, err := service.submission.Submit(ctx, run, prepared.Input)
+	result.WorkflowVersion = prepared.WorkflowVersion
+	return result, err
+}
+
+func (service *RunService) SubmitAgentOnce(ctx context.Context, slug, workflowVersionID, requestKey string, input map[string]any) (SubmittedRun, error) {
+	if service.submission == nil {
+		return SubmittedRun{}, errors.New("run submission service is unavailable")
+	}
+	prepared, run, err := service.prepareAgent(ctx, slug, workflowVersionID, &requestKey, input)
+	if err != nil {
+		return SubmittedRun{}, err
+	}
+	result, err := service.submission.Submit(ctx, run, prepared.Input)
+	if err == nil && !result.Created && result.WorkflowVersionID != nil {
+		_, existingVersion, loadErr := service.store.GetAgentVersion(ctx, slug, *result.WorkflowVersionID)
+		if loadErr != nil {
+			return SubmittedRun{}, loadErr
+		}
+		result.WorkflowVersion = existingVersion.Version
+	} else {
+		result.WorkflowVersion = prepared.WorkflowVersion
+	}
+	return result, err
 }
 
 func (service *RunService) PrepareAgentOnce(ctx context.Context, slug, workflowVersionID, requestKey string, input map[string]any) (*PreparedRun, bool, error) {
@@ -220,16 +283,73 @@ func persistedRunInput(input map[string]any) (json.RawMessage, []string, *Secret
 	return encoded, paths, NewSecretRedactor(report.SecretValues), nil
 }
 
+// LoadPreparedExecution rebuilds executable in-memory state for an existing
+// durable run. It never inserts or mutates a run record.
+func LoadPreparedExecution(ctx context.Context, store Store, compiler Compiler, run domain.Run, input map[string]any) (*PreparedRun, error) {
+	if store == nil || compiler == nil {
+		return nil, errors.New("load prepared execution: dependencies are incomplete")
+	}
+	_, _, plan, err := loadRunGraphData(ctx, store, compiler, run)
+	if err != nil {
+		return nil, err
+	}
+	input = normalizeInput(input)
+	_, _, redactor, err := persistedRunInput(input)
+	if err != nil {
+		return nil, fmt.Errorf("rebuild run input redactor: %w", err)
+	}
+	prepared := &PreparedRun{
+		RunID: run.ID, Plan: plan, Input: input, Mode: run.Mode, WorkflowID: run.WorkflowID,
+		WorkflowVersionID: cloneStringPointer(run.WorkflowVersionID), DraftRevision: cloneInt64Pointer(run.DraftRevision),
+		StartedAt: run.StartedAt, secretRedactor: redactor,
+	}
+	if run.Mode == domain.RunModeDebug {
+		if run.SourceRunID == nil || run.SourceNodeID == nil {
+			return nil, ErrRunSnapshotUnsupported
+		}
+		built, err := NewDebugService(store, compiler).buildRerun(ctx, *run.SourceRunID, *run.SourceNodeID)
+		if err != nil {
+			return nil, err
+		}
+		scope := built.scope
+		if *run.SourceNodeID == plan.StartNodeID {
+			schema, schemaErr := deriveInputSchema(plan.Graph)
+			if schemaErr != nil || validateInput(schema, input) != nil {
+				return nil, ErrRunEntryInputInvalid
+			}
+			scope.EntryRunInput = cloneAnyMap(input)
+			scope.EntryNodeInputs = map[string][]any{}
+		} else {
+			nodeInputs, inputErr := validateNodeEntryInput(plan.Nodes[*run.SourceNodeID].Ports.Inputs, input)
+			if inputErr != nil {
+				return nil, ErrRunEntryInputInvalid
+			}
+			scope.EntryRunInput = map[string]any{}
+			scope.EntryNodeInputs = nodeInputs
+		}
+		prepared.Scope = &scope
+		prepared.sourceRunID = *run.SourceRunID
+		prepared.sourceNodeID = *run.SourceNodeID
+	}
+	if run.Mode == domain.RunModePublished && run.WorkflowVersionID != nil {
+		workflow, err := store.GetWorkflow(ctx, run.WorkflowID)
+		if err != nil {
+			return nil, err
+		}
+		_, version, err := store.GetAgentVersion(ctx, workflow.Slug, *run.WorkflowVersionID)
+		if err != nil {
+			return nil, err
+		}
+		prepared.WorkflowVersion = version.Version
+	}
+	return prepared, nil
+}
+
 func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, observer engine.Observer) (engine.RunResult, error) {
 	executionContext, finishTelemetry := service.telemetry.start(ctx, prepared)
 	telemetryStatus := domain.RunFailed
 	telemetryCategory := observability.ErrorCategoryInternal
 	defer func() { finishTelemetry(telemetryStatus, telemetryCategory) }()
-	release := func() {}
-	if service.coordinator != nil {
-		executionContext, release = service.coordinator.Register(executionContext, prepared.RunID)
-	}
-	defer release()
 	persistence := &persistenceObserver{
 		store:      service.store,
 		prepared:   prepared,
@@ -246,7 +366,7 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	if result.EndedAt.IsZero() {
 		result.EndedAt = time.Now().UTC()
 	}
-	result.Output = redactPreparedValue(prepared, result.Output).Value
+	result.Output = PublicRunOutput(prepared, result.Output)
 	if runErr != nil {
 		service.logRunError(executionContext, prepared, runErr)
 	}
@@ -310,6 +430,96 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	}
 	telemetryCategory = ""
 	return result, nil
+}
+
+func (service *RunService) ExecuteLeased(ctx context.Context, prepared *PreparedRun, checkpoint engine.Checkpoint, lease domain.RunLease, cipher *runpayload.Cipher, observer engine.Observer) (engine.RunResult, error) {
+	runtime, ok := service.engine.(checkpointEngine)
+	if !ok || prepared == nil || prepared.Plan == nil || cipher == nil || lease.RunID != prepared.RunID {
+		return engine.RunResult{}, errors.New("leased execution dependencies are invalid")
+	}
+	executionContext, finishTelemetry := service.telemetry.start(ctx, prepared)
+	telemetryStatus, telemetryCategory := domain.RunFailed, observability.ErrorCategoryInternal
+	defer func() { finishTelemetry(telemetryStatus, telemetryCategory) }()
+	base := &persistenceObserver{store: service.store, prepared: prepared, downstream: observer, started: make(map[string]time.Time), lastSequence: checkpoint.LastSequence}
+	persistence := &leasedPersistenceObserver{store: service.store, base: base, lease: lease, cipher: cipher}
+	var result engine.RunResult
+	var runErr error
+	if prepared.Scope == nil {
+		result, runErr = runtime.RunFromCheckpoint(executionContext, prepared.RunID, prepared.Plan, prepared.Input, persistence, checkpoint)
+	} else {
+		scopedRuntime, supported := service.engine.(scopedCheckpointEngine)
+		if !supported {
+			return engine.RunResult{}, errors.New("leased scoped execution is unavailable")
+		}
+		result, runErr = scopedRuntime.RunFromCheckpointWithScope(executionContext, prepared.RunID, prepared.Plan, prepared.Input, persistence, checkpoint, *prepared.Scope)
+	}
+	if result.EndedAt.IsZero() {
+		result.EndedAt = time.Now().UTC()
+	}
+	result.Output = PublicRunOutput(prepared, result.Output)
+	if errors.Is(context.Cause(executionContext), domain.ErrRunLeaseLost) {
+		return result, domain.ErrRunLeaseLost
+	}
+	if errors.Is(context.Cause(executionContext), ErrRunExecutionInterrupted) {
+		return result, ErrRunExecutionInterrupted
+	}
+	if errors.Is(runErr, domain.ErrRunLeaseLost) {
+		return result, runErr
+	}
+	status := domain.RunCompleted
+	var publicError *domain.PublicError
+	if runErr != nil {
+		status = domain.RunFailed
+		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+			status = domain.RunCancelled
+		}
+		publicError = publicRunExecutionError(prepared, runErr)
+	}
+	telemetryStatus, telemetryCategory = status, classifyRunError(runErr)
+	finishContext, cancel := context.WithTimeout(context.WithoutCancel(executionContext), 5*time.Second)
+	defer cancel()
+	if persistence.terminal == nil {
+		terminalType := "run.completed"
+		if status == domain.RunFailed {
+			terminalType = "run.failed"
+		} else if status == domain.RunCancelled {
+			terminalType = "run.cancelled"
+		}
+		if err := persistence.Observe(finishContext, engine.Event{Sequence: persistence.lastSequence + 1, Type: terminalType, RunID: prepared.RunID, Output: result.Output, Error: publicError, Timestamp: result.EndedAt}); err != nil {
+			if runErr != nil {
+				return result, runErr
+			}
+			return result, err
+		}
+	}
+	finalization := RunFinalization{RunID: prepared.RunID, Status: status, Output: result.Output, Error: publicError, EndedAt: result.EndedAt, TerminalEvent: cloneRunEvent(*persistence.terminal), Budget: persistence.budget()}
+	finalEvent, finishErr := service.store.FinalizeLeasedRun(finishContext, lease, finalization, nil)
+	if finishErr == nil && observer != nil {
+		finishErr = observer.Observe(finishContext, runEventToEngineEvent(finalEvent))
+	}
+	if runErr != nil {
+		return result, runErr
+	}
+	if finishErr != nil {
+		telemetryCategory = observability.ErrorCategoryPersistence
+		return result, finishErr
+	}
+	telemetryCategory = ""
+	return result, nil
+}
+
+func publicRunExecutionError(prepared *PreparedRun, runErr error) *domain.PublicError {
+	var executionErr *engine.NodeExecutionError
+	if errors.As(runErr, &executionErr) {
+		nodeType, nodeVersion := "", ""
+		if prepared != nil && prepared.Plan != nil {
+			if compiled, ok := prepared.Plan.Nodes[executionErr.NodeID]; ok {
+				nodeType, nodeVersion = compiled.Node.Type, compiled.Node.TypeVersion
+			}
+		}
+		return domain.NewPublicNodeError(executionErr.Err, executionErr.NodeID, nodeType, nodeVersion)
+	}
+	return domain.NewPublicRunError(runErr)
 }
 
 func (service *RunService) logRunError(ctx context.Context, prepared *PreparedRun, err error) {
@@ -403,6 +613,97 @@ type persistenceObserver struct {
 	lastSequence int64
 }
 
+type leasedPersistenceObserver struct {
+	store        DurableRunStore
+	base         *persistenceObserver
+	lease        domain.RunLease
+	cipher       *runpayload.Cipher
+	terminal     *domain.RunEvent
+	lastSequence int64
+	privateBytes int64
+	publicBytes  int64
+}
+
+func (observer *leasedPersistenceObserver) Observe(ctx context.Context, event engine.Event) error {
+	safeEvent, runEvent, err := observer.base.prepareEvent(event)
+	if err != nil {
+		return err
+	}
+	observer.lastSequence = event.Sequence
+	observer.publicBytes += runEvent.DataBytes
+	if observer.publicBytes+observer.privateBytes > 32<<20 {
+		return domain.ErrRunEventBudgetExceeded
+	}
+	if isRunTerminal(event.Type) {
+		if observer.terminal != nil {
+			return errors.New("duplicate run terminal event")
+		}
+		stored := cloneRunEvent(runEvent)
+		observer.terminal = &stored
+		return nil
+	}
+	var nodeRun *domain.NodeRun
+	if event.NodeID != "" {
+		built, err := observer.base.nodeRunForEvent(safeEvent, runEvent.Input, runEvent.Output)
+		if err != nil {
+			return err
+		}
+		nodeRun = &built
+	}
+	payloads, err := observer.privatePayloads(event)
+	if err != nil {
+		return err
+	}
+	for _, payload := range payloads {
+		observer.privateBytes += int64(len(payload.Ciphertext))
+	}
+	if observer.privateBytes+observer.publicBytes > 32<<20 {
+		return domain.ErrRunEventBudgetExceeded
+	}
+	if err := observer.store.PersistLeasedRunEvent(ctx, observer.lease, runEvent, nodeRun, payloads, observer.budget()); err != nil {
+		return err
+	}
+	if observer.base.downstream != nil {
+		return observer.base.downstream.Observe(ctx, safeEvent)
+	}
+	return nil
+}
+
+func (observer *leasedPersistenceObserver) privatePayloads(event engine.Event) ([]domain.RunPayload, error) {
+	var kind domain.RunPayloadKind
+	var value any
+	switch event.Type {
+	case "node.started":
+		kind, value = domain.RunPayloadNodeInput, event.Input
+	case "node.completed":
+		kind = domain.RunPayloadNodeOutput
+		value = runpayload.NodeOutputPayload{Outputs: eventOutputMap(event.Output), ActivePorts: append([]string{}, event.ActivePorts...)}
+	default:
+		return nil, nil
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode private run payload: %w", err)
+	}
+	metadata := runpayload.Metadata{RunID: event.RunID, Sequence: event.Sequence, Kind: kind, NodeID: event.NodeID, NodeAttempt: event.NodeAttempt, ExecutionProtocol: domain.CurrentExecutionProtocol}
+	ciphertext, err := observer.cipher.Seal(metadata, body)
+	if err != nil {
+		return nil, err
+	}
+	return []domain.RunPayload{{RunID: event.RunID, Sequence: event.Sequence, Kind: kind, NodeID: event.NodeID, NodeAttempt: event.NodeAttempt, ExecutionProtocol: domain.CurrentExecutionProtocol, CipherVersion: 1, Ciphertext: ciphertext, CreatedAt: event.Timestamp}}, nil
+}
+
+func eventOutputMap(value any) map[string]any {
+	if outputs, ok := value.(map[string]any); ok {
+		return outputs
+	}
+	return map[string]any{}
+}
+
+func (observer *leasedPersistenceObserver) budget() domain.RunEventBudget {
+	return domain.RunEventBudget{MaxEvents: 8*len(observer.base.prepared.Plan.Nodes) + 16, MaxTotalDataBytes: 32 << 20}
+}
+
 func (observer *persistenceObserver) Observe(ctx context.Context, event engine.Event) error {
 	safeEvent, runEvent, err := observer.prepareEvent(event)
 	if err != nil {
@@ -491,6 +792,10 @@ func (observer *persistenceObserver) prepareEvent(event engine.Event) (engine.Ev
 		OutputRedactedPaths: append([]string(nil), safeEvent.OutputRedactedPaths...), Timestamp: safeEvent.Timestamp,
 		DataBytes: int64(len(inputJSON) + len(outputJSON) + len(errorJSON) + len(activePortsJSON) + len(inputPathsJSON) + len(outputPathsJSON)),
 	}
+	if safeEvent.NodeID != "" {
+		attempt := safeEvent.NodeAttempt
+		runEvent.NodeAttempt = &attempt
+	}
 	return safeEvent, runEvent, nil
 }
 
@@ -519,6 +824,11 @@ func redactPreparedValue(prepared *PreparedRun, value any) RedactionReport {
 	}
 	sort.Strings(paths)
 	return RedactionReport{Value: keyReport.Value, Paths: paths}
+}
+
+// PublicRunOutput returns the safe projection allowed in run records and public events.
+func PublicRunOutput(prepared *PreparedRun, value any) any {
+	return redactPreparedValue(prepared, value).Value
 }
 
 func redactPublicError(prepared *PreparedRun, publicError *domain.PublicError) *domain.PublicError {
@@ -559,6 +869,9 @@ func runEventToEngineEvent(event domain.RunEvent) engine.Event {
 		InputRedactedPaths:  append([]string{}, event.InputRedactedPaths...),
 		OutputRedactedPaths: append([]string{}, event.OutputRedactedPaths...), Timestamp: event.Timestamp,
 	}
+	if event.NodeAttempt != nil {
+		converted.NodeAttempt = *event.NodeAttempt
+	}
 	if len(event.Input) > 0 {
 		var input any
 		if decodeJSON(event.Input, &input) == nil {
@@ -597,6 +910,7 @@ func (observer *persistenceObserver) nodeRunForEvent(event engine.Event, inputJS
 		RunID:     observer.prepared.RunID,
 		NodeID:    event.NodeID,
 		NodeType:  compiled.Node.Type,
+		Attempt:   event.NodeAttempt,
 		Status:    event.Status,
 		Input:     inputJSON,
 		Output:    outputJSON,

@@ -15,7 +15,8 @@ import (
 
 const runSelectColumns = `id::text,workflow_id::text,workflow_version_id::text,draft_revision,
     graph_snapshot,source_run_id::text,source_node_id,retry_of_run_id::text,retry_key::text,
-    agent_request_key::text,mode,status,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at`
+    agent_request_key::text,mode,status,execution_protocol,lease_owner,lease_token,lease_expires_at,
+    recovery_reason,recovery_requested_at,input,input_redacted_paths,output,error,cancel_requested_at,heartbeat_at,started_at,ended_at`
 
 func (store *Store) CreateRun(ctx context.Context, run domain.Run) error {
 	errorJSON, err := marshalOptional(run.Error)
@@ -131,13 +132,16 @@ func upsertNodeRun(ctx context.Context, executor runExecer, nodeRun domain.NodeR
 	if err != nil {
 		return fmt.Errorf("encode node run error: %w", err)
 	}
+	if nodeRun.Attempt == 0 {
+		nodeRun.Attempt = 1
+	}
 	_, err = executor.Exec(ctx, `INSERT INTO node_runs(
-        id,run_id,node_id,node_type,status,input,output,error,started_at,ended_at
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        id,run_id,node_id,node_type,attempt,status,input,output,error,started_at,ended_at
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     ON CONFLICT(run_id,node_id) DO UPDATE SET
-        node_type=EXCLUDED.node_type,status=EXCLUDED.status,input=EXCLUDED.input,
+		node_type=EXCLUDED.node_type,attempt=EXCLUDED.attempt,status=EXCLUDED.status,input=EXCLUDED.input,
         output=EXCLUDED.output,error=EXCLUDED.error,started_at=EXCLUDED.started_at,ended_at=EXCLUDED.ended_at`,
-		nodeRun.ID, nodeRun.RunID, nodeRun.NodeID, nodeRun.NodeType, nodeRun.Status,
+		nodeRun.ID, nodeRun.RunID, nodeRun.NodeID, nodeRun.NodeType, nodeRun.Attempt, nodeRun.Status,
 		nullableRaw(nodeRun.Input), nullableRaw(nodeRun.Output), errorJSON, nodeRun.StartedAt, nodeRun.EndedAt,
 	)
 	if err != nil {
@@ -147,6 +151,7 @@ func upsertNodeRun(ctx context.Context, executor runExecer, nodeRun domain.NodeR
 }
 
 func (store *Store) PersistRunEvent(ctx context.Context, event domain.RunEvent, nodeRun *domain.NodeRun, budget domain.RunEventBudget) error {
+	ensureNodeAttempt(&event, nodeRun)
 	errorJSON, err := marshalOptional(event.Error)
 	if err != nil {
 		return fmt.Errorf("encode run event error: %w", err)
@@ -157,8 +162,12 @@ func (store *Store) PersistRunEvent(ctx context.Context, event domain.RunEvent, 
 	}
 	defer transaction.Rollback(ctx)
 	var runID string
-	if err := transaction.QueryRow(ctx, "SELECT id::text FROM runs WHERE id=$1 FOR UPDATE", event.RunID).Scan(&runID); err != nil {
+	var executionProtocol int16
+	if err := transaction.QueryRow(ctx, "SELECT id::text,execution_protocol FROM runs WHERE id=$1 FOR UPDATE", event.RunID).Scan(&runID, &executionProtocol); err != nil {
 		return fmt.Errorf("lock run for event: %w", mapNotFound(err))
+	}
+	if executionProtocol != 0 {
+		return domain.ErrRunLeaseLost
 	}
 	var count int
 	var maxSequence, totalDataBytes int64
@@ -185,9 +194,9 @@ func (store *Store) PersistRunEvent(ctx context.Context, event domain.RunEvent, 
 		outputPaths = []string{}
 	}
 	if _, err := transaction.Exec(ctx, `INSERT INTO run_events(
-		run_id,sequence,type,node_id,status,input,output,active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
-	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-		event.RunID, event.Sequence, event.Type, nullableString(event.NodeID), nullableNodeStatus(event.Status),
+		run_id,sequence,type,node_id,node_attempt,status,input,output,active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		event.RunID, event.Sequence, event.Type, nullableString(event.NodeID), event.NodeAttempt, nullableNodeStatus(event.Status),
 		nullableRaw(event.Input), nullableRaw(event.Output), activePorts, errorJSON, inputPaths, outputPaths, event.DataBytes, event.Timestamp,
 	); err != nil {
 		return fmt.Errorf("insert run event: %w", err)
@@ -210,7 +219,7 @@ func (store *Store) ListRunEvents(ctx context.Context, runID string, afterSequen
 	if limit > 200 {
 		limit = 200
 	}
-	rows, err := store.pool.Query(ctx, `SELECT run_id::text,sequence,type,node_id,status,input,output,
+	rows, err := store.pool.Query(ctx, `SELECT run_id::text,sequence,type,node_id,node_attempt,status,input,output,
 		active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
 		FROM run_events WHERE run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3`, runID, afterSequence, limit)
 	if err != nil {
@@ -236,7 +245,7 @@ func scanRunEvent(row runScanner) (domain.RunEvent, error) {
 	var nodeID, status *string
 	var input, output, errorJSON []byte
 	if err := row.Scan(
-		&event.RunID, &event.Sequence, &event.Type, &nodeID, &status, &input, &output,
+		&event.RunID, &event.Sequence, &event.Type, &nodeID, &event.NodeAttempt, &status, &input, &output,
 		&event.ActivePorts, &errorJSON, &event.InputRedactedPaths, &event.OutputRedactedPaths, &event.DataBytes, &event.Timestamp,
 	); err != nil {
 		return domain.RunEvent{}, err
@@ -272,7 +281,7 @@ func (store *Store) FinalizeRun(ctx context.Context, finalization workflowservic
 		return domain.RunEvent{}, fmt.Errorf("begin finalize run: %w", err)
 	}
 	defer transaction.Rollback(ctx)
-	event, err := store.finalizeRunTx(ctx, transaction, finalization)
+	event, err := store.finalizeRunTx(ctx, transaction, finalization, false)
 	if err != nil {
 		return domain.RunEvent{}, err
 	}
@@ -282,11 +291,15 @@ func (store *Store) FinalizeRun(ctx context.Context, finalization workflowservic
 	return event, nil
 }
 
-func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, finalization workflowservice.RunFinalization) (domain.RunEvent, error) {
+func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, finalization workflowservice.RunFinalization, durableLeaseVerified bool) (domain.RunEvent, error) {
 	var status domain.RunStatus
 	var cancelRequestedAt *time.Time
-	if err := transaction.QueryRow(ctx, "SELECT status,cancel_requested_at FROM runs WHERE id=$1 FOR UPDATE", finalization.RunID).Scan(&status, &cancelRequestedAt); err != nil {
+	var executionProtocol int16
+	if err := transaction.QueryRow(ctx, "SELECT status,cancel_requested_at,execution_protocol FROM runs WHERE id=$1 FOR UPDATE", finalization.RunID).Scan(&status, &cancelRequestedAt, &executionProtocol); err != nil {
 		return domain.RunEvent{}, fmt.Errorf("lock run for finalization: %w", mapNotFound(err))
+	}
+	if executionProtocol != 0 && !durableLeaseVerified {
+		return domain.RunEvent{}, domain.ErrRunLeaseLost
 	}
 	if isTerminalRunStatus(status) {
 		event, err := existingTerminalEvent(ctx, transaction, finalization.RunID, status)
@@ -295,7 +308,8 @@ func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, final
 		}
 		return event, nil
 	}
-	if status != domain.RunRunning && status != domain.RunCancelling {
+	inactiveCancellation := durableLeaseVerified && (status == domain.RunQueued || status == domain.RunRecoveryRequired) && finalization.Status == domain.RunCancelled
+	if status != domain.RunRunning && status != domain.RunCancelling && !inactiveCancellation {
 		return domain.RunEvent{}, fmt.Errorf("invalid active run status %q", status)
 	}
 	terminal := cloneStoredRunEvent(finalization.TerminalEvent)
@@ -335,13 +349,20 @@ func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, final
 	outputPathsJSON, _ := json.Marshal(terminal.OutputRedactedPaths)
 	terminal.DataBytes = int64(len(terminal.Input) + len(terminal.Output) + len(terminalErrorJSON) + len(activePortsJSON) + len(inputPathsJSON) + len(outputPathsJSON))
 	var count int
-	var maxSequence, totalDataBytes int64
-	if err := transaction.QueryRow(ctx, `SELECT count(*),COALESCE(max(sequence),0),COALESCE(sum(data_bytes),0)
-		FROM run_events WHERE run_id=$1`, finalization.RunID).Scan(&count, &maxSequence, &totalDataBytes); err != nil {
+	var maxSequence, publicDataBytes, privateDataBytes int64
+	if err := transaction.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(max(sequence),0) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(sum(data_bytes),0) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(sum(octet_length(ciphertext)),0) FROM run_payloads WHERE run_id=$1)`, finalization.RunID).Scan(&count, &maxSequence, &publicDataBytes, &privateDataBytes); err != nil {
 		return domain.RunEvent{}, fmt.Errorf("read terminal event budget: %w", err)
 	}
 	if terminal.Sequence != maxSequence+1 {
 		return domain.RunEvent{}, fmt.Errorf("%w: sequence %d follows %d", domain.ErrRunEventSequence, terminal.Sequence, maxSequence)
+	}
+	totalDataBytes := publicDataBytes
+	if durableLeaseVerified {
+		totalDataBytes += privateDataBytes
 	}
 	if count >= finalization.Budget.MaxEvents || terminal.DataBytes < 0 || terminal.DataBytes > finalization.Budget.MaxTotalDataBytes-totalDataBytes {
 		return domain.RunEvent{}, fmt.Errorf("%w: events=%d bytes=%d", domain.ErrRunEventBudgetExceeded, count, totalDataBytes)
@@ -354,7 +375,8 @@ func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, final
 	if err != nil {
 		return domain.RunEvent{}, fmt.Errorf("encode run error: %w", err)
 	}
-	if _, err := transaction.Exec(ctx, `UPDATE runs SET status=$2,output=$3,error=$4,ended_at=$5 WHERE id=$1`,
+	if _, err := transaction.Exec(ctx, `UPDATE runs SET status=$2,output=$3,error=$4,ended_at=$5,
+		lease_owner=NULL,lease_expires_at=NULL,recovery_reason=NULL,recovery_requested_at=NULL WHERE id=$1`,
 		finalization.RunID, chosenStatus, outputJSON, errorJSON, finalization.EndedAt); err != nil {
 		return domain.RunEvent{}, fmt.Errorf("update finalized run: %w", err)
 	}
@@ -365,9 +387,9 @@ func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, final
 		}
 	}
 	if _, err := transaction.Exec(ctx, `INSERT INTO run_events(
-		run_id,sequence,type,node_id,status,input,output,active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
-	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-		terminal.RunID, terminal.Sequence, terminal.Type, nullableString(terminal.NodeID), nullableNodeStatus(terminal.Status),
+		run_id,sequence,type,node_id,node_attempt,status,input,output,active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		terminal.RunID, terminal.Sequence, terminal.Type, nullableString(terminal.NodeID), terminal.NodeAttempt, nullableNodeStatus(terminal.Status),
 		nullableRaw(terminal.Input), nullableRaw(terminal.Output), terminal.ActivePorts, terminalErrorJSON,
 		terminal.InputRedactedPaths, terminal.OutputRedactedPaths, terminal.DataBytes, terminal.Timestamp,
 	); err != nil {
@@ -385,7 +407,7 @@ func existingTerminalEvent(ctx context.Context, transaction pgx.Tx, runID string
 	if count != 1 {
 		return domain.RunEvent{}, fmt.Errorf("finalized run has %d terminal events", count)
 	}
-	event, err := scanRunEvent(transaction.QueryRow(ctx, `SELECT run_id::text,sequence,type,node_id,status,input,output,
+	event, err := scanRunEvent(transaction.QueryRow(ctx, `SELECT run_id::text,sequence,type,node_id,node_attempt,status,input,output,
 		active_ports,error,input_redacted_paths,output_redacted_paths,data_bytes,timestamp
 		FROM run_events WHERE run_id=$1 ORDER BY sequence DESC LIMIT 1`, runID))
 	if err != nil {
@@ -398,7 +420,7 @@ func existingTerminalEvent(ctx context.Context, transaction pgx.Tx, runID string
 }
 
 func isTerminalRunStatus(status domain.RunStatus) bool {
-	return status == domain.RunCompleted || status == domain.RunFailed || status == domain.RunCancelled
+	return domain.IsTerminalRunStatus(status)
 }
 
 func terminalEventType(status domain.RunStatus) string {
@@ -440,7 +462,7 @@ func (store *Store) GetRun(ctx context.Context, runID string) (domain.Run, []dom
 	if err != nil {
 		return domain.Run{}, nil, mapNotFound(err)
 	}
-	rows, err := store.pool.Query(ctx, `SELECT id::text,run_id::text,node_id,node_type,status,input,output,error,started_at,ended_at
+	rows, err := store.pool.Query(ctx, `SELECT id::text,run_id::text,node_id,node_type,attempt,status,input,output,error,started_at,ended_at
         FROM node_runs WHERE run_id=$1 ORDER BY node_id`, runID)
 	if err != nil {
 		return domain.Run{}, nil, fmt.Errorf("list node runs: %w", err)
@@ -493,11 +515,13 @@ type runScanner interface {
 
 func scanRun(row runScanner) (domain.Run, error) {
 	var run domain.Run
+	var leaseOwner, recoveryReason *string
 	var graphSnapshot, input, output, errorJSON []byte
 	if err := row.Scan(
 		&run.ID, &run.WorkflowID, &run.WorkflowVersionID, &run.DraftRevision,
 		&graphSnapshot, &run.SourceRunID, &run.SourceNodeID, &run.RetryOfRunID, &run.RetryKey,
-		&run.AgentRequestKey, &run.Mode, &run.Status, &input, &run.InputRedactedPaths, &output, &errorJSON,
+		&run.AgentRequestKey, &run.Mode, &run.Status, &run.ExecutionProtocol, &leaseOwner, &run.LeaseToken, &run.LeaseExpiresAt,
+		&recoveryReason, &run.RecoveryRequestedAt, &input, &run.InputRedactedPaths, &output, &errorJSON,
 		&run.CancelRequestedAt, &run.HeartbeatAt,
 		&run.StartedAt, &run.EndedAt,
 	); err != nil {
@@ -506,6 +530,12 @@ func scanRun(row runScanner) (domain.Run, error) {
 	run.GraphSnapshot = json.RawMessage(graphSnapshot)
 	run.Input = json.RawMessage(input)
 	run.Output = json.RawMessage(output)
+	if leaseOwner != nil {
+		run.LeaseOwner = *leaseOwner
+	}
+	if recoveryReason != nil {
+		run.RecoveryReason = domain.RunRecoveryReason(*recoveryReason)
+	}
 	if run.InputRedactedPaths == nil {
 		run.InputRedactedPaths = []string{}
 	}
@@ -521,7 +551,7 @@ func scanNodeRun(row runScanner) (domain.NodeRun, error) {
 	var nodeRun domain.NodeRun
 	var input, output, errorJSON []byte
 	if err := row.Scan(
-		&nodeRun.ID, &nodeRun.RunID, &nodeRun.NodeID, &nodeRun.NodeType, &nodeRun.Status,
+		&nodeRun.ID, &nodeRun.RunID, &nodeRun.NodeID, &nodeRun.NodeType, &nodeRun.Attempt, &nodeRun.Status,
 		&input, &output, &errorJSON, &nodeRun.StartedAt, &nodeRun.EndedAt,
 	); err != nil {
 		return domain.NodeRun{}, err
@@ -534,6 +564,19 @@ func scanNodeRun(row runScanner) (domain.NodeRun, error) {
 		}
 	}
 	return nodeRun, nil
+}
+
+func ensureNodeAttempt(event *domain.RunEvent, nodeRun *domain.NodeRun) {
+	if event.NodeID != "" && event.NodeAttempt == nil {
+		attempt := 1
+		if nodeRun != nil && nodeRun.Attempt > 0 {
+			attempt = nodeRun.Attempt
+		}
+		event.NodeAttempt = &attempt
+	}
+	if nodeRun != nil && nodeRun.Attempt == 0 {
+		nodeRun.Attempt = 1
+	}
 }
 
 func marshalOptional(value any) ([]byte, error) {

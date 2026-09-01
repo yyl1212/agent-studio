@@ -20,6 +20,7 @@ type ReferenceCounts struct {
 	Runs                     uint64
 	NodeRuns                 uint64
 	RunEvents                uint64
+	RunPayloads              uint64
 	WorkflowDraftCheckpoints uint64
 }
 
@@ -41,6 +42,10 @@ var referenceTableStatements = []string{
 	`CREATE TEMP TABLE backup_event_refs(
   ordinal bigint PRIMARY KEY, run_id uuid NOT NULL, sequence bigint NOT NULL, UNIQUE(run_id, sequence)
 ) ON COMMIT DROP`,
+	`CREATE TEMP TABLE backup_payload_refs(
+  ordinal bigint PRIMARY KEY, run_id uuid NOT NULL, sequence bigint NOT NULL, kind text NOT NULL,
+  UNIQUE(run_id, sequence, kind)
+) ON COMMIT DROP`,
 	`CREATE TEMP TABLE backup_checkpoint_refs(
   ordinal bigint PRIMARY KEY, workflow_id uuid UNIQUE NOT NULL, restored_from_version_id uuid NOT NULL
 ) ON COMMIT DROP`,
@@ -52,7 +57,8 @@ func stageReferences(ctx context.Context, tx pgx.Tx, archive *Archive) (Referenc
 	}
 
 	var counts ReferenceCounts
-	for _, table := range TableOrder {
+	tableOrder, _ := tableOrderForVersion(archive.manifest.APIVersion)
+	for _, table := range tableOrder {
 		count, err := copyReferenceTable(ctx, tx, archive, table)
 		if err != nil {
 			return ReferenceCounts{}, err
@@ -68,6 +74,8 @@ func stageReferences(ctx context.Context, tx pgx.Tx, archive *Archive) (Referenc
 			counts.NodeRuns = count
 		case TableRunEvents:
 			counts.RunEvents = count
+		case TableRunPayloads:
+			counts.RunPayloads = count
 		case TableWorkflowDraftCheckpoints:
 			counts.WorkflowDraftCheckpoints = count
 		}
@@ -138,6 +146,8 @@ func referenceCopyTarget(table TableName) (string, []string) {
 		return "backup_node_run_refs", []string{"ordinal", "id", "run_id"}
 	case TableRunEvents:
 		return "backup_event_refs", []string{"ordinal", "run_id", "sequence"}
+	case TableRunPayloads:
+		return "backup_payload_refs", []string{"ordinal", "run_id", "sequence", "kind"}
 	case TableWorkflowDraftCheckpoints:
 		return "backup_checkpoint_refs", []string{"ordinal", "workflow_id", "restored_from_version_id"}
 	default:
@@ -208,7 +218,7 @@ func (source *referenceCopySource) stream() {
 			return Wrap(CodeArchiveInvalid, "validate backup reference ordinal", nil)
 		}
 		ordinal++
-		values, err := referenceValues(source.table, ordinal, raw)
+		values, err := referenceValues(source.archive.manifest.APIVersion, source.table, ordinal, raw)
 		if err != nil {
 			return err
 		}
@@ -226,7 +236,7 @@ func (source *referenceCopySource) stream() {
 	}
 }
 
-func referenceValues(table TableName, ordinal int64, raw json.RawMessage) ([]any, error) {
+func referenceValues(version string, table TableName, ordinal int64, raw json.RawMessage) ([]any, error) {
 	switch table {
 	case TableWorkflows:
 		record, err := decodeWorkflowRecord(raw)
@@ -241,6 +251,16 @@ func referenceValues(table TableName, ordinal int64, raw json.RawMessage) ([]any
 		}
 		return []any{ordinal, referenceUUID(record.ID), referenceUUID(record.WorkflowID), record.Version}, nil
 	case TableRuns:
+		if version == APIVersionV1Alpha2 {
+			record, err := decodeRunRecordV1Alpha2(raw)
+			if err != nil {
+				return nil, err
+			}
+			if !validRunLocalSemantics(record.RunRecord) {
+				return nil, Wrap(CodeReferenceInvalid, "validate backup run semantics", nil)
+			}
+			return []any{ordinal, referenceUUID(record.ID), referenceUUID(record.WorkflowID), optionalReferenceUUID(record.WorkflowVersionID), optionalReferenceUUID(record.SourceRunID), optionalReferenceUUID(record.RetryOfRunID)}, nil
+		}
 		record, err := decodeRunRecord(raw)
 		if err != nil {
 			return nil, err
@@ -250,17 +270,37 @@ func referenceValues(table TableName, ordinal int64, raw json.RawMessage) ([]any
 		}
 		return []any{ordinal, referenceUUID(record.ID), referenceUUID(record.WorkflowID), optionalReferenceUUID(record.WorkflowVersionID), optionalReferenceUUID(record.SourceRunID), optionalReferenceUUID(record.RetryOfRunID)}, nil
 	case TableNodeRuns:
+		if version == APIVersionV1Alpha2 {
+			record, err := decodeNodeRunRecordV1Alpha2(raw)
+			if err != nil {
+				return nil, err
+			}
+			return []any{ordinal, referenceUUID(record.ID), referenceUUID(record.RunID)}, nil
+		}
 		record, err := decodeNodeRunRecord(raw)
 		if err != nil {
 			return nil, err
 		}
 		return []any{ordinal, referenceUUID(record.ID), referenceUUID(record.RunID)}, nil
 	case TableRunEvents:
+		if version == APIVersionV1Alpha2 {
+			record, err := decodeRunEventRecordV1Alpha2(raw)
+			if err != nil {
+				return nil, err
+			}
+			return []any{ordinal, referenceUUID(record.RunID), record.Sequence}, nil
+		}
 		record, err := decodeRunEventRecord(raw)
 		if err != nil {
 			return nil, err
 		}
 		return []any{ordinal, referenceUUID(record.RunID), record.Sequence}, nil
+	case TableRunPayloads:
+		record, err := decodeRunPayloadRecord(raw)
+		if err != nil {
+			return nil, err
+		}
+		return []any{ordinal, referenceUUID(record.RunID), record.Sequence, record.Kind}, nil
 	case TableWorkflowDraftCheckpoints:
 		record, err := decodeWorkflowDraftCheckpointRecord(raw)
 		if err != nil {
@@ -294,6 +334,7 @@ func validateReferenceCounts(ctx context.Context, tx pgx.Tx, archive *Archive, c
 		{"backup_run_refs", archive.table(TableRuns).Records, counts.Runs},
 		{"backup_node_run_refs", archive.table(TableNodeRuns).Records, counts.NodeRuns},
 		{"backup_event_refs", archive.table(TableRunEvents).Records, counts.RunEvents},
+		{"backup_payload_refs", archive.table(TableRunPayloads).Records, counts.RunPayloads},
 		{"backup_checkpoint_refs", archive.table(TableWorkflowDraftCheckpoints).Records, counts.WorkflowDraftCheckpoints},
 	} {
 		var actual uint64
@@ -327,6 +368,8 @@ func validateReferenceRelationships(ctx context.Context, tx pgx.Tx) error {
   SELECT 1 FROM backup_run_refs run WHERE run.id=node_run.run_id))`,
 		`SELECT EXISTS (SELECT 1 FROM backup_event_refs event WHERE NOT EXISTS (
   SELECT 1 FROM backup_run_refs run WHERE run.id=event.run_id))`,
+		`SELECT EXISTS (SELECT 1 FROM backup_payload_refs payload WHERE NOT EXISTS (
+  SELECT 1 FROM backup_run_refs run WHERE run.id=payload.run_id))`,
 		`SELECT EXISTS (SELECT 1 FROM backup_checkpoint_refs checkpoint WHERE NOT EXISTS (
   SELECT 1 FROM backup_workflow_refs workflow WHERE workflow.id=checkpoint.workflow_id))`,
 		`SELECT EXISTS (SELECT 1 FROM backup_checkpoint_refs checkpoint WHERE NOT EXISTS (

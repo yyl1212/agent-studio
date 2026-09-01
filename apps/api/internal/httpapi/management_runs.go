@@ -74,12 +74,12 @@ func (handler *handler) retryRun(writer http.ResponseWriter, request *http.Reque
 		writeRequestError(writer, request, errInvalidManagementRequest)
 		return
 	}
-	prepared, err := handler.dependencies.RunManagement.PrepareRetry(request.Context(), runID, keys[0], body)
+	submitted, err := handler.dependencies.RetrySubmissions.SubmitRetry(request.Context(), runID, keys[0], body)
 	if err != nil {
 		writeError(writer, request, err)
 		return
 	}
-	handler.streamRun(writer, request, prepared)
+	handler.streamSubmittedRun(writer, request, submitted)
 }
 
 func validRetrySecretValues(values map[string]any) bool {
@@ -109,7 +109,7 @@ func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, erro
 			return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 		}
 	}
-	if len(values["status"]) > 5 || len(values["mode"]) > 3 || len([]byte(values.Get("cursor"))) > 512 {
+	if len(values["status"]) > 7 || len(values["mode"]) > 3 || len([]byte(values.Get("cursor"))) > 512 {
 		return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 	}
 	input := workflow.RunSummaryRequest{Cursor: values.Get("cursor")}
@@ -122,7 +122,7 @@ func parseRunSummaryRequest(values url.Values) (workflow.RunSummaryRequest, erro
 	}
 	for _, raw := range values["status"] {
 		status := domain.RunStatus(raw)
-		if status != domain.RunRunning && status != domain.RunCancelling && status != domain.RunCompleted && status != domain.RunFailed && status != domain.RunCancelled {
+		if status != domain.RunQueued && status != domain.RunRunning && status != domain.RunRecoveryRequired && status != domain.RunCancelling && status != domain.RunCompleted && status != domain.RunFailed && status != domain.RunCancelled {
 			return workflow.RunSummaryRequest{}, errInvalidManagementRequest
 		}
 		input.Statuses = append(input.Statuses, status)

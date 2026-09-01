@@ -140,6 +140,27 @@ describe('API client', () => {
 		expect(String(fetchMock.mock.calls[2]?.[1]?.body)).not.toContain('33333333-3333-4333-8333-333333333333')
 	})
 
+	it('人工恢复客户端携带 attempt 和乐观并发序号', async () => {
+		const controller = new AbortController()
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(jsonResponse({ runId: 'run/1', status: 'recovery_required', reason: 'uncertain_side_effect', sequence: 9, nodes: [] }))
+			.mockResolvedValueOnce(jsonResponse({ id: 'run/1', status: 'queued' }))
+			.mockResolvedValueOnce(jsonResponse({ id: 'run/1', status: 'cancelled' }))
+		vi.stubGlobal('fetch', fetchMock)
+
+		await api.getRunRecovery('run/1', controller.signal)
+		await api.confirmRunNodeRetry('run/1', 'node/1', 2, 9, controller.signal)
+		await api.terminateRunRecovery('run/1', 10, controller.signal)
+
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/runs/run%2F1/recovery', expect.objectContaining({ signal: controller.signal }))
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/runs/run%2F1/recovery/nodes/node%2F1/retry', expect.objectContaining({
+			method: 'POST', signal: controller.signal, body: JSON.stringify({ nodeAttempt: 2, expectedSequence: 9 }),
+		}))
+		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/runs/run%2F1/recovery/terminate', expect.objectContaining({
+			method: 'POST', signal: controller.signal, body: JSON.stringify({ expectedSequence: 10 }),
+		}))
+	})
+
 	it('编码节点包筛选和包含斜杠的模块名', async () => {
 		const fetchMock = vi.fn()
 			.mockResolvedValueOnce(jsonResponse({ release: 'v0.3.0', total: 0, offset: 40, limit: 20, items: [] }))

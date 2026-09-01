@@ -11,6 +11,7 @@ type Event struct {
 	Type                string              `json:"type"`
 	RunID               string              `json:"runId"`
 	NodeID              string              `json:"nodeId,omitempty"`
+	NodeAttempt         int                 `json:"nodeAttempt,omitempty"`
 	Status              domain.NodeStatus   `json:"status,omitempty"`
 	Input               any                 `json:"input,omitempty"`
 	Output              any                 `json:"output,omitempty"`

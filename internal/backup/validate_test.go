@@ -267,8 +267,8 @@ func referenceFixtureWriters(t *testing.T, data referenceFixtureData) map[TableN
 		TableWorkflows: data.workflows, TableWorkflowVersions: data.versions, TableRuns: data.runs,
 		TableNodeRuns: data.nodeRuns, TableRunEvents: data.runEvents, TableWorkflowDraftCheckpoints: data.checkpoints,
 	}
-	writers := make(map[TableName]TableWriter, len(TableOrder))
-	for _, name := range TableOrder {
+	writers := make(map[TableName]TableWriter, len(TableOrderV1Alpha1))
+	for _, name := range TableOrderV1Alpha1 {
 		body := referenceFixtureJSONL(t, items[name])
 		path, _ := tablePath(name)
 		writers[name] = func(_ context.Context, writer io.Writer) (TableManifest, error) {

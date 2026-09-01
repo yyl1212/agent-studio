@@ -106,8 +106,8 @@ func validTypedRecordBodies(t *testing.T) map[TableName][]byte {
 }
 
 func typedRecordWriters(bodies map[TableName][]byte) map[TableName]TableWriter {
-	writers := make(map[TableName]TableWriter, len(TableOrder))
-	for _, name := range TableOrder {
+	writers := make(map[TableName]TableWriter, len(TableOrderV1Alpha1))
+	for _, name := range TableOrderV1Alpha1 {
 		name := name
 		writers[name] = func(_ context.Context, writer io.Writer) (TableManifest, error) {
 			body := append(append([]byte(nil), bodies[name]...), '\n')

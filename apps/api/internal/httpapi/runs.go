@@ -21,17 +21,17 @@ func (handler *handler) runDraft(writer http.ResponseWriter, request *http.Reque
 		writeRequestError(writer, request, err)
 		return
 	}
-	prepared, err := handler.dependencies.Runner.PrepareDraft(request.Context(), chi.URLParam(request, "id"), body.DraftRevision, body.Input)
+	submitted, err := handler.dependencies.RunSubmissions.SubmitDraft(request.Context(), chi.URLParam(request, "id"), body.DraftRevision, body.Input)
 	if err != nil {
 		writeError(writer, request, err)
 		return
 	}
-	handler.streamRun(writer, request, prepared)
+	handler.streamSubmittedRun(writer, request, submitted)
 }
 
-func (handler *handler) streamRun(writer http.ResponseWriter, request *http.Request, prepared *workflow.PreparedRun) {
+func (handler *handler) streamSubmittedRun(writer http.ResponseWriter, request *http.Request, submitted workflow.SubmittedRun) {
 	flusher, ok := writer.(http.Flusher)
-	if !ok {
+	if !ok || handler.dependencies.RunFollower == nil {
 		writeError(writer, request, fmt.Errorf("streaming is not supported"))
 		return
 	}
@@ -39,7 +39,7 @@ func (handler *handler) streamRun(writer http.ResponseWriter, request *http.Requ
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	observer := &streamObserver{writer: writer, flusher: flusher}
-	_, _ = handler.dependencies.Runner.Execute(request.Context(), prepared, observer)
+	_ = handler.dependencies.RunFollower.Follow(request.Context(), submitted.RunID, observer)
 }
 
 type streamObserver struct {

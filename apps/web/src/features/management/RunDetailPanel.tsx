@@ -5,6 +5,7 @@ import { APIError, api, type NodeRun, type Run, type RunSummary } from '../../li
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { WorkbenchPanel } from '../studio/WorkbenchPanel'
 import { RetryRunDialog } from './RetryRunDialog'
+import { RunRecoveryDialog } from './RunRecoveryDialog'
 
 interface RunDetailPanelProps {
   summary: RunSummary
@@ -21,6 +22,7 @@ export function RunDetailPanel({ summary, onRequestClose, onRunChanged, onRetryC
 	const [cancelConfirm, setCancelConfirm] = useState(false)
 	const [operationPending, setOperationPending] = useState(false)
 	const [retryOpen, setRetryOpen] = useState(false)
+	const [recoveryOpen, setRecoveryOpen] = useState(false)
   const title = useRef<HTMLHeadingElement>(null)
 
   useEffect(() => {
@@ -41,7 +43,7 @@ export function RunDetailPanel({ summary, onRequestClose, onRunChanged, onRetryC
   useEffect(() => { if (detail) title.current?.focus() }, [detail])
 
 	const run = detail?.run
-	const cancellable = run?.status === 'running'
+	const cancellable = run?.status === 'running' || run?.status === 'queued'
 	const retryable = (run?.status === 'failed' || run?.status === 'cancelled') && (run.mode === 'test' || run.mode === 'published')
 	const cancel = async () => {
 		if (!run || operationPending) return
@@ -65,6 +67,7 @@ export function RunDetailPanel({ summary, onRequestClose, onRunChanged, onRetryC
     {detail && run && <div className="run-detail-content">
 		<div className="run-detail-actions">
 			{cancellable && <button type="button" disabled={operationPending} onClick={() => setCancelConfirm(true)}>取消运行</button>}
+			{run.status === 'recovery_required' && <button type="button" className="primary-button" onClick={() => setRecoveryOpen(true)}>处理恢复</button>}
 			{run?.status === 'cancelling' && <button type="button" disabled>取消中</button>}
 			{retryable && <button type="button" onClick={() => setRetryOpen(true)}>重新运行</button>}
 			{run?.mode === 'debug' && (run.status === 'failed' || run.status === 'cancelled') && <span>局部调试运行请通过调试回放继续。</span>}
@@ -80,16 +83,17 @@ export function RunDetailPanel({ summary, onRequestClose, onRunChanged, onRetryC
 		<section><h3>输入</h3><pre>{formatOutput(run.input)}</pre></section>
 		{run.output !== undefined && <section><h3>输出</h3><pre>{formatOutput(run.output)}</pre></section>}
 		<section><h3>节点记录</h3>{detail.nodeRuns.length === 0 ? <p>没有节点记录</p> : detail.nodeRuns.map((node) => <article key={node.id}><strong>{node.nodeId}</strong><span>{node.nodeType} · {node.status}</span><small>{node.startedAt ? formatDate(node.startedAt) : '未开始'}{node.endedAt ? ` → ${formatDate(node.endedAt)}` : ''}</small>{node.error && <p>{node.error.code} · {node.error.message}</p>}{node.input !== undefined && <pre>{formatOutput(node.input)}</pre>}{node.output !== undefined && <pre>{formatOutput(node.output)}</pre>}</article>)}</section>
-		{run.status !== 'running' && run.status !== 'cancelling' && <Link to={`/workflows/${summary.workflowId}/runs/${summary.id}/debug`}>调试回放</Link>}
+		{(run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') && <Link to={`/workflows/${summary.workflowId}/runs/${summary.id}/debug`}>调试回放</Link>}
     </div>}
 		<ConfirmDialog open={cancelConfirm} title="取消运行" description="取消只能阻止后续节点，已发出的外部副作用可能无法撤回。" confirmLabel="确认取消" cancelLabel="继续运行" confirmDisabled={operationPending} onConfirm={() => void cancel()} onCancel={() => { if (!operationPending) setCancelConfirm(false) }} />
+		<RunRecoveryDialog runID={summary.id} open={recoveryOpen} onClose={() => setRecoveryOpen(false)} onRecovered={() => { setGeneration((value) => value + 1); onRunChanged?.(summary) }} />
   </WorkbenchPanel>
 }
 
 function isAbort(error: unknown) { return error instanceof DOMException && error.name === 'AbortError' }
 function publicError(error: unknown) { return error instanceof APIError ? `${error.message}${error.requestId ? ` · Request ID: ${error.requestId}` : ''}` : '加载运行详情失败' }
 function modeLabel(mode: RunSummary['mode']) { return { test: '草稿测试', published: '已发布', debug: '局部调试' }[mode] }
-function statusLabel(status: RunSummary['status']) { return { running: '运行中', cancelling: '取消中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
+function statusLabel(status: RunSummary['status']) { return { queued: '排队中', running: '运行中', recovery_required: '等待人工恢复', cancelling: '取消中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
 function formatDate(value: string) { return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
 function duration(startedAt: string, endedAt?: string | null) { return endedAt ? `${((Date.parse(endedAt) - Date.parse(startedAt)) / 1000).toFixed(1)} 秒` : '—' }
 function formatOutput(value: unknown) { return typeof value === 'string' ? value : JSON.stringify(value, null, 2) }

@@ -134,9 +134,10 @@ func Inspect(ctx context.Context, path string) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	for _, name := range TableOrder {
+	tableOrder, _ := tableOrderForVersion(archive.manifest.APIVersion)
+	for _, name := range tableOrder {
 		if err := archive.ReadTable(ctx, name, func(raw json.RawMessage) error {
-			return validateTableRecord(name, raw)
+			return validateTableRecordForVersion(archive.manifest.APIVersion, name, raw)
 		}); err != nil {
 			_ = archive.Close()
 			return Summary{}, err
