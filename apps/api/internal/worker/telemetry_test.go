@@ -60,6 +60,27 @@ func TestWorkerTelemetryUsesOnlyBoundedLabels(t *testing.T) {
 	}
 }
 
+func TestWorkerTelemetryClampsNegativeQueueStatsToZero(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	telemetry := newTelemetry(observability.Providers{MeterProvider: provider})
+	telemetry.queue(context.Background(), -3, -2*time.Second)
+
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatal(err)
+	}
+	metrics := queueSamplerMetrics(collected)
+	depth, ok := metrics["agent_studio.worker.queue_depth"].Data.(metricdata.Gauge[int64])
+	if !ok || len(depth.DataPoints) != 1 || depth.DataPoints[0].Value != 0 {
+		t.Fatalf("queue depth=%#v", metrics["agent_studio.worker.queue_depth"])
+	}
+	oldest, ok := metrics["agent_studio.worker.oldest_queued_age"].Data.(metricdata.Gauge[float64])
+	if !ok || len(oldest.DataPoints) != 1 || oldest.DataPoints[0].Value != 0 {
+		t.Fatalf("oldest queued age=%#v", metrics["agent_studio.worker.oldest_queued_age"])
+	}
+}
+
 func TestPayloadFailureCategoryIsStable(t *testing.T) {
 	for _, test := range []struct {
 		err  error

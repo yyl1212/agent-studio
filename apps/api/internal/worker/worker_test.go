@@ -124,6 +124,50 @@ func TestWorkerRetriesClaimFailureWithJitter(t *testing.T) {
 	}
 }
 
+func TestWorkerSamplesQueueDuringContinuousClaimFailuresAndStopsOnCancel(t *testing.T) {
+	store := &workerStore{
+		claimErrAlways: errors.New("continuous claim failure"),
+		claimErrored:   make(chan struct{}, 32),
+		queueSampled:   make(chan struct{}, 32),
+	}
+	worker := New(Config{
+		OwnerID:             "worker",
+		ClaimInterval:       time.Millisecond,
+		QueueSampleInterval: time.Millisecond,
+		ShutdownTimeout:     time.Second,
+	}, store,
+		&workerRehydrator{results: map[string]PreparedExecution{}},
+		&workerExecutor{started: make(chan string, 1), release: make(chan struct{})}, nil,
+		WithClaimRandom(func() float64 { return 0.5 }))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+
+	for attempt := 0; attempt < 2; attempt++ {
+		select {
+		case <-store.claimErrored:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for claim failure %d", attempt+1)
+		}
+	}
+	for sample := 0; sample < 2; sample++ {
+		select {
+		case <-store.queueSampled:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for queue sample %d during claim failures", sample+1)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker shutdown")
+	}
+}
+
 func TestWorkerLogsContainOnlyStableOperationalFields(t *testing.T) {
 	const private = "postgres://user:password@db/private encryption-key ciphertext raw-input node-config"
 	store := &workerStore{claimErrors: []error{errors.New(private)}, claimErrored: make(chan struct{}, 1)}
@@ -341,18 +385,19 @@ func (executor *workerExecutor) ExecuteLeased(ctx context.Context, prepared *wor
 }
 
 type workerStore struct {
-	mu           sync.Mutex
-	claims       []workflow.ClaimedRun
-	claimErrors  []error
-	claimErrored chan struct{}
-	renewErr     error
-	heartbeat    workflow.LeaseHeartbeat
-	loadedEvents []domain.RunEvent
-	recovered    chan domain.RunRecoveryReason
-	renewed      chan struct{}
-	finalized    chan domain.RunStatus
-	queueSampled chan struct{}
-	queueCalls   int
+	mu             sync.Mutex
+	claims         []workflow.ClaimedRun
+	claimErrors    []error
+	claimErrAlways error
+	claimErrored   chan struct{}
+	renewErr       error
+	heartbeat      workflow.LeaseHeartbeat
+	loadedEvents   []domain.RunEvent
+	recovered      chan domain.RunRecoveryReason
+	renewed        chan struct{}
+	finalized      chan domain.RunStatus
+	queueSampled   chan struct{}
+	queueCalls     int
 }
 
 func (store *workerStore) RunQueueStats(context.Context) (int64, time.Duration, error) {
@@ -376,6 +421,12 @@ func (store *workerStore) ClaimRun(context.Context, string, time.Duration) (work
 			store.claimErrored <- struct{}{}
 		}
 		return workflow.ClaimedRun{}, false, err
+	}
+	if store.claimErrAlways != nil {
+		if store.claimErrored != nil {
+			store.claimErrored <- struct{}{}
+		}
+		return workflow.ClaimedRun{}, false, store.claimErrAlways
 	}
 	if len(store.claims) == 0 {
 		return workflow.ClaimedRun{}, false, nil
