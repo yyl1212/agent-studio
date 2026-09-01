@@ -348,13 +348,20 @@ func (store *Store) finalizeRunTx(ctx context.Context, transaction pgx.Tx, final
 	outputPathsJSON, _ := json.Marshal(terminal.OutputRedactedPaths)
 	terminal.DataBytes = int64(len(terminal.Input) + len(terminal.Output) + len(terminalErrorJSON) + len(activePortsJSON) + len(inputPathsJSON) + len(outputPathsJSON))
 	var count int
-	var maxSequence, totalDataBytes int64
-	if err := transaction.QueryRow(ctx, `SELECT count(*),COALESCE(max(sequence),0),COALESCE(sum(data_bytes),0)
-		FROM run_events WHERE run_id=$1`, finalization.RunID).Scan(&count, &maxSequence, &totalDataBytes); err != nil {
+	var maxSequence, publicDataBytes, privateDataBytes int64
+	if err := transaction.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(max(sequence),0) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(sum(data_bytes),0) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(sum(octet_length(ciphertext)),0) FROM run_payloads WHERE run_id=$1)`, finalization.RunID).Scan(&count, &maxSequence, &publicDataBytes, &privateDataBytes); err != nil {
 		return domain.RunEvent{}, fmt.Errorf("read terminal event budget: %w", err)
 	}
 	if terminal.Sequence != maxSequence+1 {
 		return domain.RunEvent{}, fmt.Errorf("%w: sequence %d follows %d", domain.ErrRunEventSequence, terminal.Sequence, maxSequence)
+	}
+	totalDataBytes := publicDataBytes
+	if durableLeaseVerified {
+		totalDataBytes += privateDataBytes
 	}
 	if count >= finalization.Budget.MaxEvents || terminal.DataBytes < 0 || terminal.DataBytes > finalization.Budget.MaxTotalDataBytes-totalDataBytes {
 		return domain.RunEvent{}, fmt.Errorf("%w: events=%d bytes=%d", domain.ErrRunEventBudgetExceeded, count, totalDataBytes)

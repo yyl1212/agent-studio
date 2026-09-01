@@ -53,6 +53,34 @@ func TestDurableRunSubmissionIsAtomic(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("failed submission left %d run rows", count)
 	}
+
+	oversized := durableSubmissionFixture(workflow)
+	oversized.QueuedEvent.DataBytes = 32 << 20
+	if err := store.SubmitRun(context.Background(), oversized); !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
+		t.Fatalf("oversized submission error=%v", err)
+	}
+}
+
+func TestRunQueueStatsReportsDepthAndOldestAge(t *testing.T) {
+	store := migratedTestStore(t)
+	workflow := createWorkflowFixture(t, store, "queue-stats")
+	submission := durableSubmissionFixture(workflow)
+	submission.Run.StartedAt = time.Now().UTC().Add(-2 * time.Second)
+	submission.QueuedEvent.Timestamp = submission.Run.StartedAt
+	if err := store.SubmitRun(context.Background(), submission); err != nil {
+		t.Fatal(err)
+	}
+	depth, oldest, err := store.RunQueueStats(context.Background())
+	if err != nil || depth != 1 || oldest < time.Second {
+		t.Fatalf("depth=%d oldest=%s error=%v", depth, oldest, err)
+	}
+	if _, claimed, err := store.ClaimRun(context.Background(), "worker", time.Minute); err != nil || !claimed {
+		t.Fatalf("claimed=%v error=%v", claimed, err)
+	}
+	depth, oldest, err = store.RunQueueStats(context.Background())
+	if err != nil || depth != 0 || oldest != 0 {
+		t.Fatalf("after claim depth=%d oldest=%s error=%v", depth, oldest, err)
+	}
 }
 
 func TestDurableRunLeaseFencesAllWrites(t *testing.T) {
@@ -211,6 +239,35 @@ func TestDurableRunRecoveryRequiresCurrentLeaseAndReleasesIt(t *testing.T) {
 	}
 	if _, err := store.RenewRunLease(context.Background(), claimedRun.Lease, time.Minute); !errors.Is(err, domain.ErrRunLeaseLost) {
 		t.Fatalf("released recovery lease renewal error=%v", err)
+	}
+}
+
+func TestDurableRunBudgetIncludesExistingAndNewPrivatePayloads(t *testing.T) {
+	store, submission, lease := claimedDurableRunFixture(t, "combined-budget")
+	// The submitted run already contains one byte of encrypted run input.
+	attempt := 1
+	event := domain.RunEvent{
+		RunID: submission.Run.ID, Sequence: 2, Type: "node.started", NodeID: "node-1", NodeAttempt: &attempt,
+		Status: domain.NodeRunning, DataBytes: 1, Timestamp: time.Now().UTC(),
+	}
+	payload := domain.RunPayload{
+		RunID: submission.Run.ID, Sequence: 2, Kind: domain.RunPayloadNodeInput, NodeID: "node-1", NodeAttempt: 1,
+		ExecutionProtocol: domain.CurrentExecutionProtocol, CipherVersion: 1, Ciphertext: []byte{2, 3},
+	}
+	budget := domain.RunEventBudget{MaxEvents: 10, MaxTotalDataBytes: 3}
+	err := store.PersistLeasedRunEvent(context.Background(), lease, event, nil, []domain.RunPayload{payload}, budget)
+	if !errors.Is(err, domain.ErrRunEventBudgetExceeded) {
+		t.Fatalf("combined budget error=%v; want ErrRunEventBudgetExceeded", err)
+	}
+	var eventCount, payloadCount int
+	if err := store.pool.QueryRow(context.Background(), `SELECT count(*) FROM run_events WHERE run_id=$1`, submission.Run.ID).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(context.Background(), `SELECT count(*) FROM run_payloads WHERE run_id=$1`, submission.Run.ID).Scan(&payloadCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 1 || payloadCount != 1 {
+		t.Fatalf("budget rejection was not atomic: events=%d payloads=%d", eventCount, payloadCount)
 	}
 }
 

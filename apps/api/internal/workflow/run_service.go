@@ -16,6 +16,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/observability"
+	"github.com/yyl1212/agent-studio/apps/api/internal/runpayload"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -46,6 +47,12 @@ type RunService struct {
 	coordinator RunExecutionCoordinator
 	telemetry   *runTelemetry
 }
+
+type checkpointEngine interface {
+	RunFromCheckpoint(context.Context, string, *engine.Plan, map[string]any, engine.Observer, engine.Checkpoint) (engine.RunResult, error)
+}
+
+var ErrRunExecutionInterrupted = errors.New("durable run execution interrupted")
 
 type RunOption func(*RunService)
 
@@ -280,7 +287,7 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	if result.EndedAt.IsZero() {
 		result.EndedAt = time.Now().UTC()
 	}
-	result.Output = redactPreparedValue(prepared, result.Output).Value
+	result.Output = PublicRunOutput(prepared, result.Output)
 	if runErr != nil {
 		service.logRunError(executionContext, prepared, runErr)
 	}
@@ -344,6 +351,86 @@ func (service *RunService) Execute(ctx context.Context, prepared *PreparedRun, o
 	}
 	telemetryCategory = ""
 	return result, nil
+}
+
+func (service *RunService) ExecuteLeased(ctx context.Context, prepared *PreparedRun, checkpoint engine.Checkpoint, lease domain.RunLease, cipher *runpayload.Cipher, observer engine.Observer) (engine.RunResult, error) {
+	runtime, ok := service.engine.(checkpointEngine)
+	if !ok || prepared == nil || prepared.Plan == nil || cipher == nil || lease.RunID != prepared.RunID {
+		return engine.RunResult{}, errors.New("leased execution dependencies are invalid")
+	}
+	executionContext, finishTelemetry := service.telemetry.start(ctx, prepared)
+	telemetryStatus, telemetryCategory := domain.RunFailed, observability.ErrorCategoryInternal
+	defer func() { finishTelemetry(telemetryStatus, telemetryCategory) }()
+	base := &persistenceObserver{store: service.store, prepared: prepared, downstream: observer, started: make(map[string]time.Time), lastSequence: checkpoint.LastSequence}
+	persistence := &leasedPersistenceObserver{store: service.store, base: base, lease: lease, cipher: cipher}
+	result, runErr := runtime.RunFromCheckpoint(executionContext, prepared.RunID, prepared.Plan, prepared.Input, persistence, checkpoint)
+	if result.EndedAt.IsZero() {
+		result.EndedAt = time.Now().UTC()
+	}
+	result.Output = PublicRunOutput(prepared, result.Output)
+	if errors.Is(context.Cause(executionContext), domain.ErrRunLeaseLost) {
+		return result, domain.ErrRunLeaseLost
+	}
+	if errors.Is(context.Cause(executionContext), ErrRunExecutionInterrupted) {
+		return result, ErrRunExecutionInterrupted
+	}
+	if errors.Is(runErr, domain.ErrRunLeaseLost) {
+		return result, runErr
+	}
+	status := domain.RunCompleted
+	var publicError *domain.PublicError
+	if runErr != nil {
+		status = domain.RunFailed
+		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+			status = domain.RunCancelled
+		}
+		publicError = publicRunExecutionError(prepared, runErr)
+	}
+	telemetryStatus, telemetryCategory = status, classifyRunError(runErr)
+	finishContext, cancel := context.WithTimeout(context.WithoutCancel(executionContext), 5*time.Second)
+	defer cancel()
+	if persistence.terminal == nil {
+		terminalType := "run.completed"
+		if status == domain.RunFailed {
+			terminalType = "run.failed"
+		} else if status == domain.RunCancelled {
+			terminalType = "run.cancelled"
+		}
+		if err := persistence.Observe(finishContext, engine.Event{Sequence: persistence.lastSequence + 1, Type: terminalType, RunID: prepared.RunID, Output: result.Output, Error: publicError, Timestamp: result.EndedAt}); err != nil {
+			if runErr != nil {
+				return result, runErr
+			}
+			return result, err
+		}
+	}
+	finalization := RunFinalization{RunID: prepared.RunID, Status: status, Output: result.Output, Error: publicError, EndedAt: result.EndedAt, TerminalEvent: cloneRunEvent(*persistence.terminal), Budget: persistence.budget()}
+	finalEvent, finishErr := service.store.FinalizeLeasedRun(finishContext, lease, finalization, nil)
+	if finishErr == nil && observer != nil {
+		finishErr = observer.Observe(finishContext, runEventToEngineEvent(finalEvent))
+	}
+	if runErr != nil {
+		return result, runErr
+	}
+	if finishErr != nil {
+		telemetryCategory = observability.ErrorCategoryPersistence
+		return result, finishErr
+	}
+	telemetryCategory = ""
+	return result, nil
+}
+
+func publicRunExecutionError(prepared *PreparedRun, runErr error) *domain.PublicError {
+	var executionErr *engine.NodeExecutionError
+	if errors.As(runErr, &executionErr) {
+		nodeType, nodeVersion := "", ""
+		if prepared != nil && prepared.Plan != nil {
+			if compiled, ok := prepared.Plan.Nodes[executionErr.NodeID]; ok {
+				nodeType, nodeVersion = compiled.Node.Type, compiled.Node.TypeVersion
+			}
+		}
+		return domain.NewPublicNodeError(executionErr.Err, executionErr.NodeID, nodeType, nodeVersion)
+	}
+	return domain.NewPublicRunError(runErr)
 }
 
 func (service *RunService) logRunError(ctx context.Context, prepared *PreparedRun, err error) {
@@ -437,6 +524,97 @@ type persistenceObserver struct {
 	lastSequence int64
 }
 
+type leasedPersistenceObserver struct {
+	store        DurableRunStore
+	base         *persistenceObserver
+	lease        domain.RunLease
+	cipher       *runpayload.Cipher
+	terminal     *domain.RunEvent
+	lastSequence int64
+	privateBytes int64
+	publicBytes  int64
+}
+
+func (observer *leasedPersistenceObserver) Observe(ctx context.Context, event engine.Event) error {
+	safeEvent, runEvent, err := observer.base.prepareEvent(event)
+	if err != nil {
+		return err
+	}
+	observer.lastSequence = event.Sequence
+	observer.publicBytes += runEvent.DataBytes
+	if observer.publicBytes+observer.privateBytes > 32<<20 {
+		return domain.ErrRunEventBudgetExceeded
+	}
+	if isRunTerminal(event.Type) {
+		if observer.terminal != nil {
+			return errors.New("duplicate run terminal event")
+		}
+		stored := cloneRunEvent(runEvent)
+		observer.terminal = &stored
+		return nil
+	}
+	var nodeRun *domain.NodeRun
+	if event.NodeID != "" {
+		built, err := observer.base.nodeRunForEvent(safeEvent, runEvent.Input, runEvent.Output)
+		if err != nil {
+			return err
+		}
+		nodeRun = &built
+	}
+	payloads, err := observer.privatePayloads(event)
+	if err != nil {
+		return err
+	}
+	for _, payload := range payloads {
+		observer.privateBytes += int64(len(payload.Ciphertext))
+	}
+	if observer.privateBytes+observer.publicBytes > 32<<20 {
+		return domain.ErrRunEventBudgetExceeded
+	}
+	if err := observer.store.PersistLeasedRunEvent(ctx, observer.lease, runEvent, nodeRun, payloads, observer.budget()); err != nil {
+		return err
+	}
+	if observer.base.downstream != nil {
+		return observer.base.downstream.Observe(ctx, safeEvent)
+	}
+	return nil
+}
+
+func (observer *leasedPersistenceObserver) privatePayloads(event engine.Event) ([]domain.RunPayload, error) {
+	var kind domain.RunPayloadKind
+	var value any
+	switch event.Type {
+	case "node.started":
+		kind, value = domain.RunPayloadNodeInput, event.Input
+	case "node.completed":
+		kind = domain.RunPayloadNodeOutput
+		value = runpayload.NodeOutputPayload{Outputs: eventOutputMap(event.Output), ActivePorts: append([]string{}, event.ActivePorts...)}
+	default:
+		return nil, nil
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode private run payload: %w", err)
+	}
+	metadata := runpayload.Metadata{RunID: event.RunID, Sequence: event.Sequence, Kind: kind, NodeID: event.NodeID, NodeAttempt: event.NodeAttempt, ExecutionProtocol: domain.CurrentExecutionProtocol}
+	ciphertext, err := observer.cipher.Seal(metadata, body)
+	if err != nil {
+		return nil, err
+	}
+	return []domain.RunPayload{{RunID: event.RunID, Sequence: event.Sequence, Kind: kind, NodeID: event.NodeID, NodeAttempt: event.NodeAttempt, ExecutionProtocol: domain.CurrentExecutionProtocol, CipherVersion: 1, Ciphertext: ciphertext, CreatedAt: event.Timestamp}}, nil
+}
+
+func eventOutputMap(value any) map[string]any {
+	if outputs, ok := value.(map[string]any); ok {
+		return outputs
+	}
+	return map[string]any{}
+}
+
+func (observer *leasedPersistenceObserver) budget() domain.RunEventBudget {
+	return domain.RunEventBudget{MaxEvents: 8*len(observer.base.prepared.Plan.Nodes) + 16, MaxTotalDataBytes: 32 << 20}
+}
+
 func (observer *persistenceObserver) Observe(ctx context.Context, event engine.Event) error {
 	safeEvent, runEvent, err := observer.prepareEvent(event)
 	if err != nil {
@@ -525,6 +703,10 @@ func (observer *persistenceObserver) prepareEvent(event engine.Event) (engine.Ev
 		OutputRedactedPaths: append([]string(nil), safeEvent.OutputRedactedPaths...), Timestamp: safeEvent.Timestamp,
 		DataBytes: int64(len(inputJSON) + len(outputJSON) + len(errorJSON) + len(activePortsJSON) + len(inputPathsJSON) + len(outputPathsJSON)),
 	}
+	if safeEvent.NodeID != "" {
+		attempt := safeEvent.NodeAttempt
+		runEvent.NodeAttempt = &attempt
+	}
 	return safeEvent, runEvent, nil
 }
 
@@ -553,6 +735,11 @@ func redactPreparedValue(prepared *PreparedRun, value any) RedactionReport {
 	}
 	sort.Strings(paths)
 	return RedactionReport{Value: keyReport.Value, Paths: paths}
+}
+
+// PublicRunOutput returns the safe projection allowed in run records and public events.
+func PublicRunOutput(prepared *PreparedRun, value any) any {
+	return redactPreparedValue(prepared, value).Value
 }
 
 func redactPublicError(prepared *PreparedRun, publicError *domain.PublicError) *domain.PublicError {
@@ -593,6 +780,9 @@ func runEventToEngineEvent(event domain.RunEvent) engine.Event {
 		InputRedactedPaths:  append([]string{}, event.InputRedactedPaths...),
 		OutputRedactedPaths: append([]string{}, event.OutputRedactedPaths...), Timestamp: event.Timestamp,
 	}
+	if event.NodeAttempt != nil {
+		converted.NodeAttempt = *event.NodeAttempt
+	}
 	if len(event.Input) > 0 {
 		var input any
 		if decodeJSON(event.Input, &input) == nil {
@@ -631,6 +821,7 @@ func (observer *persistenceObserver) nodeRunForEvent(event engine.Event, inputJS
 		RunID:     observer.prepared.RunID,
 		NodeID:    event.NodeID,
 		NodeType:  compiled.Node.Type,
+		Attempt:   event.NodeAttempt,
 		Status:    event.Status,
 		Input:     inputJSON,
 		Output:    outputJSON,

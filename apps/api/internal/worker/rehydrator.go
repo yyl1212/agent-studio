@@ -15,10 +15,11 @@ import (
 )
 
 type RecoveryDecision struct {
-	Required bool
-	Reason   domain.RunRecoveryReason
-	Sequence int64
-	Nodes    []UncertainNode
+	Required               bool
+	Reason                 domain.RunRecoveryReason
+	Sequence               int64
+	Nodes                  []UncertainNode
+	PayloadFailureCategory string
 }
 
 type UncertainNode struct {
@@ -53,11 +54,6 @@ type nodeAttemptState struct {
 	startedAt time.Time
 }
 
-type nodeOutputPayload struct {
-	Outputs     map[string]any `json:"outputs"`
-	ActivePorts []string       `json:"activePorts"`
-}
-
 func NewRehydrator(store workflow.Store, compiler workflow.Compiler, cipher *runpayload.Cipher) *Rehydrator {
 	return &Rehydrator{store: store, compiler: compiler, cipher: cipher}
 }
@@ -75,7 +71,7 @@ func (rehydrator *Rehydrator) Load(ctx context.Context, claimed workflow.Claimed
 	}
 	input, err := rehydrator.decryptRunInput(run, payloads)
 	if err != nil {
-		return recoveryResult(nil, lastSequence(events), domain.RecoveryPayloadUnavailable, nil), nil
+		return payloadRecoveryResult(nil, lastSequence(events), err), nil
 	}
 	prepared, err := workflow.LoadPreparedExecution(ctx, rehydrator.store, rehydrator.compiler, run, input)
 	if err != nil {
@@ -94,12 +90,12 @@ func (rehydrator *Rehydrator) RehydrateLoaded(_ context.Context, run domain.Run,
 	}
 	payloadIndex, err := indexPayloads(run, payloads)
 	if err != nil {
-		return recoveryResult(prepared, sequence, domain.RecoveryPayloadUnavailable, nil), nil
+		return payloadRecoveryResult(prepared, sequence, err), nil
 	}
 	usedPayloads := make(map[payloadKey]bool, len(payloadIndex))
 	input, err := decryptPayload[map[string]any](rehydrator.cipher, run, payloadIndex, usedPayloads, payloadKey{sequence: 0, kind: domain.RunPayloadInput}, "", 0)
 	if err != nil {
-		return recoveryResult(prepared, sequence, domain.RecoveryPayloadUnavailable, nil), nil
+		return payloadRecoveryResult(prepared, sequence, err), nil
 	}
 	prepared.Input = input
 
@@ -156,16 +152,19 @@ func (rehydrator *Rehydrator) RehydrateLoaded(_ context.Context, run domain.Run,
 					return recoveryResult(prepared, sequence, domain.RecoveryHistoryInvalid, nil), nil
 				}
 				if _, err := decryptPayload[any](rehydrator.cipher, run, payloadIndex, usedPayloads, payloadKey{event.Sequence, domain.RunPayloadNodeInput}, event.NodeID, attempt); err != nil {
-					return recoveryResult(prepared, sequence, domain.RecoveryPayloadUnavailable, nil), nil
+					return payloadRecoveryResult(prepared, sequence, err), nil
 				}
 				state.started, state.startedAt = true, event.Timestamp
 			case "node.completed":
 				if !state.started || state.terminal {
 					return recoveryResult(prepared, sequence, domain.RecoveryHistoryInvalid, nil), nil
 				}
-				outputPayload, err := decryptPayload[nodeOutputPayload](rehydrator.cipher, run, payloadIndex, usedPayloads, payloadKey{event.Sequence, domain.RunPayloadNodeOutput}, event.NodeID, attempt)
-				if err != nil || outputPayload.Outputs == nil || outputPayload.ActivePorts == nil {
-					return recoveryResult(prepared, sequence, domain.RecoveryPayloadUnavailable, nil), nil
+				outputPayload, err := decryptPayload[runpayload.NodeOutputPayload](rehydrator.cipher, run, payloadIndex, usedPayloads, payloadKey{event.Sequence, domain.RunPayloadNodeOutput}, event.NodeID, attempt)
+				if err != nil {
+					return payloadRecoveryResult(prepared, sequence, err), nil
+				}
+				if outputPayload.Outputs == nil || outputPayload.ActivePorts == nil {
+					return payloadRecoveryResult(prepared, sequence, errors.New("payload json invalid")), nil
 				}
 				state.terminal, state.status = true, domain.NodeCompleted
 				freezeCompletedEdges(prepared.Plan, event.NodeID, outputPayload.Outputs, outputPayload.ActivePorts, checkpoint.FrozenEdges)
@@ -218,10 +217,10 @@ func (rehydrator *Rehydrator) RehydrateLoaded(_ context.Context, run domain.Run,
 		}
 	}
 	if len(usedPayloads) != len(payloadIndex) {
-		return recoveryResult(prepared, sequence, domain.RecoveryPayloadUnavailable, nil), nil
+		return payloadRecoveryResult(prepared, sequence, errors.New("unexpected payload")), nil
 	}
 	if terminalStatus != "" {
-		return PreparedExecution{Prepared: prepared, Checkpoint: checkpoint, TerminalStatus: terminalStatus, TerminalOutput: terminalOutput}, nil
+		return PreparedExecution{Prepared: prepared, Checkpoint: checkpoint, TerminalStatus: terminalStatus, TerminalOutput: workflow.PublicRunOutput(prepared, terminalOutput)}, nil
 	}
 	uncertain := collectUncertainNodes(prepared.Plan, states)
 	if len(uncertain) > 0 {
@@ -361,6 +360,33 @@ func recoveryReasonForNodes(nodes []UncertainNode) domain.RunRecoveryReason {
 
 func recoveryResult(prepared *workflow.PreparedRun, sequence int64, reason domain.RunRecoveryReason, nodes []UncertainNode) PreparedExecution {
 	return PreparedExecution{Prepared: prepared, Recovery: RecoveryDecision{Required: true, Reason: reason, Sequence: sequence, Nodes: nodes}}
+}
+
+func payloadRecoveryResult(prepared *workflow.PreparedRun, sequence int64, err error) PreparedExecution {
+	result := recoveryResult(prepared, sequence, domain.RecoveryPayloadUnavailable, nil)
+	result.Recovery.PayloadFailureCategory = payloadFailureCategory(err)
+	return result
+}
+
+func payloadFailureCategory(err error) string {
+	switch {
+	case errors.Is(err, runpayload.ErrAuthentication):
+		return "authentication"
+	case errors.Is(err, runpayload.ErrInvalidEnvelope):
+		return "envelope"
+	case err == nil:
+		return "unknown"
+	}
+	switch err.Error() {
+	case "payload missing":
+		return "missing"
+	case "payload json invalid":
+		return "json"
+	case "invalid payload metadata", "duplicate payload", "payload event metadata mismatch", "unexpected payload":
+		return "metadata"
+	default:
+		return "unknown"
+	}
 }
 
 func lastSequence(events []domain.RunEvent) int64 {

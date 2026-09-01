@@ -103,7 +103,7 @@ func classifyRunError(err error) observability.ErrorCategory {
 	if errors.As(err, &executionErr) {
 		return observability.ErrorCategoryNodeExecution
 	}
-	if errors.Is(err, domain.ErrRunEventBudgetExceeded) || errors.Is(err, domain.ErrRunEventSequence) {
+	if errors.Is(err, domain.ErrRunEventBudgetExceeded) || errors.Is(err, domain.ErrRunEventSequence) || errors.Is(err, domain.ErrRunLeaseLost) {
 		return observability.ErrorCategoryPersistence
 	}
 	return observability.ErrorCategoryInternal

@@ -19,6 +19,9 @@ func (store *Store) SubmitRun(ctx context.Context, submission workflowservice.Ru
 		submission.InputPayload.ExecutionProtocol != run.ExecutionProtocol {
 		return errors.New("invalid durable run submission")
 	}
+	if submission.QueuedEvent.DataBytes < 0 || int64(len(submission.InputPayload.Ciphertext))+submission.QueuedEvent.DataBytes > 32<<20 {
+		return domain.ErrRunEventBudgetExceeded
+	}
 	errorJSON, err := marshalOptional(run.Error)
 	if err != nil {
 		return fmt.Errorf("encode submitted run error: %w", err)
@@ -111,6 +114,20 @@ func (store *Store) ClaimRun(ctx context.Context, owner string, duration time.Du
 	}
 	lease := domain.RunLease{RunID: runID, Owner: owner, Token: token, ExpiresAt: expiresAt}
 	return workflowservice.ClaimedRun{Run: run, Lease: lease}, true, nil
+}
+
+func (store *Store) RunQueueStats(ctx context.Context) (int64, time.Duration, error) {
+	var depth int64
+	var oldestSeconds float64
+	err := store.pool.QueryRow(ctx, `SELECT count(*),COALESCE(EXTRACT(EPOCH FROM clock_timestamp()-min(started_at)),0)::double precision
+		FROM runs WHERE status='queued' AND execution_protocol=$1`, domain.CurrentExecutionProtocol).Scan(&depth, &oldestSeconds)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read run queue statistics: %w", err)
+	}
+	if oldestSeconds < 0 {
+		oldestSeconds = 0
+	}
+	return depth, time.Duration(oldestSeconds * float64(time.Second)), nil
 }
 
 func (store *Store) RenewRunLease(ctx context.Context, lease domain.RunLease, duration time.Duration) (workflowservice.LeaseHeartbeat, error) {
@@ -284,15 +301,24 @@ func assertRunLease(ctx context.Context, tx pgx.Tx, lease domain.RunLease) error
 
 func persistRunEventData(ctx context.Context, tx pgx.Tx, event domain.RunEvent, nodeRun *domain.NodeRun, payloads []domain.RunPayload, budget domain.RunEventBudget) error {
 	var count int
-	var maxSequence, totalDataBytes int64
-	if err := tx.QueryRow(ctx, `SELECT count(*),COALESCE(max(sequence),0),COALESCE(sum(data_bytes),0)
-		FROM run_events WHERE run_id=$1`, event.RunID).Scan(&count, &maxSequence, &totalDataBytes); err != nil {
+	var maxSequence, publicDataBytes, privateDataBytes int64
+	if err := tx.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(max(sequence),0) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(sum(data_bytes),0) FROM run_events WHERE run_id=$1),
+		(SELECT COALESCE(sum(octet_length(ciphertext)),0) FROM run_payloads WHERE run_id=$1)`, event.RunID).Scan(&count, &maxSequence, &publicDataBytes, &privateDataBytes); err != nil {
 		return fmt.Errorf("read run event budget: %w", err)
 	}
 	if event.Sequence != maxSequence+1 {
 		return fmt.Errorf("%w: sequence %d follows %d", domain.ErrRunEventSequence, event.Sequence, maxSequence)
 	}
-	if count >= budget.MaxEvents || event.DataBytes < 0 || event.DataBytes > budget.MaxTotalDataBytes-totalDataBytes {
+	newPrivateDataBytes := int64(0)
+	for _, payload := range payloads {
+		newPrivateDataBytes += int64(len(payload.Ciphertext))
+	}
+	totalDataBytes := publicDataBytes + privateDataBytes
+	newDataBytes := event.DataBytes + newPrivateDataBytes
+	if count >= budget.MaxEvents || event.DataBytes < 0 || newPrivateDataBytes < 0 || newDataBytes > budget.MaxTotalDataBytes-totalDataBytes {
 		return fmt.Errorf("%w: events=%d bytes=%d", domain.ErrRunEventBudgetExceeded, count, totalDataBytes)
 	}
 	if err := insertRunEventRecord(ctx, tx, event); err != nil {

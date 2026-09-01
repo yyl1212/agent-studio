@@ -15,6 +15,7 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 	"github.com/yyl1212/agent-studio/apps/api/internal/engine"
 	"github.com/yyl1212/agent-studio/apps/api/internal/nodes/builtin"
+	"github.com/yyl1212/agent-studio/apps/api/internal/runpayload"
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
@@ -386,6 +387,149 @@ func TestLoadPreparedExecutionReusesExistingRunAndRebuildsRedactor(t *testing.T)
 	if got := redactPreparedValue(prepared, map[string]any{"echo": "top-secret"}).Value; fmt.Sprint(got) != "map[echo:[REDACTED]]" {
 		t.Fatalf("redacted=%v", got)
 	}
+	if got := PublicRunOutput(prepared, map[string]any{"echo": "top-secret"}); fmt.Sprint(got) != "map[echo:[REDACTED]]" {
+		t.Fatalf("public output=%v", got)
+	}
+}
+
+func TestExecuteLeasedPersistsPublicEventAndPrivatePayloadAtomically(t *testing.T) {
+	store := newFakeStore(t)
+	durable := &leasedDurableStore{}
+	store.DurableRunStore = durable
+	cipher, err := runpayload.New("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, redactor, err := persistedRunInput(map[string]any{"token": "top-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := &engine.Plan{Nodes: map[string]engine.CompiledNode{"node": {Node: domain.Node{ID: "node", Type: "fixture"}}}}
+	prepared := &PreparedRun{RunID: "leased-run", Plan: plan, Input: map[string]any{"token": "top-secret"}, secretRedactor: redactor}
+	lease := domain.RunLease{RunID: prepared.RunID, Owner: "worker-1", Token: 2, ExpiresAt: time.Now().Add(time.Minute)}
+	service := NewRunService(store, newRealCompiler(t), leasedCheckpointEngine{})
+	result, err := service.ExecuteLeased(context.Background(), prepared, engine.Checkpoint{LastSequence: 1}, lease, cipher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "[REDACTED]" || len(durable.writes) != 2 || durable.finalization.RunID != prepared.RunID {
+		t.Fatalf("result=%+v writes=%+v finalization=%+v", result, durable.writes, durable.finalization)
+	}
+	for _, write := range durable.writes {
+		if len(write.payloads) != 1 || write.event.NodeAttempt == nil || *write.event.NodeAttempt != 1 || write.nodeRun == nil || write.nodeRun.Attempt != 1 {
+			t.Fatalf("write=%+v", write)
+		}
+		if bytes.Contains(write.event.Input, []byte("top-secret")) || bytes.Contains(write.event.Output, []byte("top-secret")) {
+			t.Fatalf("public event leaked secret: %+v", write.event)
+		}
+		payload := write.payloads[0]
+		plaintext, err := cipher.Open(runpayload.Metadata{RunID: payload.RunID, Sequence: payload.Sequence, Kind: payload.Kind, NodeID: payload.NodeID, NodeAttempt: payload.NodeAttempt, ExecutionProtocol: payload.ExecutionProtocol}, payload.Ciphertext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if write.event.Type == "node.started" && !bytes.Contains(plaintext, []byte("top-secret")) {
+			t.Fatalf("input payload=%s", plaintext)
+		}
+		if write.event.Type == "node.completed" {
+			var output runpayload.NodeOutputPayload
+			if json.Unmarshal(plaintext, &output) != nil || output.Outputs["result"] != "top-secret" {
+				t.Fatalf("output payload=%s", plaintext)
+			}
+		}
+	}
+}
+
+func TestExecuteLeasedDoesNotFinalizeInfrastructureInterruption(t *testing.T) {
+	for _, cause := range []error{domain.ErrRunLeaseLost, ErrRunExecutionInterrupted} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			store := newFakeStore(t)
+			durable := &leasedDurableStore{}
+			store.DurableRunStore = durable
+			cipher, err := runpayload.New("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared := &PreparedRun{RunID: "interrupted-run", Plan: &engine.Plan{Nodes: map[string]engine.CompiledNode{}}, Input: map[string]any{}}
+			lease := domain.RunLease{RunID: prepared.RunID, Owner: "worker-1", Token: 1, ExpiresAt: time.Now().Add(time.Minute)}
+			service := NewRunService(store, newRealCompiler(t), interruptedCheckpointEngine{})
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(cause)
+			_, err = service.ExecuteLeased(ctx, prepared, engine.Checkpoint{LastSequence: 1}, lease, cipher, nil)
+			if !errors.Is(err, cause) {
+				t.Fatalf("error=%v want=%v", err, cause)
+			}
+			if len(durable.writes) != 0 || durable.finalization.RunID != "" {
+				t.Fatalf("interruption persisted writes=%+v finalization=%+v", durable.writes, durable.finalization)
+			}
+		})
+	}
+}
+
+type leasedCheckpointEngine struct{}
+
+type interruptedCheckpointEngine struct{}
+
+func (interruptedCheckpointEngine) Run(context.Context, string, *engine.Plan, map[string]any, engine.Observer) (engine.RunResult, error) {
+	return engine.RunResult{}, nil
+}
+func (interruptedCheckpointEngine) RunWithScope(context.Context, string, *engine.Plan, map[string]any, engine.Observer, engine.ExecutionScope) (engine.RunResult, error) {
+	return engine.RunResult{}, nil
+}
+func (interruptedCheckpointEngine) RunFromCheckpoint(ctx context.Context, runID string, _ *engine.Plan, _ map[string]any, _ engine.Observer, _ engine.Checkpoint) (engine.RunResult, error) {
+	<-ctx.Done()
+	return engine.RunResult{RunID: runID, EndedAt: time.Now().UTC()}, ctx.Err()
+}
+
+func (leasedCheckpointEngine) Run(context.Context, string, *engine.Plan, map[string]any, engine.Observer) (engine.RunResult, error) {
+	return engine.RunResult{}, nil
+}
+func (leasedCheckpointEngine) RunWithScope(context.Context, string, *engine.Plan, map[string]any, engine.Observer, engine.ExecutionScope) (engine.RunResult, error) {
+	return engine.RunResult{}, nil
+}
+func (leasedCheckpointEngine) RunFromCheckpoint(ctx context.Context, runID string, _ *engine.Plan, _ map[string]any, observer engine.Observer, checkpoint engine.Checkpoint) (engine.RunResult, error) {
+	now := time.Now().UTC()
+	for _, event := range []engine.Event{
+		{Sequence: checkpoint.LastSequence + 1, RunID: runID, Type: "node.started", NodeID: "node", NodeAttempt: 1, Status: domain.NodeRunning, Input: map[string]any{"token": "top-secret"}, Timestamp: now},
+		{Sequence: checkpoint.LastSequence + 2, RunID: runID, Type: "node.completed", NodeID: "node", NodeAttempt: 1, Status: domain.NodeCompleted, Output: map[string]any{"result": "top-secret"}, ActivePorts: []string{"result"}, Timestamp: now},
+		{Sequence: checkpoint.LastSequence + 3, RunID: runID, Type: "run.completed", Output: "top-secret", Timestamp: now},
+	} {
+		if err := observer.Observe(ctx, event); err != nil {
+			return engine.RunResult{}, err
+		}
+	}
+	return engine.RunResult{RunID: runID, Output: "top-secret", EndedAt: now}, nil
+}
+
+type leasedWrite struct {
+	event    domain.RunEvent
+	nodeRun  *domain.NodeRun
+	payloads []domain.RunPayload
+}
+type leasedDurableStore struct {
+	writes       []leasedWrite
+	finalization RunFinalization
+}
+
+func (*leasedDurableStore) SubmitRun(context.Context, RunSubmission) error { return nil }
+func (*leasedDurableStore) ClaimRun(context.Context, string, time.Duration) (ClaimedRun, bool, error) {
+	return ClaimedRun{}, false, nil
+}
+func (*leasedDurableStore) RenewRunLease(context.Context, domain.RunLease, time.Duration) (LeaseHeartbeat, error) {
+	return LeaseHeartbeat{}, nil
+}
+func (*leasedDurableStore) LoadRunExecution(context.Context, string) (domain.Run, []domain.RunEvent, []domain.RunPayload, error) {
+	return domain.Run{}, nil, nil, nil
+}
+func (store *leasedDurableStore) PersistLeasedRunEvent(_ context.Context, _ domain.RunLease, event domain.RunEvent, nodeRun *domain.NodeRun, payloads []domain.RunPayload, _ domain.RunEventBudget) error {
+	store.writes = append(store.writes, leasedWrite{event: event, nodeRun: nodeRun, payloads: payloads})
+	return nil
+}
+func (*leasedDurableStore) RequireRunRecovery(context.Context, domain.RunLease, domain.RunEvent, domain.RunRecoveryReason, time.Time, domain.RunEventBudget) error {
+	return nil
+}
+func (store *leasedDurableStore) FinalizeLeasedRun(_ context.Context, _ domain.RunLease, finalization RunFinalization, _ []domain.RunPayload) (domain.RunEvent, error) {
+	store.finalization = finalization
+	return finalization.TerminalEvent, nil
 }
 
 func TestPrepareAgentOnceReturnsExistingWithoutSecondPreparedRun(t *testing.T) {

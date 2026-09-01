@@ -13,6 +13,11 @@ import (
 	"github.com/yyl1212/agent-studio/apps/api/internal/domain"
 )
 
+type NodeOutputPayload struct {
+	Outputs     map[string]any `json:"outputs"`
+	ActivePorts []string       `json:"activePorts"`
+}
+
 const envelopeVersion byte = 1
 
 var (
