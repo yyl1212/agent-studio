@@ -104,8 +104,8 @@ export function RunManagementView() {
 
 function toggle<T>(values: T[], value: T) { return values.includes(value) ? values.filter((item) => item !== value) : [...values, value] }
 function modeLabel(mode: RunSummary['mode']) { return { test: '草稿测试', published: '已发布', debug: '局部调试' }[mode] }
-function statusLabel(status: RunSummary['status']) { return { running: '运行中', cancelling: '取消中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
-function statusTone(status: RunSummary['status']): 'info' | 'success' | 'danger' | 'warning' { return { running: 'info', cancelling: 'warning', completed: 'success', failed: 'danger', cancelled: 'warning' }[status] as 'info' | 'success' | 'danger' | 'warning' }
+function statusLabel(status: RunSummary['status']) { return { queued: '排队中', running: '运行中', recovery_required: '等待人工恢复', cancelling: '取消中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] }
+function statusTone(status: RunSummary['status']): 'info' | 'success' | 'danger' | 'warning' { return { queued: 'info', running: 'info', recovery_required: 'warning', cancelling: 'warning', completed: 'success', failed: 'danger', cancelled: 'warning' }[status] as 'info' | 'success' | 'danger' | 'warning' }
 function formatDate(value: string) { return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
 function duration(run: RunSummary) { return run.endedAt ? `${((Date.parse(run.endedAt) - Date.parse(run.startedAt)) / 1000).toFixed(1)} 秒` : '—' }
 function isRFC3339(value: string) { return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value)) }

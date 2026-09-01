@@ -554,6 +554,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{runId}/recovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getRunRecovery"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{runId}/recovery/nodes/{nodeId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["confirmRunNodeRetry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{runId}/recovery/terminate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["terminateRunRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/retry-preview": {
         parameters: {
             query?: never;
@@ -1155,7 +1203,7 @@ export interface components {
             workflowVersionId: string;
             version: number;
             /** @enum {string} */
-            status: "running" | "cancelling" | "completed" | "failed" | "cancelled";
+            status: "queued" | "running" | "recovery_required" | "cancelling" | "completed" | "failed" | "cancelled";
             /** Format: date-time */
             startedAt: string;
             /** Format: date-time */
@@ -1198,7 +1246,7 @@ export interface components {
             /** @enum {string} */
             mode: "test" | "published" | "debug";
             /** @enum {string} */
-            status: "running" | "cancelling" | "completed" | "failed" | "cancelled";
+            status: "queued" | "running" | "recovery_required" | "cancelling" | "completed" | "failed" | "cancelled";
             input: unknown;
             inputRedactedPaths: string[];
             output?: unknown;
@@ -1230,7 +1278,7 @@ export interface components {
             /** @enum {string} */
             mode: "test" | "published" | "debug";
             /** @enum {string} */
-            status: "running" | "cancelling" | "completed" | "failed" | "cancelled";
+            status: "queued" | "running" | "recovery_required" | "cancelling" | "completed" | "failed" | "cancelled";
             /** Format: date-time */
             cancelRequestedAt?: string | null;
             /** Format: date-time */
@@ -1259,6 +1307,41 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        RunRecoveryView: {
+            /** Format: uuid */
+            runId: string;
+            /** @constant */
+            status: "recovery_required";
+            /** @enum {string} */
+            reason: "legacy_active_run" | "uncertain_read_only" | "uncertain_side_effect" | "attempt_limit_reached" | "payload_unavailable" | "event_history_invalid" | "node_version_unavailable";
+            /** Format: date-time */
+            requestedAt?: string;
+            /** Format: int64 */
+            sequence: number;
+            nodes: components["schemas"]["RunRecoveryNode"][];
+        };
+        RunRecoveryNode: {
+            nodeId: string;
+            nodeType: string;
+            nodeTitle: string;
+            nodeAttempt: number;
+            /** @enum {string} */
+            safety: "pure" | "read_only" | "side_effect";
+            /** Format: date-time */
+            startedAt: string;
+            retryAllowed: boolean;
+            retryBlockReason?: string;
+            riskMessage: string;
+        };
+        ConfirmNodeRetryRequest: {
+            nodeAttempt: number;
+            /** Format: int64 */
+            expectedSequence: number;
+        };
+        TerminateRecoveryRequest: {
+            /** Format: int64 */
+            expectedSequence: number;
+        };
         NodeRun: {
             /** Format: uuid */
             id: string;
@@ -1266,6 +1349,7 @@ export interface components {
             runId: string;
             nodeId: string;
             nodeType: string;
+            attempt?: number;
             status: string;
             input?: unknown;
             output?: unknown;
@@ -1279,10 +1363,11 @@ export interface components {
             /** Format: int64 */
             sequence: number;
             /** @enum {string} */
-            type: "run.started" | "node.started" | "node.completed" | "node.failed" | "node.skipped" | "node.cancelled" | "run.completed" | "run.failed" | "run.cancelled";
+            type: "run.queued" | "run.started" | "run.recovery_required" | "node.started" | "node.completed" | "node.failed" | "node.skipped" | "node.cancelled" | "node.retry_confirmed" | "run.completed" | "run.failed" | "run.cancelled";
             /** Format: uuid */
             runId: string;
             nodeId?: string;
+            nodeAttempt?: number;
             status?: string;
             input?: unknown;
             output?: unknown;
@@ -1300,7 +1385,7 @@ export interface components {
             /** @enum {string} */
             mode: "test" | "published" | "debug";
             /** @enum {string} */
-            status: "running" | "completed" | "failed" | "cancelled";
+            status: "queued" | "running" | "recovery_required" | "cancelling" | "completed" | "failed" | "cancelled";
         };
         DebugOverview: {
             run: components["schemas"]["Run"];
@@ -2314,7 +2399,7 @@ export interface operations {
             query?: {
                 workflowId?: string;
                 runId?: string;
-                status?: ("running" | "cancelling" | "completed" | "failed" | "cancelled")[];
+                status?: ("queued" | "running" | "recovery_required" | "cancelling" | "completed" | "failed" | "cancelled")[];
                 mode?: ("test" | "published" | "debug")[];
                 startedAfter?: string;
                 startedBefore?: string;
@@ -2380,6 +2465,93 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description 已请求取消的运行摘要 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunSummary"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    getRunRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 运行人工恢复详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRecoveryView"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    confirmRunNodeRetry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmNodeRetryRequest"];
+            };
+        };
+        responses: {
+            /** @description 确认后的运行摘要 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunSummary"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    terminateRunRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TerminateRecoveryRequest"];
+            };
+        };
+        responses: {
+            /** @description 已终止的运行摘要 */
             200: {
                 headers: {
                     [name: string]: unknown;

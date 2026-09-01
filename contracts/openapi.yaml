@@ -821,10 +821,10 @@ paths:
           explode: true
           schema:
             type: array
-            maxItems: 5
+            maxItems: 7
             items:
               type: string
-              enum: [running, cancelling, completed, failed, cancelled]
+              enum: [queued, running, recovery_required, cancelling, completed, failed, cancelled]
         - name: mode
           in: query
           style: form
@@ -912,6 +912,99 @@ paths:
       responses:
         "200":
           description: 已请求取消的运行摘要
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummary"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/runs/{runId}/recovery:
+    get:
+      operationId: getRunRecovery
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 运行人工恢复详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunRecoveryView"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/runs/{runId}/recovery/nodes/{nodeId}/retry:
+    post:
+      operationId: confirmRunNodeRetry
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: nodeId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmNodeRetryRequest"
+      responses:
+        "200":
+          description: 确认后的运行摘要
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummary"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/runs/{runId}/recovery/terminate:
+    post:
+      operationId: terminateRunRecovery
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TerminateRecoveryRequest"
+      responses:
+        "200":
+          description: 已终止的运行摘要
           content:
             application/json:
               schema:
@@ -2337,7 +2430,7 @@ components:
           minimum: 1
         status:
           type: string
-          enum: [running, cancelling, completed, failed, cancelled]
+          enum: [queued, running, recovery_required, cancelling, completed, failed, cancelled]
         startedAt:
           type: string
           format: date-time
@@ -2418,7 +2511,7 @@ components:
           enum: [test, published, debug]
         status:
           type: string
-          enum: [running, cancelling, completed, failed, cancelled]
+          enum: [queued, running, recovery_required, cancelling, completed, failed, cancelled]
         input: {}
         inputRedactedPaths:
           type: array
@@ -2474,7 +2567,7 @@ components:
           enum: [test, published, debug]
         status:
           type: string
-          enum: [running, cancelling, completed, failed, cancelled]
+          enum: [queued, running, recovery_required, cancelling, completed, failed, cancelled]
         cancelRequestedAt:
           type: [string, "null"]
           format: date-time
@@ -2529,6 +2622,81 @@ components:
           propertyNames:
             maxLength: 1024
           additionalProperties: true
+    RunRecoveryView:
+      type: object
+      additionalProperties: false
+      required: [runId, status, reason, sequence, nodes]
+      properties:
+        runId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          const: recovery_required
+        reason:
+          type: string
+          enum: [legacy_active_run, uncertain_read_only, uncertain_side_effect, attempt_limit_reached, payload_unavailable, event_history_invalid, node_version_unavailable]
+        requestedAt:
+          type: string
+          format: date-time
+        sequence:
+          type: integer
+          format: int64
+          minimum: 1
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunRecoveryNode"
+    RunRecoveryNode:
+      type: object
+      additionalProperties: false
+      required: [nodeId, nodeType, nodeTitle, nodeAttempt, safety, startedAt, retryAllowed, riskMessage]
+      properties:
+        nodeId:
+          type: string
+          minLength: 1
+        nodeType:
+          type: string
+        nodeTitle:
+          type: string
+        nodeAttempt:
+          type: integer
+          minimum: 1
+          maximum: 3
+        safety:
+          type: string
+          enum: [pure, read_only, side_effect]
+        startedAt:
+          type: string
+          format: date-time
+        retryAllowed:
+          type: boolean
+        retryBlockReason:
+          type: string
+        riskMessage:
+          type: string
+    ConfirmNodeRetryRequest:
+      type: object
+      additionalProperties: false
+      required: [nodeAttempt, expectedSequence]
+      properties:
+        nodeAttempt:
+          type: integer
+          minimum: 1
+          maximum: 3
+        expectedSequence:
+          type: integer
+          format: int64
+          minimum: 1
+    TerminateRecoveryRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedSequence]
+      properties:
+        expectedSequence:
+          type: integer
+          format: int64
+          minimum: 1
     NodeRun:
       type: object
       required: [id, runId, nodeId, nodeType, status]
@@ -2543,6 +2711,10 @@ components:
           type: string
         nodeType:
           type: string
+        attempt:
+          type: integer
+          minimum: 1
+          maximum: 3
         status:
           type: string
         input: {}
@@ -2566,12 +2738,16 @@ components:
           format: int64
         type:
           type: string
-          enum: [run.started, node.started, node.completed, node.failed, node.skipped, node.cancelled, run.completed, run.failed, run.cancelled]
+          enum: [run.queued, run.started, run.recovery_required, node.started, node.completed, node.failed, node.skipped, node.cancelled, node.retry_confirmed, run.completed, run.failed, run.cancelled]
         runId:
           type: string
           format: uuid
         nodeId:
           type: string
+        nodeAttempt:
+          type: integer
+          minimum: 1
+          maximum: 3
         status:
           type: string
         input: {}
@@ -2609,7 +2785,7 @@ components:
           enum: [test, published, debug]
         status:
           type: string
-          enum: [running, completed, failed, cancelled]
+          enum: [queued, running, recovery_required, cancelling, completed, failed, cancelled]
     DebugOverview:
       type: object
       required: [run, graph, nodeRuns, sourceChain, replayAvailable, rerunAvailable]
