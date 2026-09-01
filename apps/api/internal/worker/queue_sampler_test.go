@@ -104,6 +104,45 @@ func TestQueueSamplerStopsAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestQueueSamplerDoesNotSampleWhenContextAlreadyCancelled(t *testing.T) {
+	source := newQueueSamplerSource(queueSamplerResult{depth: 1})
+	sampler := queueSampler{source: source, recorder: newQueueSamplerRecorder()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	sampler.run(ctx, make(chan time.Time))
+
+	if calls := source.callCount(); calls != 0 {
+		t.Fatalf("source calls with pre-cancelled context=%d", calls)
+	}
+}
+
+func TestQueueSamplerDoesNotSamplePendingTickAfterCancellation(t *testing.T) {
+	source := newQueueSamplerSource(queueSamplerResult{depth: 1})
+	recorder := newQueueSamplerRecorder()
+	ticks := make(chan time.Time)
+	ctx := newCancelAfterTickContext()
+	sampler := queueSampler{source: source, recorder: recorder}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sampler.run(ctx, ticks)
+	}()
+
+	waitForQueueSample(t, recorder.samples)
+	tickAccepted := make(chan struct{})
+	go func() {
+		ticks <- time.Time{}
+		ctx.cancelContext()
+		close(tickAccepted)
+	}()
+	waitForQueueSamplerExit(t, done)
+	<-tickAccepted
+	if calls := source.callCount(); calls != 1 {
+		t.Fatalf("source calls after pending tick cancellation=%d", calls)
+	}
+}
+
 func TestQueueSamplerWithoutSourceReturns(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
@@ -123,6 +162,51 @@ type queueSamplerSource struct {
 	mu      sync.Mutex
 	results []queueSamplerResult
 	calls   chan struct{}
+}
+
+type cancelAfterTickContext struct {
+	context.Context
+	mu            sync.Mutex
+	errCalls      int
+	cancelled     bool
+	done          chan struct{}
+	cancelledOnce sync.Once
+}
+
+func newCancelAfterTickContext() *cancelAfterTickContext {
+	return &cancelAfterTickContext{
+		Context: context.Background(),
+		done:    make(chan struct{}),
+	}
+}
+
+func (ctx *cancelAfterTickContext) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *cancelAfterTickContext) Err() error {
+	ctx.mu.Lock()
+	if ctx.cancelled {
+		ctx.mu.Unlock()
+		return context.Canceled
+	}
+	ctx.errCalls++
+	errCall := ctx.errCalls
+	ctx.mu.Unlock()
+	if errCall == 1 {
+		return nil
+	}
+	<-ctx.done
+	return context.Canceled
+}
+
+func (ctx *cancelAfterTickContext) cancelContext() {
+	ctx.cancelledOnce.Do(func() {
+		ctx.mu.Lock()
+		ctx.cancelled = true
+		close(ctx.done)
+		ctx.mu.Unlock()
+	})
 }
 
 func newQueueSamplerSource(results ...queueSamplerResult) *queueSamplerSource {

@@ -40,12 +40,18 @@ func (sampler queueSampler) Run(ctx context.Context, interval time.Duration) {
 }
 
 func (sampler queueSampler) run(ctx context.Context, ticks <-chan time.Time) {
+	if ctx.Err() != nil {
+		return
+	}
 	sampler.sample(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticks:
+			if ctx.Err() != nil {
+				return
+			}
 			sampler.sample(ctx)
 		}
 	}
