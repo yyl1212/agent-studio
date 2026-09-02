@@ -567,29 +567,40 @@ cat >"$test_root/bounded-harness.sh" <<SH
 #!/bin/sh
 set -eu
 $(cat "$bounded_functions")
-start_epoch_ms=\$(now_epoch_ms)
-deadline_epoch_ms=\$((start_epoch_ms + 2000))
 last_safe_command_label=
-run_bounded legacy_build sh -c 'exit 0'
-current_phase=02_legacy_build; go_binary=sh; CGO_ENABLED=0 go -c '[ "\$CGO_ENABLED" = 0 ] && [ "\$1" = "argument with spaces" ]' sh 'argument with spaces'
+bounded_fixture_marker() { [ -f "\$1" ] && printf present || printf missing; }
+bounded_fixture_begin() { bounded_fixture_label=\$1; sleep 0.5; start_epoch_ms=\$(now_epoch_ms); deadline_epoch_ms=\$((start_epoch_ms + 2000)); }
+bounded_fixture_fail() { bounded_fixture_status=\$1; bounded_fixture_now=\$(now_epoch_ms); bounded_fixture_remaining=\$(remaining_budget_ms 2>/dev/null || printf expired); printf '%s\n' "bounded assertion failed label=\$bounded_fixture_label status=\$bounded_fixture_status stepElapsedMs=\$((bounded_fixture_now-start_epoch_ms)) remainingMs=\$bounded_fixture_remaining producer=\$(bounded_fixture_marker \${PRODUCER_MARKER:-/missing}) consumer=\$(bounded_fixture_marker \${CONSUMER_MARKER:-/missing}) term=\$(bounded_fixture_marker \${TERM_MARKER:-/missing}) childPid=\$(bounded_fixture_marker \${CHILD_PID_FILE:-/missing})" >&2; exit 1; }
+bounded_fixture_begin simple_exit
+if run_bounded legacy_build sh -c 'exit 0'; then :; else bounded_fixture_fail \$?; fi
+bounded_fixture_begin go_argv
+current_phase=02_legacy_build; go_binary=sh; if CGO_ENABLED=0 go -c '[ "\$CGO_ENABLED" = 0 ] && [ "\$1" = "argument with spaces" ]' sh 'argument with spaces'; then :; else bounded_fixture_fail \$?; fi
+bounded_fixture_begin exit_status
 set +e; run_bounded postgres_client sh -c 'exit 17'; exit_status=\$?; set -e
-[ "\$exit_status" -eq 17 ]
+[ "\$exit_status" -eq 17 ] || bounded_fixture_fail "\$exit_status"
 export PIPE_OUT="$test_root/pipe.out" PRODUCER_MARKER="$test_root/producer.marker" CONSUMER_MARKER="$test_root/consumer.marker"
-sh -c 'printf payload; : >"\$PRODUCER_MARKER"' | run_bounded archive_extract sh -c 'cat >"\$PIPE_OUT"; : >"\$CONSUMER_MARKER"'; [ -f "\$PRODUCER_MARKER" ] && [ -f "\$CONSUMER_MARKER" ] && [ "\$(cat "\$PIPE_OUT")" = payload ]
-printf file-input >"$test_root/stdin.in"; run_bounded artifact_io sh -c 'cat >"\$1"' sh "$test_root/stdin.out" <"$test_root/stdin.in"; [ "\$(cat "$test_root/stdin.out")" = file-input ]
-mkdir "$test_root/cwd"; : >"$test_root/cwd/marker"; expected_cwd=\$(CDPATH= cd -- "$test_root/cwd" && pwd -P); export CWD_OUT="$test_root/cwd.out"; (cd "$test_root/cwd" && run_bounded legacy_build sh -c 'pwd >"\$CWD_OUT"; [ -f marker ]'); actual_cwd=\$(CDPATH= cd -- "\$(cat "\$CWD_OUT")" && pwd -P); [ "\$actual_cwd" = "\$expected_cwd" ]
+bounded_fixture_begin pipeline_stdin
+set +e; sh -c 'printf payload; : >"\$PRODUCER_MARKER"' | run_bounded archive_extract sh -c 'cat >"\$PIPE_OUT"; : >"\$CONSUMER_MARKER"'; pipeline_status=\$?; set -e
+[ "\$pipeline_status" -eq 0 ] && [ -f "\$PRODUCER_MARKER" ] && [ -f "\$CONSUMER_MARKER" ] && [ "\$(cat "\$PIPE_OUT")" = payload ] || bounded_fixture_fail "\$pipeline_status"
+bounded_fixture_begin redirected_stdin
+printf file-input >"$test_root/stdin.in"; if run_bounded artifact_io sh -c 'cat >"\$1"' sh "$test_root/stdin.out" <"$test_root/stdin.in"; then :; else bounded_fixture_fail \$?; fi
+[ "\$(cat "$test_root/stdin.out")" = file-input ] || bounded_fixture_fail content_mismatch
+bounded_fixture_begin working_directory
+mkdir "$test_root/cwd"; : >"$test_root/cwd/marker"; expected_cwd=\$(CDPATH= cd -- "$test_root/cwd" && pwd -P); export CWD_OUT="$test_root/cwd.out"; if (cd "$test_root/cwd" && run_bounded legacy_build sh -c 'pwd >"\$CWD_OUT"; [ -f marker ]'); then :; else bounded_fixture_fail \$?; fi
+actual_cwd=\$(CDPATH= cd -- "\$(cat "\$CWD_OUT")" && pwd -P); [ "\$actual_cwd" = "\$expected_cwd" ] || bounded_fixture_fail cwd_mismatch
 export TERM_MARKER="$test_root/term.marker" CHILD_PID_FILE="$test_root/child.pid"
+bounded_fixture_begin timeout_descendant_cleanup
 if run_bounded legacy_build sh -c 'printf "%s\n" "\$\$" >"\$CHILD_PID_FILE"; trap '\''touch "\$TERM_MARKER"; exit 143'\'' TERM; while :; do sleep 1; done'; then
-  exit 1
+  bounded_fixture_fail unexpected_success
 else
   status=\$?
 fi
-[ "\$status" -eq 124 ]
-[ -f "\$TERM_MARKER" ]
+[ "\$status" -eq 124 ] || bounded_fixture_fail "\$status"
+[ -f "\$TERM_MARKER" ] || bounded_fixture_fail term_marker_missing
 child_pid=\$(cat "\$CHILD_PID_FILE")
-! kill -0 "\$child_pid" 2>/dev/null
+if kill -0 "\$child_pid" 2>/dev/null; then bounded_fixture_fail child_still_running; fi
 elapsed=\$((\$(now_epoch_ms)-start_epoch_ms))
-[ "\$elapsed" -lt 5000 ]
+[ "\$elapsed" -lt 5000 ] || bounded_fixture_fail elapsed_too_large
 SH
 [ -s "$test_root/bounded-harness.sh" ] || { printf '%s\n' 'bounded harness generation failed' >&2; exit 1; }
 chmod +x "$test_root/bounded-harness.sh"
