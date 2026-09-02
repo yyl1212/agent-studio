@@ -17,12 +17,13 @@ import (
 )
 
 type Config struct {
-	OwnerID           string
-	MaxActiveRuns     int
-	LeaseDuration     time.Duration
-	HeartbeatInterval time.Duration
-	ClaimInterval     time.Duration
-	ShutdownTimeout   time.Duration
+	OwnerID             string
+	MaxActiveRuns       int
+	LeaseDuration       time.Duration
+	HeartbeatInterval   time.Duration
+	ClaimInterval       time.Duration
+	QueueSampleInterval time.Duration
+	ShutdownTimeout     time.Duration
 }
 
 type executionRehydrator interface {
@@ -87,6 +88,9 @@ func New(config Config, store workflow.DurableRunStore, rehydrator executionRehy
 	if config.ClaimInterval <= 0 {
 		config.ClaimInterval = 500 * time.Millisecond
 	}
+	if config.QueueSampleInterval <= 0 {
+		config.QueueSampleInterval = 5 * time.Second
+	}
 	if config.ShutdownTimeout <= 0 {
 		config.ShutdownTimeout = 30 * time.Second
 	}
@@ -106,6 +110,17 @@ func (worker *Worker) Run(ctx context.Context) error {
 	if ctx == nil || worker.config.OwnerID == "" || worker.store == nil || worker.rehydrator == nil || worker.executor == nil {
 		return errors.New("worker dependencies are incomplete")
 	}
+	samplerCtx, stopSampler := context.WithCancel(ctx)
+	samplerDone := make(chan struct{})
+	sampler := newQueueSampler(worker.store, telemetryQueueSampleRecorder{telemetry: worker.telemetry})
+	go func() {
+		defer close(samplerDone)
+		sampler.Run(samplerCtx, worker.config.QueueSampleInterval)
+	}()
+	defer func() {
+		stopSampler()
+		<-samplerDone
+	}()
 	completed := make(chan string, worker.config.MaxActiveRuns)
 	active := 0
 	for {
@@ -115,19 +130,16 @@ func (worker *Worker) Run(ctx context.Context) error {
 			if err != nil {
 				worker.telemetry.claim(ctx, "error", time.Since(started))
 				worker.logError(ctx, "run claim failed", "claim_failed", "", err)
-				worker.sampleQueue(ctx)
 				if ctx.Err() != nil {
 					return worker.shutdown(active, completed)
 				}
 			} else if ok {
 				worker.telemetry.claim(ctx, "claimed", time.Since(started))
-				worker.sampleQueue(ctx)
 				active++
 				worker.launch(ctx, claimed, completed)
 				continue
 			} else {
 				worker.telemetry.claim(ctx, "empty", time.Since(started))
-				worker.sampleQueue(ctx)
 			}
 		}
 		var delay <-chan time.Time
@@ -142,17 +154,6 @@ func (worker *Worker) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return worker.shutdown(active, completed)
 		}
-	}
-}
-
-func (worker *Worker) sampleQueue(ctx context.Context) {
-	source, ok := worker.store.(queueStatsSource)
-	if !ok {
-		return
-	}
-	depth, oldest, err := source.RunQueueStats(ctx)
-	if err == nil {
-		worker.telemetry.queue(ctx, depth, oldest)
 	}
 }
 

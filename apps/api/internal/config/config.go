@@ -23,30 +23,31 @@ const (
 )
 
 type Config struct {
-	HTTPAddr                 string
-	DatabaseURL              string
-	WebOrigin                string
-	ModelProvider            string
-	OpenAIBaseURL            string
-	OpenAIAPIKey             string
-	OpenAIDefaultModel       string
-	HTTPNodeAllowPrivate     bool
-	NodeIndexCacheDir        string
-	MaxParallelNodes         int
-	WorkflowTimeout          time.Duration
-	WorkerMaxActiveRuns      int
-	WorkerLeaseDuration      time.Duration
-	WorkerHeartbeatInterval  time.Duration
-	WorkerClaimInterval      time.Duration
-	WorkerShutdownTimeout    time.Duration
-	RunEventPollInterval     time.Duration
-	OTelEndpoint             string
-	OTelServiceName          string
-	OTelResourceAttributes   string
-	OTelExportTimeout        time.Duration
-	OTelCompression          string
-	OTelMetricExportInterval time.Duration
-	RunPayloadEncryptionKey  string
+	HTTPAddr                  string
+	DatabaseURL               string
+	WebOrigin                 string
+	ModelProvider             string
+	OpenAIBaseURL             string
+	OpenAIAPIKey              string
+	OpenAIDefaultModel        string
+	HTTPNodeAllowPrivate      bool
+	NodeIndexCacheDir         string
+	MaxParallelNodes          int
+	WorkflowTimeout           time.Duration
+	WorkerMaxActiveRuns       int
+	WorkerLeaseDuration       time.Duration
+	WorkerHeartbeatInterval   time.Duration
+	WorkerClaimInterval       time.Duration
+	WorkerQueueSampleInterval time.Duration
+	WorkerShutdownTimeout     time.Duration
+	RunEventPollInterval      time.Duration
+	OTelEndpoint              string
+	OTelServiceName           string
+	OTelResourceAttributes    string
+	OTelExportTimeout         time.Duration
+	OTelCompression           string
+	OTelMetricExportInterval  time.Duration
+	RunPayloadEncryptionKey   string
 }
 
 func Load() (Config, error) {
@@ -119,36 +120,52 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		HTTPAddr:                 stringEnv("HTTP_ADDR", ":8080"),
-		DatabaseURL:              stringEnv("DATABASE_URL", defaultDatabaseURL),
-		WebOrigin:                stringEnv("WEB_ORIGIN", "http://localhost:5173"),
-		ModelProvider:            stringEnv("MODEL_PROVIDER", "mock"),
-		OpenAIBaseURL:            os.Getenv("OPENAI_BASE_URL"),
-		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
-		OpenAIDefaultModel:       os.Getenv("OPENAI_DEFAULT_MODEL"),
-		HTTPNodeAllowPrivate:     allowPrivate,
-		NodeIndexCacheDir:        nodeIndexCacheDir,
-		MaxParallelNodes:         maxParallelNodes,
-		WorkflowTimeout:          workflowTimeout,
-		WorkerMaxActiveRuns:      workerMaxActiveRuns,
-		WorkerLeaseDuration:      workerLeaseDuration,
-		WorkerHeartbeatInterval:  workerHeartbeatInterval,
-		WorkerClaimInterval:      workerClaimInterval,
-		WorkerShutdownTimeout:    workerShutdownTimeout,
-		RunEventPollInterval:     runEventPollInterval,
-		OTelEndpoint:             otelEndpoint,
-		OTelServiceName:          stringEnv("OTEL_SERVICE_NAME", defaultOTelServiceName),
-		OTelResourceAttributes:   otelResourceAttributes,
-		OTelExportTimeout:        otelExportTimeout,
-		OTelCompression:          otelCompression,
-		OTelMetricExportInterval: otelMetricExportInterval,
-		RunPayloadEncryptionKey:  runPayloadEncryptionKey,
+		HTTPAddr:                  stringEnv("HTTP_ADDR", ":8080"),
+		DatabaseURL:               stringEnv("DATABASE_URL", defaultDatabaseURL),
+		WebOrigin:                 stringEnv("WEB_ORIGIN", "http://localhost:5173"),
+		ModelProvider:             stringEnv("MODEL_PROVIDER", "mock"),
+		OpenAIBaseURL:             os.Getenv("OPENAI_BASE_URL"),
+		OpenAIAPIKey:              os.Getenv("OPENAI_API_KEY"),
+		OpenAIDefaultModel:        os.Getenv("OPENAI_DEFAULT_MODEL"),
+		HTTPNodeAllowPrivate:      allowPrivate,
+		NodeIndexCacheDir:         nodeIndexCacheDir,
+		MaxParallelNodes:          maxParallelNodes,
+		WorkflowTimeout:           workflowTimeout,
+		WorkerMaxActiveRuns:       workerMaxActiveRuns,
+		WorkerLeaseDuration:       workerLeaseDuration,
+		WorkerHeartbeatInterval:   workerHeartbeatInterval,
+		WorkerClaimInterval:       workerClaimInterval,
+		WorkerQueueSampleInterval: 5 * time.Second,
+		WorkerShutdownTimeout:     workerShutdownTimeout,
+		RunEventPollInterval:      runEventPollInterval,
+		OTelEndpoint:              otelEndpoint,
+		OTelServiceName:           stringEnv("OTEL_SERVICE_NAME", defaultOTelServiceName),
+		OTelResourceAttributes:    otelResourceAttributes,
+		OTelExportTimeout:         otelExportTimeout,
+		OTelCompression:           otelCompression,
+		OTelMetricExportInterval:  otelMetricExportInterval,
+		RunPayloadEncryptionKey:   runPayloadEncryptionKey,
 	}
 
 	if cfg.ModelProvider == "openai-compatible" && cfg.OpenAIBaseURL == "" {
 		return Config{}, fmt.Errorf("MODEL_PROVIDER=openai-compatible requires OPENAI_BASE_URL")
 	}
 
+	return cfg, nil
+}
+
+// LoadWorker loads shared configuration and validates Worker-only settings.
+func LoadWorker() (Config, error) {
+	cfg, err := Load()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.WorkerQueueSampleInterval, err = boundedDurationEnv(
+		"WORKER_QUEUE_SAMPLE_INTERVAL", 5*time.Second, time.Second, time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 

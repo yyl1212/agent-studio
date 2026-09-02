@@ -133,6 +133,78 @@ jobs:
           retention-days: 7
           path: artifacts/durable-runs/
 
+  rc-capacity:
+    name: RC capacity baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CGO_ENABLED: "0"
+      RUN_PAYLOAD_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      RC_CAPACITY_ARTIFACT_DIR: artifacts/rc-capacity
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify capacity contract
+        run: sh scripts/test-rc-capacity-e2e_test.sh
+      - name: Exercise 500-run capacity baseline
+        timeout-minutes: 10
+        run: timeout 10m make test-rc-capacity-e2e
+      - name: Preserve capacity summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rc-capacity-summary
+          if-no-files-found: error
+          retention-days: 7
+          path: artifacts/rc-capacity/summary.json
+      - name: Preserve capacity failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rc-capacity-logs
+          if-no-files-found: ignore
+          retention-days: 7
+          path: artifacts/rc-capacity/*.log
+
+  v04-upgrade-rollback:
+    name: v0.4 upgrade rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: "0"
+      RUN_PAYLOAD_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      V04_UPGRADE_ROLLBACK_ARTIFACT_DIR: artifacts/v04-upgrade-rollback
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify upgrade contract
+        run: sh scripts/test-v05-upgrade-rollback-e2e_test.sh
+      - name: Exercise v0.4 upgrade and rollback
+        timeout-minutes: 10
+        run: timeout 10m make test-v05-upgrade-rollback-e2e
+      - name: Preserve failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v04-upgrade-rollback-logs
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            artifacts/v04-upgrade-rollback/*.log
+            artifacts/v04-upgrade-rollback/failure-summary.json
+
   release-artifacts:
     name: Release artifact snapshot
     runs-on: ubuntu-24.04

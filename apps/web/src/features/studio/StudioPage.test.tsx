@@ -959,13 +959,11 @@ describe('StudioPage', () => {
     let request: Parameters<typeof api.saveWorkflow>[1] | undefined
     await vi.waitFor(() => {
       request = vi.mocked(api.saveWorkflow).mock.calls.at(-1)?.[1]
-      expect(request?.graph.nodes.some((node) => node.type === 'extension.retriever')).toBe(true)
-      expect(request?.graph.nodes.some((node) => node.type === 'extension.webhook')).toBe(true)
+      const retriever = request?.graph.nodes.find((node) => node.type === 'extension.retriever')
+      const webhook = request?.graph.nodes.find((node) => node.type === 'extension.webhook')
+      expect(retriever?.config).toEqual({ documents: [{ id: 'doc-1', text: 'Agent Studio' }], topK: 1 })
+      expect(webhook?.config).toEqual({ path: 'hooks/run', timeoutMs: 2500 })
     }, { timeout: 2000 })
-    const retriever = request?.graph.nodes.find((node) => node.type === 'extension.retriever')
-    const webhook = request?.graph.nodes.find((node) => node.type === 'extension.webhook')
-    expect(retriever?.config).toEqual({ documents: [{ id: 'doc-1', text: 'Agent Studio' }], topK: 1 })
-    expect(webhook?.config).toEqual({ path: 'hooks/run', timeoutMs: 2500 })
   })
 
   it('通过通用配置表单保存 LLM v2 结构化字段并解析动态端口', async () => {

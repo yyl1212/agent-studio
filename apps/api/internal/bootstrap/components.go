@@ -121,12 +121,20 @@ func BuildWorker(common *Common, ownerID string, logger *slog.Logger) (*WorkerCo
 	executionEngine := engine.New(engine.Options{MaxParallel: common.Config.MaxParallelNodes, Timeout: common.Config.WorkflowTimeout, Telemetry: providers})
 	runService := workflow.NewRunService(common.Store, common.Compiler, executionEngine, workflow.WithLogger(logger), workflow.WithRunTelemetry(providers))
 	rehydrator := workerprocess.NewRehydrator(common.Store, common.Compiler, common.Cipher)
-	runner := workerprocess.New(workerprocess.Config{
-		OwnerID: ownerID, MaxActiveRuns: common.Config.WorkerMaxActiveRuns,
-		LeaseDuration: common.Config.WorkerLeaseDuration, HeartbeatInterval: common.Config.WorkerHeartbeatInterval,
-		ClaimInterval: common.Config.WorkerClaimInterval, ShutdownTimeout: common.Config.WorkerShutdownTimeout,
-	}, common.Store, rehydrator, runService, common.Cipher, workerprocess.WithLogger(logger), workerprocess.WithTelemetry(providers))
+	runner := workerprocess.New(durableWorkerConfig(common.Config, ownerID), common.Store, rehydrator, runService, common.Cipher, workerprocess.WithLogger(logger), workerprocess.WithTelemetry(providers))
 	return &WorkerComponents{Common: common, Engine: executionEngine, RunService: runService, Rehydrator: rehydrator, Worker: runner}, nil
+}
+
+func durableWorkerConfig(cfg config.Config, ownerID string) workerprocess.Config {
+	return workerprocess.Config{
+		OwnerID:             ownerID,
+		MaxActiveRuns:       cfg.WorkerMaxActiveRuns,
+		LeaseDuration:       cfg.WorkerLeaseDuration,
+		HeartbeatInterval:   cfg.WorkerHeartbeatInterval,
+		ClaimInterval:       cfg.WorkerClaimInterval,
+		QueueSampleInterval: cfg.WorkerQueueSampleInterval,
+		ShutdownTimeout:     cfg.WorkerShutdownTimeout,
+	}
 }
 
 func BuildAPI(common *Common, logger *slog.Logger) (*APIComponents, error) {

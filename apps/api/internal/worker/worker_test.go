@@ -44,6 +44,68 @@ func TestWorkerDefaultsToOneActiveRun(t *testing.T) {
 	}
 }
 
+func TestWorkerDefaultsNonPositiveQueueSampleInterval(t *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Second} {
+		worker := New(Config{QueueSampleInterval: interval}, nil, nil, nil, nil)
+		if worker.config.QueueSampleInterval != 5*time.Second {
+			t.Fatalf("interval %s defaulted to %s", interval, worker.config.QueueSampleInterval)
+		}
+	}
+}
+
+func TestWorkerSamplesQueueWhileAtCapacity(t *testing.T) {
+	store := &workerStore{
+		claims:       []workflow.ClaimedRun{claimedRun("at-capacity", 1)},
+		queueSampled: make(chan struct{}, 16),
+	}
+	rehydrator := &workerRehydrator{results: map[string]PreparedExecution{"at-capacity": preparedWorkerExecution("at-capacity")}}
+	executor := &workerExecutor{started: make(chan string, 1), release: make(chan struct{})}
+	worker := New(Config{
+		OwnerID:             "worker",
+		MaxActiveRuns:       1,
+		HeartbeatInterval:   time.Second,
+		ClaimInterval:       time.Millisecond,
+		QueueSampleInterval: time.Millisecond,
+		ShutdownTimeout:     time.Second,
+	}, store, rehydrator, executor, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+
+	select {
+	case <-executor.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker to reach capacity")
+	}
+	for {
+		select {
+		case <-store.queueSampled:
+			continue
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	for sample := 0; sample < 2; sample++ {
+		select {
+		case <-store.queueSampled:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for queue sample %d while at capacity", sample+1)
+		}
+	}
+	cancel()
+	executor.release <- struct{}{}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker shutdown")
+	}
+}
+
 func TestWorkerRetriesClaimFailureWithJitter(t *testing.T) {
 	store := &workerStore{claimErrors: []error{errors.New("temporary claim failure")}, claims: []workflow.ClaimedRun{claimedRun("retry-claim", 1)}}
 	rehydrator := &workerRehydrator{results: map[string]PreparedExecution{"retry-claim": preparedWorkerExecution("retry-claim")}}
@@ -59,6 +121,56 @@ func TestWorkerRetriesClaimFailureWithJitter(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkerSamplesQueueDuringContinuousClaimFailuresAndStopsOnCancel(t *testing.T) {
+	const queueSampleInterval = 5 * time.Millisecond
+	store := &workerStore{
+		claimErrAlways: errors.New("continuous claim failure"),
+		claimErrored:   make(chan struct{}, 1),
+		queueSampled:   make(chan struct{}, 1),
+	}
+	worker := New(Config{
+		OwnerID:             "worker",
+		ClaimInterval:       time.Millisecond,
+		QueueSampleInterval: queueSampleInterval,
+		ShutdownTimeout:     time.Second,
+	}, store,
+		&workerRehydrator{results: map[string]PreparedExecution{}},
+		&workerExecutor{started: make(chan string, 1), release: make(chan struct{})}, nil,
+		WithClaimRandom(func() float64 { return 0.5 }))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+
+	select {
+	case <-store.claimErrored:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial claim failure")
+	}
+	initialSamples := waitForWorkerStoreCount(t, "initial queue sample", store.queueCallCount, 0)
+	claimsBefore := store.claimCallCount()
+	waitForWorkerStoreCount(t, "subsequent claim failure", store.claimCallCount, claimsBefore)
+	samplesAfterLaterClaim := store.queueCallCount()
+	laterSamples := waitForWorkerStoreCount(t, "queue sample after subsequent claim failure", store.queueCallCount, samplesAfterLaterClaim)
+	if laterSamples <= initialSamples {
+		t.Fatalf("queue sample count did not grow across claim failures: initial=%d later=%d", initialSamples, laterSamples)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker shutdown")
+	}
+	queueCallsAfterShutdown := store.queueCallCount()
+	time.Sleep(3 * queueSampleInterval)
+	if queueCalls := store.queueCallCount(); queueCalls != queueCallsAfterShutdown {
+		t.Fatalf("queue sampler continued after worker shutdown: calls=%d want=%d", queueCalls, queueCallsAfterShutdown)
 	}
 }
 
@@ -279,29 +391,59 @@ func (executor *workerExecutor) ExecuteLeased(ctx context.Context, prepared *wor
 }
 
 type workerStore struct {
-	mu           sync.Mutex
-	claims       []workflow.ClaimedRun
-	claimErrors  []error
-	claimErrored chan struct{}
-	renewErr     error
-	heartbeat    workflow.LeaseHeartbeat
-	loadedEvents []domain.RunEvent
-	recovered    chan domain.RunRecoveryReason
-	renewed      chan struct{}
-	finalized    chan domain.RunStatus
+	mu             sync.Mutex
+	claims         []workflow.ClaimedRun
+	claimErrors    []error
+	claimErrAlways error
+	claimCalls     int
+	claimErrored   chan struct{}
+	renewErr       error
+	heartbeat      workflow.LeaseHeartbeat
+	loadedEvents   []domain.RunEvent
+	recovered      chan domain.RunRecoveryReason
+	renewed        chan struct{}
+	finalized      chan domain.RunStatus
+	queueSampled   chan struct{}
+	queueCalls     int
+}
+
+func (store *workerStore) RunQueueStats(context.Context) (int64, time.Duration, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.queueCalls++
+	if store.queueSampled != nil {
+		select {
+		case store.queueSampled <- struct{}{}:
+		default:
+		}
+	}
+	return 2, time.Second, nil
 }
 
 func (store *workerStore) SubmitRun(context.Context, workflow.RunSubmission) error { return nil }
 func (store *workerStore) ClaimRun(context.Context, string, time.Duration) (workflow.ClaimedRun, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	store.claimCalls++
 	if len(store.claimErrors) > 0 {
 		err := store.claimErrors[0]
 		store.claimErrors = store.claimErrors[1:]
 		if store.claimErrored != nil {
-			store.claimErrored <- struct{}{}
+			select {
+			case store.claimErrored <- struct{}{}:
+			default:
+			}
 		}
 		return workflow.ClaimedRun{}, false, err
+	}
+	if store.claimErrAlways != nil {
+		if store.claimErrored != nil {
+			select {
+			case store.claimErrored <- struct{}{}:
+			default:
+			}
+		}
+		return workflow.ClaimedRun{}, false, store.claimErrAlways
 	}
 	if len(store.claims) == 0 {
 		return workflow.ClaimedRun{}, false, nil
@@ -309,6 +451,37 @@ func (store *workerStore) ClaimRun(context.Context, string, time.Duration) (work
 	claim := store.claims[0]
 	store.claims = store.claims[1:]
 	return claim, true, nil
+}
+
+func (store *workerStore) claimCallCount() int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.claimCalls
+}
+
+func (store *workerStore) queueCallCount() int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.queueCalls
+}
+
+func waitForWorkerStoreCount(t *testing.T, description string, current func() int, previous int) int {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if count := current(); count > previous {
+			return count
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s after count %d", description, previous)
+			return previous
+		}
+	}
 }
 func (store *workerStore) RenewRunLease(context.Context, domain.RunLease, time.Duration) (workflow.LeaseHeartbeat, error) {
 	if store.renewed != nil {
