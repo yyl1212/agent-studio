@@ -18,6 +18,9 @@ jobs:
     name: Build release artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     env:
       CGO_ENABLED: "0"
     outputs:
@@ -31,6 +34,25 @@ jobs:
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
           test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/main)"
+      - name: Verify successful main CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_sha=$(git rev-parse HEAD)
+          ci_runs=$(mktemp)
+          trap 'rm -f "$ci_runs"' EXIT HUP INT TERM
+          gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch=main -f event=push -f status=completed -f per_page=100 >"$ci_runs"
+          jq -e --arg sha "$head_sha" '
+            .workflow_runs | any(
+              .head_sha == $sha and
+              .head_branch == "main" and
+              .event == "push" and
+              .status == "completed" and
+              .conclusion == "success"
+            )
+          ' "$ci_runs" >/dev/null
       - name: Verify annotated release tag
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         run: |
