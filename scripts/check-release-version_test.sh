@@ -81,16 +81,28 @@ def release_step(workflow, name)
     .find { |step| step["name"] == name } || raise("missing publish step: #{name}")
 end
 
-def case_command(run, pattern, label)
-  match = run.match(pattern)
-  raise "missing #{label} promotion branch" unless match
-  Shellwords.split(match[1].strip)
+def shell_commands(run)
+  run.lines.each_with_object([]) do |line, commands|
+    stripped = line.strip
+    next if stripped.empty?
+    commands << Shellwords.split(stripped)
+  rescue ArgumentError
+    next
+  end
+end
+
+def promotion_commands(run)
+  promotion_case = /\Acase "\$GITHUB_REF_NAME" in\n[ \t]+\*-rc\.\*\)[ \t]+([^\n]+?)[ \t]+;;\n[ \t]+\*\)[ \t]+([^\n]+?)[ \t]+;;\n[ \t]*esac\n?\z/
+  match = run.match(promotion_case)
+  unless match
+    raise "release promotion must select on GITHUB_REF_NAME with RC before stable"
+  end
+  [Shellwords.split(match[1].strip), Shellwords.split(match[2].strip)]
 end
 
 def verify_release_status(workflow)
   promotion = release_step(workflow, "Promote verified release").fetch("run", "")
-  rc_command = case_command(promotion, /^\s*\*-rc\.\*\)\s*(.*?)\s*;;$/m, "RC")
-  stable_command = case_command(promotion, /^\s*\*\)\s*(.*?)\s*;;$/m, "stable")
+  rc_command, stable_command = promotion_commands(promotion)
 
   expected_prefix = ["gh", "release", "edit", "$GITHUB_REF_NAME"]
   raise "RC promotion must edit the selected release" unless rc_command.first(4) == expected_prefix
@@ -118,13 +130,21 @@ def verify_release_status(workflow)
       "draft verification must enumerate checksums.txt",
     "gh release view \"$GITHUB_REF_NAME\" --json assets --jq '.assets[].name' | sort > actual-assets.txt" =>
       "draft verification must read the remote asset names",
-    "diff -u expected-assets.txt actual-assets.txt" =>
-      "draft verification must compare the exact expected and actual asset sets",
     "test \"$(wc -l < actual-assets.txt | tr -d ' ')\" -eq 9" =>
       "draft verification must require exactly nine assets",
   }
   required_asset_fragments.each do |fragment, message|
     raise message unless draft_verification.include?(fragment)
+  end
+
+  commands = shell_commands(draft_verification)
+  expected_diff = ["diff", "-u", "expected-assets.txt", "actual-assets.txt"]
+  asset_diffs = commands.select { |command| command.first == "diff" }
+  unless asset_diffs.length == 1 && asset_diffs.first.first(4) == expected_diff
+    raise "draft verification must compare the exact expected and actual asset sets"
+  end
+  unless asset_diffs == [expected_diff]
+    raise "draft verification asset diff must propagate failures"
   end
 
   required_tag_fragments = {
@@ -136,11 +156,27 @@ def verify_release_status(workflow)
       "draft verification must query the annotated Tag object",
     "test \"$(gh api \"$annotated_api\" --jq '.object.type')\" = commit" =>
       "draft verification must require the Tag object to target a commit",
-    "test \"$(gh api \"$annotated_api\" --jq '.object.sha')\" = \"$(git rev-parse HEAD)\"" =>
-      "draft verification must require the annotated Tag object to target HEAD",
   }
   required_tag_fragments.each do |fragment, message|
     raise message unless draft_verification.include?(fragment)
+  end
+
+  expected_tag_head = [
+    "test",
+    "$(gh api $annotated_api --jq '.object.sha')",
+    "=",
+    "$(git rev-parse HEAD)",
+  ]
+  tag_head_assertions = commands.select do |command|
+    command.first == "test" &&
+      command.fetch(1, "").include?("$annotated_api") &&
+      command.fetch(1, "").include?(".object.sha")
+  end
+  unless tag_head_assertions.length == 1 && tag_head_assertions.first.first(4) == expected_tag_head
+    raise "draft verification must require the annotated Tag object to target HEAD"
+  end
+  unless tag_head_assertions == [expected_tag_head]
+    raise "draft verification Tag-to-HEAD assertion must propagate failures"
   end
 end
 
@@ -160,6 +196,34 @@ begin
 rescue RuntimeError => error
   abort "release status contract violation: #{error.message}"
 end
+
+fixed_selector_fixture = Marshal.load(Marshal.dump(workflow))
+fixed_selector_run = release_step(fixed_selector_fixture, "Promote verified release").fetch("run")
+unless fixed_selector_run.sub!("case \"$GITHUB_REF_NAME\" in", "case \"v0.5.0\" in")
+  abort "failed to construct fixed promotion selector fixture"
+end
+expect_release_status_failure(
+  fixed_selector_fixture,
+  "fixed GA promotion selector",
+  "release promotion must select on GITHUB_REF_NAME with RC before stable",
+)
+
+reordered_branches_fixture = Marshal.load(Marshal.dump(workflow))
+reordered_branches_run = release_step(reordered_branches_fixture, "Promote verified release").fetch("run")
+reordered_lines = reordered_branches_run.lines
+rc_branch_index = reordered_lines.index { |line| line.strip.start_with?("*-rc.*)") }
+stable_branch_index = reordered_lines.index { |line| line.strip.start_with?("*)") }
+unless rc_branch_index && stable_branch_index
+  abort "failed to construct reordered promotion branches fixture"
+end
+reordered_lines[rc_branch_index], reordered_lines[stable_branch_index] =
+  reordered_lines[stable_branch_index], reordered_lines[rc_branch_index]
+reordered_branches_run.replace(reordered_lines.join)
+expect_release_status_failure(
+  reordered_branches_fixture,
+  "stable promotion branch before RC",
+  "release promotion must select on GITHUB_REF_NAME with RC before stable",
+)
 
 rc_latest_fixture = Marshal.load(Marshal.dump(workflow))
 rc_latest_run = release_step(rc_latest_fixture, "Promote verified release").fetch("run")
@@ -202,6 +266,20 @@ expect_release_status_failure(
   "draft verification must compare the exact expected and actual asset sets",
 )
 
+masked_asset_diff_fixture = Marshal.load(Marshal.dump(workflow))
+masked_asset_diff_run = release_step(masked_asset_diff_fixture, "Verify draft asset set").fetch("run")
+unless masked_asset_diff_run.sub!(
+    "diff -u expected-assets.txt actual-assets.txt",
+    "diff -u expected-assets.txt actual-assets.txt || true",
+  )
+  abort "failed to construct masked asset diff fixture"
+end
+expect_release_status_failure(
+  masked_asset_diff_fixture,
+  "masked exact asset set comparison",
+  "draft verification asset diff must propagate failures",
+)
+
 wrong_tag_target_fixture = Marshal.load(Marshal.dump(workflow))
 wrong_tag_target_run = release_step(wrong_tag_target_fixture, "Verify draft asset set").fetch("run")
 wrong_tag_target_run.sub!("git rev-parse HEAD)", "git rev-parse HEAD^)")
@@ -209,6 +287,18 @@ expect_release_status_failure(
   wrong_tag_target_fixture,
   "annotated Tag does not target HEAD",
   "draft verification must require the annotated Tag object to target HEAD",
+)
+
+masked_tag_target_fixture = Marshal.load(Marshal.dump(workflow))
+masked_tag_target_run = release_step(masked_tag_target_fixture, "Verify draft asset set").fetch("run")
+tag_head_assertion = "test \"$(gh api \"$annotated_api\" --jq '.object.sha')\" = \"$(git rev-parse HEAD)\""
+unless masked_tag_target_run.sub!(tag_head_assertion, "#{tag_head_assertion} || true")
+  abort "failed to construct masked Tag-to-HEAD fixture"
+end
+expect_release_status_failure(
+  masked_tag_target_fixture,
+  "masked annotated Tag-to-HEAD assertion",
+  "draft verification Tag-to-HEAD assertion must propagate failures",
 )
 RUBY
 
