@@ -392,6 +392,8 @@ require_match(source, /last_safe_command_label=/, "safe command label state miss
 require_match(source, /set_safe_command_label\(\).*case.*compose_up.*postgres_client.*legacy_build/m, "safe command labels must be enumerated")
 %w[01_annotated_tag 02_legacy_build 03_create_upgrade_source 04_start_legacy_source 05_schema6_source 06_seed_legacy 07_stop_legacy 08_dump_source 09_start_current_api 10_schema7_source 11_assert_transition 12_start_current_worker 13_assert_worker 14_current_smoke 15_stop_current 16_create_rollback_target 17_restore_target 18_start_legacy_target 19_schema6_target 20_assert_rollback].each { |phase| abort "fixed phase #{phase} missing" unless source.include?("current_phase=#{phase}") }
 require_match(source, /Process\.spawn\(\*ARGV,pgroup:true\)/, "bounded supervisor must pass an argv array and own a process group")
+bounded=source[/^run_bounded_until\(\)\s*\{\n(.*?)^\}/m,1] or abort "run_bounded_until missing"
+abort "bounded supervisor must save pipeline stdin before its asynchronous launch" unless bounded.match?(/exec 9<&0.*ruby .*<&9 9<&- &.*bounded_supervisor_pid=\$!.*exec 9<&-/m)
 require_match(source, /go\(\).*legacy_build.*run_bounded.*env CGO_ENABLED=.*\$go_binary.*\$@/, "legacy build environment or argv forwarding missing")
 require_match(source, /run_bounded postgres_client docker compose -f .* exec -T db .*\$@/, "PostgreSQL argv forwarding missing")
 RUBY

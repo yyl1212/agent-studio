@@ -83,8 +83,10 @@ run_bounded_until() {
   bounded_deadline_ms=$1; bounded_command_label=$2; shift 2
   set_safe_command_label "$bounded_command_label" || return 2
   bounded_command_budget_ms=$(remaining_budget_ms "$bounded_deadline_ms") || return 124
-  ruby -e 'budget=ARGV.shift.to_i; child=nil; stop=lambda{|sig| begin Process.kill(sig,-child) if child rescue Errno::ESRCH end}; child=Process.spawn(*ARGV,pgroup:true); %w[HUP INT TERM].each{|sig| Signal.trap(sig){stop.call("TERM"); sleep 0.1; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 143}}; deadline=Process.clock_gettime(Process::CLOCK_MONOTONIC)+budget/1000.0; grace=[1.0,budget/1000.0].min; term_at=deadline-grace; loop do; waited=Process.waitpid(child,Process::WNOHANG); exit($?.exitstatus || 128+$?.termsig) if waited; if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=term_at; stop.call("TERM"); loop do; waited=Process.waitpid(child,Process::WNOHANG); exit 124 if waited; break if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline; sleep 0.05; end; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 124; end; sleep 0.05; end' "$bounded_command_budget_ms" "$@" <&0 &
+  exec 9<&0
+  ruby -e 'budget=ARGV.shift.to_i; child=nil; stop=lambda{|sig| begin Process.kill(sig,-child) if child rescue Errno::ESRCH end}; child=Process.spawn(*ARGV,pgroup:true); %w[HUP INT TERM].each{|sig| Signal.trap(sig){stop.call("TERM"); sleep 0.1; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 143}}; deadline=Process.clock_gettime(Process::CLOCK_MONOTONIC)+budget/1000.0; grace=[1.0,budget/1000.0].min; term_at=deadline-grace; loop do; waited=Process.waitpid(child,Process::WNOHANG); exit($?.exitstatus || 128+$?.termsig) if waited; if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=term_at; stop.call("TERM"); loop do; waited=Process.waitpid(child,Process::WNOHANG); exit 124 if waited; break if Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline; sleep 0.05; end; stop.call("KILL"); Process.waitpid(child) rescue nil; exit 124; end; sleep 0.05; end' "$bounded_command_budget_ms" "$@" <&9 9<&- &
   bounded_supervisor_pid=$!
+  exec 9<&-
   wait_bounded "$bounded_supervisor_pid"
 }
 run_bounded() { bounded_label=$1; shift; run_bounded_until "$deadline_epoch_ms" "$bounded_label" "$@"; }
