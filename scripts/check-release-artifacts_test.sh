@@ -8,19 +8,29 @@ release_config="$repo_root/.goreleaser.yaml"
 workflow="$repo_root/.github/workflows/release.yml"
 
 # Keep the release configuration constrained to the nine CLI assets verified below.
-build_block=$(sed -n '/^builds:/,/^archives:/p' "$release_config")
-test "$(printf '%s\n' "$build_block" | grep -Ec '^      - (linux|darwin)$')" -eq 2
-test "$(printf '%s\n' "$build_block" | grep -Ec '^      - (amd64|arm64)$')" -eq 2
-test "$(printf '%s\n' "$build_block" | grep -Fxc '      - linux')" -eq 1
-test "$(printf '%s\n' "$build_block" | grep -Fxc '      - darwin')" -eq 1
-test "$(printf '%s\n' "$build_block" | grep -Fxc '      - amd64')" -eq 1
-test "$(printf '%s\n' "$build_block" | grep -Fxc '      - arm64')" -eq 1
-grep -F 'source:' "$release_config" >/dev/null
-grep -F '  enabled: false' "$release_config" >/dev/null
-grep -F 'release:' "$release_config" >/dev/null
-grep -F '  disable: true' "$release_config" >/dev/null
-grep -F '    artifacts: archive' "$release_config" >/dev/null
-test "$(grep -Eic 'docker|windows|sign|notar' "$release_config")" -eq 0
+yaml_list() {
+	awk -v section="$1" '$0 == "    " section ":" { in_list = 1; next } in_list && /^      - / { print substr($0, 9); next } in_list { exit }' "$release_config"
+}
+goos=$(yaml_list goos)
+goarch=$(yaml_list goarch)
+test "$goos" = "$(printf 'linux\ndarwin')"
+test "$goarch" = "$(printf 'amd64\narm64')"
+
+yaml_value() {
+	awk -v section="$1" -v key="$2" '$0 == section ":" { in_section = 1; next } in_section && $0 ~ "^  " key ":" { print $2; exit } in_section && /^[^ ]/ { exit }' "$release_config"
+}
+test "$(yaml_value source enabled)" = false
+test "$(yaml_value release disable)" = true
+
+sbom_artifacts=$(awk '$0 == "sboms:" { in_section = 1; next } in_section && /^    artifacts:/ { print $2; next } in_section && /^[^ ]/ { exit }' "$release_config")
+test "$sbom_artifacts" = archive
+test "$(printf '%s\n' "$sbom_artifacts" | wc -l | tr -d ' ')" -eq 1
+archive_formats=$(yaml_list formats)
+test "$archive_formats" = tar.gz
+test "$(printf '%s\n' "$archive_formats" | wc -l | tr -d ' ')" -eq 1
+if grep -Eq '^(dockers|nfpms|brews|scoops|snapcrafts|signs|notarize|dmg|pkgs):' "$release_config"; then
+	exit 1
+fi
 
 expected_assets="$repo_root/.release-artifacts.expected"
 workflow_assets="$repo_root/.release-artifacts.workflow"
@@ -33,12 +43,17 @@ trap 'rm -f "$expected_assets" "$workflow_assets"' EXIT HUP INT TERM
 	printf 'checksums.txt\n'
 } | sort >"$expected_assets"
 
-workflow_targets=$(sed -n 's/^[[:space:]]*for target in \(.*\); do$/\1/p' "$workflow")
+draft_block=$(sed -n '/^      - name: Verify draft asset set$/,/^      - name:/p' "$workflow")
+workflow_targets=$(printf '%s\n' "$draft_block" | sed -n 's/^[[:space:]]*for target in \(.*\); do$/\1/p')
 test "$workflow_targets" = 'darwin_amd64 darwin_arm64 linux_amd64 linux_arm64'
+workflow_templates=$(printf '%s\n' "$draft_block" | sed -n "s/^[[:space:]]*printf '\(agent-studio_[^']*\)\\\\n'.*/\1/p")
+test "$workflow_templates" = "$(printf 'agent-studio_%%s_%%s.tar.gz\nagent-studio_%%s_%%s.tar.gz.spdx.json')"
+test "$(printf '%s\n' "$draft_block" | grep -Fxc "            printf 'checksums.txt\\n'")" -eq 1
 {
 	for target in $workflow_targets; do
-		printf 'agent-studio_v0.5.0-rc.1_%s.tar.gz\n' "$target"
-		printf 'agent-studio_v0.5.0-rc.1_%s.tar.gz.spdx.json\n' "$target"
+		printf '%s\n' "$workflow_templates" | while IFS= read -r template; do
+			printf "$template\n" v0.5.0-rc.1 "$target"
+		done
 	done
 	printf 'checksums.txt\n'
 } | sort >"$workflow_assets"
