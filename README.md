@@ -144,9 +144,10 @@ Studio 顶部“版本历史”已支持发布版本时间线、任意两个快�
 
 运行由 Worker 从 PostgreSQL 队列领取。API 或浏览器断开不会中止后台执行；Worker 异常退出后，纯节点可按租约自动接管，只读或有副作用的不确定节点会暂停为“等待人工恢复”。管理员可在“运行”详情的恢复入口逐个确认重试或终止运行，公开 Agent 页面不会暴露这些管理操作。Worker 内的队列采样会记录队列深度和最老排队时间；它用于观察当前实例，不代替容量规划。
 
-RC 容量基线固定为 1 API、1 Worker、Worker concurrency 4、500 Mock runs 和 10 分钟命令上限。该演练不是 SLA；它只检查本地隔离 Compose 环境中运行、租约和队列是否收敛：
+RC 容量基线固定为 1 API、1 Worker、Worker concurrency 4、500 Mock runs 和 10 分钟命令上限。该演练不是 SLA；它只检查本地隔离 Compose 环境中运行、租约和队列是否收敛。只在隔离的非生产环境运行；先确认 Docker、Compose、curl、jq、Ruby 和 Go 可用，再导出专用测试密钥（不要使用真实或固定密钥）：
 
 ```bash
+export RUN_PAYLOAD_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 make test-rc-capacity-e2e
 ```
 
