@@ -5,8 +5,31 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(git -C "$script_dir/.." rev-parse --show-toplevel)
 
 ruby - "$repo_root/.github/workflows/release.yml" <<'RUBY'
-require "shellwords"
+require "digest"
+require "fileutils"
+require "open3"
+require "tmpdir"
 require "yaml"
+
+# Bash dynamic evaluation cannot be proven safe with a token denylist. These
+# digests are the explicit review boundary; the behavior tests below execute
+# the approved scripts against controlled external commands.
+APPROVED_MAIN_HEAD_SHA256 = "5db480b403882a20af5fff2bc543b2635d64b366c568ffceac305eab8f4f1f3c"
+APPROVED_MAIN_CI_GATE_SHA256 = "56b924ec1fe7949aba9556647573d9bc583a23fc67e16eaf4da9199dad2516b0"
+APPROVED_PUBLISH_RUN_SHA256 = {
+  "Reverify artifact collection" => "4fe84387c3b0db2af7b97a34e88da183f245c41244be2c11ea88163972656ee2",
+  "Assert release does not exist" => "f1b2f39fa369f394d1205273664a5eba51d5aede67653a63600981af8813608f",
+  "Create draft and upload tested assets" => "f2357f70fd8eac20e0f51c9aa62e8253c48ee0092aa70efdbe04b37b4e93c8ee",
+  "Verify draft asset set" => "307aebb80ce1feeeac9b96b3d4bdbb2ae2e84da91bae121f72e4f30f60d0936a",
+  "Promote verified release" => "6e9fe085732fdf10dcc87dbed2adf489bd59bae3a41a9bde2d658c2b3b8c6454",
+  "Verify published release state" => "5e8cc76f28f04869edaac8ac00f569d2a041d03ee01541af4994497ea81e406b",
+  "Verify immutable release" => "45c28156778dce2de987147bbaeb7353c0c3559cd637ade1659e7ab52475202d",
+}.freeze
+APPROVED_PUBLISH_RUN_ENV = {
+  "Reverify artifact collection" => {
+    "ARTIFACT_VERSION" => "${{ needs.build.outputs.artifact_version }}",
+  },
+}.freeze
 
 workflow_path = ARGV.fetch(0)
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
@@ -15,6 +38,9 @@ def verify_main_ci_gate(workflow)
   unless workflow.fetch("permissions", {}) == {"contents" => "read"}
     raise "workflow permissions must be exactly contents: read"
   end
+  unless workflow.fetch("env", {}).empty? && !workflow.key?("defaults")
+    raise "main CI gate execution context must match approved template"
+  end
 
   build_job = workflow.fetch("jobs").fetch("build")
   if build_job.key?("if")
@@ -22,6 +48,9 @@ def verify_main_ci_gate(workflow)
   end
   if build_job.key?("continue-on-error")
     raise "release build job must propagate failures"
+  end
+  unless build_job.fetch("env", {}) == {"CGO_ENABLED" => "0"} && !build_job.key?("defaults")
+    raise "main CI gate execution context must match approved template"
   end
   build_permissions = build_job.fetch("permissions", {})
   unless build_permissions.fetch("actions", nil) == "read"
@@ -39,6 +68,25 @@ def verify_main_ci_gate(workflow)
   gate_index = step_names.index("Verify successful main CI")
   raise "missing Verify successful main CI step" unless gate_index
 
+  approved_prefix = ["Checkout", "Verify main head", "Verify successful main CI"]
+  unless build_steps.first(gate_index + 1).map { |step| step.fetch("name", "") } == approved_prefix
+    raise "main CI gate execution context must match approved template"
+  end
+  checkout = build_steps.fetch(0)
+  expected_checkout = {
+    "name" => "Checkout",
+    "uses" => "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "with" => {"fetch-depth" => 0},
+  }
+  unless checkout == expected_checkout
+    raise "main CI gate execution context must match approved template"
+  end
+  main_head = build_steps.fetch(1)
+  unless main_head.keys.sort == %w[name run] &&
+      Digest::SHA256.hexdigest(main_head.fetch("run")) == APPROVED_MAIN_HEAD_SHA256
+    raise "main CI gate execution context must match approved template"
+  end
+
   gate = build_steps.fetch(gate_index)
   unless gate.fetch("env", {}) == {"GH_TOKEN" => "${{ github.token }}"}
     raise "main CI gate must use only github.token"
@@ -49,65 +97,13 @@ def verify_main_ci_gate(workflow)
   if gate.key?("continue-on-error")
     raise "main CI gate must propagate failures"
   end
+  unless gate.keys.sort == %w[env name run]
+    raise "main CI gate execution context must match approved template"
+  end
 
   run = gate.fetch("run", "")
-  required_fragments = {
-    "head_sha=$(git rev-parse HEAD)" => "main CI gate must derive the exact release SHA from HEAD",
-    "actions/workflows/ci.yml/runs" => "main CI gate must query the ci.yml workflow runs endpoint",
-    "--method GET" => "main CI gate must query workflow runs with GET",
-    "branch=main" => "main CI gate must query only main runs",
-    "event=push" => "main CI gate must query only push runs",
-    "status=completed" => "main CI gate must query only completed runs",
-    "--arg sha \"$head_sha\"" => "main CI gate must pass the release SHA to jq",
-    ".head_sha == $sha" => "main CI gate must require the exact release SHA",
-    ".head_branch == \"main\"" => "main CI gate must require the main branch",
-    ".event == \"push\"" => "main CI gate must require a push event",
-    ".status == \"completed\"" => "main CI gate must require completed status",
-    ".conclusion == \"success\"" => "main CI gate must require a successful conclusion",
-  }
-  required_fragments.each do |fragment, message|
-    raise message unless run.include?(fragment)
-  end
-
-  begin
-    shell_tokens = Shellwords.split(run)
-  rescue ArgumentError
-    raise "main CI gate run script must have valid shell quoting"
-  end
-
-  critical_function = /(?:\A|\n)\s*(?:function\s+)?(?:jq|gh|git)\s*(?:\(\s*\))?\s*(?:\n\s*)?\{/
-  forbidden_shell_controls = %w[
-    alias unalias function eval source . builtin command enable hash export unset
-    declare typeset readonly set exit return break continue if then else elif fi
-    case esac while until for select do done time coproc env exec nice nohup timeout
-    stdbuf xargs sudo sh bash zsh
-  ]
-  redefines_critical_command = run.match?(critical_function) ||
-    shell_tokens.any? { |token| forbidden_shell_controls.include?(token) } ||
-    shell_tokens.any? { |token| token.match?(/\A(?:PATH|BASH_ENV|ENV|SHELLOPTS)=/) }
-  if redefines_critical_command
-    raise "main CI gate must not redefine or wrap critical commands"
-  end
-
-  expected_cleanup_trap = ["trap", "rm -f \"$ci_runs\"", "EXIT", "HUP", "INT", "TERM"]
-  trap_commands = run.lines.select { |line| line.match?(/\btrap\b/) }
-    .map { |line| Shellwords.split(line.strip) }
-  unless trap_commands == [expected_cleanup_trap]
-    raise "main CI gate trap must only clean ci_runs without changing exit status"
-  end
-
-  jq_index = shell_tokens.rindex("jq")
-  unless shell_tokens.count("jq") == 1 &&
-      jq_index && jq_index.positive? &&
-      shell_tokens[jq_index - 1] == ">$ci_runs"
-    raise "main CI gate jq assertion must execute directly without control operators"
-  end
-  jq_tokens = jq_index ? shell_tokens[jq_index..] : []
-  jq_prefix = ["jq", "-e", "--arg", "sha", "$head_sha"]
-  unless jq_tokens.length == 8 &&
-      jq_tokens.first(5) == jq_prefix &&
-      jq_tokens[-2, 2] == ["$ci_runs", ">/dev/null"]
-    raise "main CI gate jq assertion must be the final unmasked command"
+  unless Digest::SHA256.hexdigest(run) == APPROVED_MAIN_CI_GATE_SHA256
+    raise "main CI gate run script must match approved template"
   end
 
   before_gate = ["Verify main head"]
@@ -121,6 +117,100 @@ def verify_main_ci_gate(workflow)
     index = step_names.index(name)
     raise "missing build step: #{name}" unless index
     raise "main CI gate must precede #{name}" unless gate_index < index
+  end
+end
+
+def write_executable(path, content)
+  File.write(path, content)
+  File.chmod(0o755, path)
+end
+
+def run_github_bash(run, env, chdir)
+  Open3.capture3(
+    env,
+    "/bin/bash",
+    "--noprofile",
+    "--norc",
+    "-e",
+    "-o",
+    "pipefail",
+    "-c",
+    run,
+    chdir: chdir,
+  )
+end
+
+def verify_main_ci_gate_behavior(workflow)
+  run = workflow.fetch("jobs").fetch("build").fetch("steps")
+    .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
+
+  Dir.mktmpdir("agent-studio-main-ci-gate.") do |root|
+    fake_bin = File.join(root, "bin")
+    FileUtils.mkdir_p(fake_bin)
+    gh_log = File.join(root, "gh.log")
+    jq_log = File.join(root, "jq.log")
+
+    write_executable(File.join(fake_bin, "git"), <<~'SH')
+      #!/bin/sh
+      test "$*" = "rev-parse HEAD" || exit 64
+      printf '%s\n' deadbeef
+    SH
+    write_executable(File.join(fake_bin, "gh"), <<~'SH')
+      #!/bin/sh
+      expected='api --method GET repos/owner/repo/actions/workflows/ci.yml/runs -f branch=main -f event=push -f status=completed -f per_page=100'
+      printf '%s|%s\n' "$GH_TOKEN" "$*" > "$FAKE_GH_LOG"
+      test "$*" = "$expected" || exit 65
+      printf '%s\n' '{"workflow_runs":[]}'
+    SH
+    write_executable(File.join(fake_bin, "jq"), <<~'SH')
+      #!/bin/sh
+      : > "$FAKE_JQ_LOG"
+      for argument do
+        printf '%s\n' "$argument" >> "$FAKE_JQ_LOG"
+      done
+      exit "${FAKE_JQ_STATUS:-0}"
+    SH
+
+    base_env = {
+      "BASH_ENV" => nil,
+      "ENV" => nil,
+      "FAKE_GH_LOG" => gh_log,
+      "FAKE_JQ_LOG" => jq_log,
+      "GH_TOKEN" => "trusted-job-token",
+      "GITHUB_REPOSITORY" => "owner/repo",
+      "PATH" => "#{fake_bin}:/usr/bin:/bin",
+    }
+    _stdout, stderr, status = run_github_bash(run, base_env, root)
+    unless status.success?
+      raise "approved main CI gate failed with controlled successful dependencies: #{stderr}"
+    end
+
+    expected_gh = "trusted-job-token|api --method GET repos/owner/repo/actions/workflows/ci.yml/runs " \
+      "-f branch=main -f event=push -f status=completed -f per_page=100\n"
+    unless File.read(gh_log) == expected_gh
+      raise "approved main CI gate emitted an unexpected gh query"
+    end
+    jq_arguments = File.read(jq_log)
+    [
+      "-e\n--arg\nsha\ndeadbeef\n",
+      ".workflow_runs | any(",
+      ".head_sha == $sha",
+      ".head_branch == \"main\"",
+      ".event == \"push\"",
+      ".status == \"completed\"",
+      ".conclusion == \"success\"",
+    ].each do |fragment|
+      raise "approved main CI gate emitted an unexpected jq assertion" unless jq_arguments.include?(fragment)
+    end
+
+    _stdout, _stderr, failed_status = run_github_bash(
+      run,
+      base_env.merge("FAKE_JQ_STATUS" => "42"),
+      root,
+    )
+    unless failed_status.exitstatus == 42
+      raise "main CI gate must propagate a failing jq assertion"
+    end
   end
 end
 
@@ -144,32 +234,31 @@ def verify_release_credentials(workflow)
   unless publish_job.fetch("env", {}) == expected_publish_env
     raise "publish env must contain only CGO_ENABLED and github.token"
   end
+  if workflow.key?("defaults") || publish_job.key?("defaults") || publish_job.key?("continue-on-error")
+    raise "publish run scripts must match approved templates"
+  end
 
-  publish_job.fetch("steps").each do |step|
+  publish_steps = publish_job.fetch("steps")
+  publish_steps.each do |step|
     token_env = step.fetch("env", {}).select { |name, _value| name.match?(/token/i) }
     unless token_env.empty? || token_env == {"GH_TOKEN" => "${{ github.token }}"}
       raise "publish steps must not override release token credentials"
     end
+  end
 
-    run = step.fetch("run", "")
-    begin
-      run_tokens = Shellwords.split(run)
-    rescue ArgumentError
-      raise "publish run scripts must have valid shell quoting"
-    end
-    token_identifier = /\b[A-Za-z_][A-Za-z0-9_]*TOKEN[A-Za-z0-9_]*\b/i
-    untrusted_expression = /\$\{\{\s*(?:vars|secrets)\b/
-    persistent_environment_channel = /\b(?:GITHUB_ENV|GITHUB_PATH|BASH_ENV)\b/
-    environment_mutators = %w[
-      export unset declare typeset readonly local read eval source . env set exec
-    ]
-    rewrites_environment = run_tokens.any? { |token| environment_mutators.include?(token) } ||
-      run_tokens.each_cons(2).any? { |command, option| command == "printf" && option == "-v" }
-    if run.match?(token_identifier) ||
-        run.match?(untrusted_expression) ||
-        run.match?(persistent_environment_channel) ||
-        rewrites_environment
-      raise "publish run scripts must not reference or rewrite token credentials"
+  publish_run_steps = publish_steps.select { |step| step.key?("run") }
+  unless publish_run_steps.map { |step| step.fetch("name", "") }.sort == APPROVED_PUBLISH_RUN_SHA256.keys.sort
+    raise "publish run scripts must match approved templates"
+  end
+  publish_run_steps.each do |step|
+    name = step.fetch("name")
+    expected_digest = APPROVED_PUBLISH_RUN_SHA256.fetch(name)
+    expected_env = APPROVED_PUBLISH_RUN_ENV.fetch(name, {})
+    expected_keys = expected_env.empty? ? %w[name run] : %w[env name run]
+    unless step.keys.sort == expected_keys &&
+        step.fetch("env", {}) == expected_env &&
+        Digest::SHA256.hexdigest(step.fetch("run")) == expected_digest
+      raise "publish run scripts must match approved templates"
     end
   end
 
@@ -244,6 +333,7 @@ end
 
 begin
   verify_main_ci_gate(workflow)
+  verify_main_ci_gate_behavior(workflow)
 rescue RuntimeError => error
   abort "release workflow contract violation: #{error.message}"
 end
@@ -271,7 +361,7 @@ missing_sha_run.sub!(".head_sha == $sha", ".head_sha != $sha")
 expect_main_ci_gate_failure(
   missing_sha_fixture,
   "missing exact SHA predicate",
-  "main CI gate must require the exact release SHA",
+  "main CI gate run script must match approved template",
 )
 
 pull_request_fixture = Marshal.load(Marshal.dump(workflow))
@@ -281,7 +371,7 @@ pull_request_run.sub!("event=push", "event=pull_request")
 expect_main_ci_gate_failure(
   pull_request_fixture,
   "pull_request event query",
-  "main CI gate must query only push runs",
+  "main CI gate run script must match approved template",
 )
 
 failed_conclusion_fixture = Marshal.load(Marshal.dump(workflow))
@@ -291,7 +381,7 @@ failed_conclusion_run.sub!(".conclusion == \"success\"", ".conclusion == \"failu
 expect_main_ci_gate_failure(
   failed_conclusion_fixture,
   "non-success conclusion",
-  "main CI gate must require a successful conclusion",
+  "main CI gate run script must match approved template",
 )
 
 conditional_build_fixture = Marshal.load(Marshal.dump(workflow))
@@ -329,7 +419,7 @@ end
 expect_main_ci_gate_failure(
   masked_jq_fixture,
   "masked jq failure",
-  "main CI gate jq assertion must be the final unmasked command",
+  "main CI gate run script must match approved template",
 )
 
 negated_jq_fixture = Marshal.load(Marshal.dump(workflow))
@@ -341,7 +431,7 @@ end
 expect_main_ci_gate_failure(
   negated_jq_fixture,
   "negated jq assertion",
-  "main CI gate jq assertion must execute directly without control operators",
+  "main CI gate run script must match approved template",
 )
 
 shadowed_jq_fixture = Marshal.load(Marshal.dump(workflow))
@@ -356,7 +446,22 @@ end
 expect_main_ci_gate_failure(
   shadowed_jq_fixture,
   "jq function shadows external command",
-  "main CI gate must not redefine or wrap critical commands",
+  "main CI gate run script must match approved template",
+)
+
+dynamically_shadowed_jq_fixture = Marshal.load(Marshal.dump(workflow))
+dynamically_shadowed_jq_run = dynamically_shadowed_jq_fixture.fetch("jobs").fetch("build").fetch("steps")
+  .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
+unless dynamically_shadowed_jq_run.sub!(
+    "head_sha=$(git rev-parse HEAD)",
+    "x=eval; $x \"jq(){ :; }\"\nhead_sha=$(git rev-parse HEAD)",
+  )
+  abort "failed to construct dynamically shadowed jq fixture"
+end
+expect_main_ci_gate_failure(
+  dynamically_shadowed_jq_fixture,
+  "dynamically evaluated jq function",
+  "main CI gate run script must match approved template",
 )
 
 aliased_jq_fixture = Marshal.load(Marshal.dump(workflow))
@@ -366,7 +471,7 @@ aliased_jq_run.prepend("alias jq='true'\n")
 expect_main_ci_gate_failure(
   aliased_jq_fixture,
   "jq alias shadows external command",
-  "main CI gate must not redefine or wrap critical commands",
+  "main CI gate run script must match approved template",
 )
 
 wrapped_jq_fixture = Marshal.load(Marshal.dump(workflow))
@@ -378,7 +483,7 @@ end
 expect_main_ci_gate_failure(
   wrapped_jq_fixture,
   "command wrapper invokes jq",
-  "main CI gate must not redefine or wrap critical commands",
+  "main CI gate run script must match approved template",
 )
 
 early_exit_fixture = Marshal.load(Marshal.dump(workflow))
@@ -388,7 +493,7 @@ early_exit_run.prepend("exit 0\n")
 expect_main_ci_gate_failure(
   early_exit_fixture,
   "gate exits before jq",
-  "main CI gate must not redefine or wrap critical commands",
+  "main CI gate run script must match approved template",
 )
 
 masked_gate_trap_fixture = Marshal.load(Marshal.dump(workflow))
@@ -401,7 +506,7 @@ end
 expect_main_ci_gate_failure(
   masked_gate_trap_fixture,
   "EXIT trap masks jq failure",
-  "main CI gate trap must only clean ci_runs without changing exit status",
+  "main CI gate run script must match approved template",
 )
 
 bracket_secret_fixture = Marshal.load(Marshal.dump(workflow))
@@ -451,7 +556,7 @@ run_token_override["run"] =
 expect_release_credentials_failure(
   run_token_override_fixture,
   "publish run exports vars token",
-  "publish run scripts must not reference or rewrite token credentials",
+  "publish run scripts must match approved templates",
 )
 
 unset_token_fixture = Marshal.load(Marshal.dump(workflow))
@@ -461,7 +566,24 @@ unset_token_step["run"] = "unset GH_TOKEN\n#{unset_token_step.fetch("run")}"
 expect_release_credentials_failure(
   unset_token_fixture,
   "publish run unsets inherited token",
-  "publish run scripts must not reference or rewrite token credentials",
+  "publish run scripts must match approved templates",
+)
+
+dynamic_token_override_fixture = Marshal.load(Marshal.dump(workflow))
+dynamic_token_override_step = dynamic_token_override_fixture.fetch("jobs").fetch("publish").fetch("steps")
+  .find { |step| step["name"] == "Promote verified release" }
+dynamic_token_override_step["run"] = <<~SHELL + dynamic_token_override_step.fetch("run")
+  a=ex
+  a="${a}port"
+  b=GH_
+  b="${b}TO"
+  b="${b}KEN"
+  "$a" "$b=attacker"
+SHELL
+expect_release_credentials_failure(
+  dynamic_token_override_fixture,
+  "publish run dynamically exports GH_TOKEN",
+  "publish run scripts must match approved templates",
 )
 
 workflow_env_fixture = Marshal.load(Marshal.dump(workflow))

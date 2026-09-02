@@ -71,8 +71,16 @@ printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh colle
 expect_failure 'rendered snapshot version mismatch in .goreleaser.yaml (rendered): got vv0.5.0-snapshot' check_release_versions "$double_v_root"
 
 ruby - "$repo_root/.github/workflows/release.yml" <<'RUBY'
-require "shellwords"
+require "digest"
+require "fileutils"
+require "open3"
+require "tmpdir"
 require "yaml"
+
+# Pin the complete security-critical scripts, then execute the approved text
+# below. Dynamic Bash syntax cannot bypass a digest without an explicit review.
+APPROVED_DRAFT_VERIFICATION_SHA256 = "307aebb80ce1feeeac9b96b3d4bdbb2ae2e84da91bae121f72e4f30f60d0936a"
+APPROVED_PROMOTION_SHA256 = "6e9fe085732fdf10dcc87dbed2adf489bd59bae3a41a9bde2d658c2b3b8c6454"
 
 workflow = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
 
@@ -81,117 +89,14 @@ def release_step(workflow, name)
     .find { |step| step["name"] == name } || raise("missing publish step: #{name}")
 end
 
-def shell_commands(run)
-  run.lines.each_with_object([]) do |line, commands|
-    stripped = line.strip
-    next if stripped.empty?
-    commands << Shellwords.split(stripped)
-  rescue ArgumentError
-    next
-  end
-end
-
-def promotion_commands(run)
-  promotion_case = /\Acase "\$GITHUB_REF_NAME" in\n[ \t]+\*-rc\.\*\)[ \t]+([^\n]+?)[ \t]+;;\n[ \t]+\*\)[ \t]+([^\n]+?)[ \t]+;;\n[ \t]*esac\n?\z/
-  match = run.match(promotion_case)
-  unless match
-    raise "release promotion must select on GITHUB_REF_NAME with RC before stable"
-  end
-  [Shellwords.split(match[1].strip), Shellwords.split(match[2].strip)]
-end
-
 def verify_release_status(workflow)
   promotion = release_step(workflow, "Promote verified release").fetch("run", "")
-  rc_command, stable_command = promotion_commands(promotion)
-
-  expected_prefix = ["gh", "release", "edit", "$GITHUB_REF_NAME"]
-  raise "RC promotion must edit the selected release" unless rc_command.first(4) == expected_prefix
-  raise "RC promotion must clear draft state" unless rc_command.include?("--draft=false")
-  raise "RC promotion must set prerelease state" unless rc_command.include?("--prerelease")
-  raise "RC promotion must not set Latest" if rc_command.include?("--latest")
-  unless rc_command == expected_prefix + ["--draft=false", "--prerelease"]
-    raise "RC promotion contains unexpected arguments"
-  end
-
-  expected_stable = expected_prefix + ["--draft=false", "--prerelease=false", "--latest"]
-  unless stable_command == expected_stable
-    raise "stable promotion must clear draft and prerelease state and set Latest"
-  end
-
   draft_verification = release_step(workflow, "Verify draft asset set").fetch("run", "")
-  required_asset_fragments = {
-    "for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do" =>
-      "draft verification must enumerate exactly four release targets",
-    "printf 'agent-studio_%s_%s.tar.gz\\n' \"$GITHUB_REF_NAME\" \"$target\"" =>
-      "draft verification must enumerate release archives",
-    "printf 'agent-studio_%s_%s.tar.gz.spdx.json\\n' \"$GITHUB_REF_NAME\" \"$target\"" =>
-      "draft verification must enumerate release SBOMs",
-    "printf 'checksums.txt\\n'" =>
-      "draft verification must enumerate checksums.txt",
-    "gh release view \"$GITHUB_REF_NAME\" --json assets --jq '.assets[].name' | sort > actual-assets.txt" =>
-      "draft verification must read the remote asset names",
-    "test \"$(wc -l < actual-assets.txt | tr -d ' ')\" -eq 9" =>
-      "draft verification must require exactly nine assets",
-  }
-  required_asset_fragments.each do |fragment, message|
-    raise message unless draft_verification.include?(fragment)
+  unless Digest::SHA256.hexdigest(draft_verification) == APPROVED_DRAFT_VERIFICATION_SHA256
+    raise "draft verification run script must match approved template"
   end
-
-  commands = shell_commands(draft_verification)
-  expected_cleanup_trap = [
-    "trap",
-    "rm -rf \"$remote_dist\"",
-    "EXIT",
-    "HUP",
-    "INT",
-    "TERM",
-  ]
-  cleanup_traps = commands.select do |command|
-    command.any? { |token| token.match?(/\btrap\b/) }
-  end
-  unless cleanup_traps == [expected_cleanup_trap]
-    raise "draft verification trap must only clean remote_dist without changing exit status"
-  end
-
-  expected_diff = ["diff", "-u", "expected-assets.txt", "actual-assets.txt"]
-  asset_diffs = commands.select { |command| command.first == "diff" }
-  unless asset_diffs.length == 1 && asset_diffs.first.first(4) == expected_diff
-    raise "draft verification must compare the exact expected and actual asset sets"
-  end
-  unless asset_diffs == [expected_diff]
-    raise "draft verification asset diff must propagate failures"
-  end
-
-  required_tag_fragments = {
-    "test \"$(gh api \"$tag_api\" --jq '.object.type')\" = tag" =>
-      "draft verification must require an annotated Tag object",
-    "tag_object=$(gh api \"$tag_api\" --jq '.object.sha')" =>
-      "draft verification must resolve the annotated Tag object",
-    "annotated_api=\"repos/$GITHUB_REPOSITORY/git/tags/$tag_object\"" =>
-      "draft verification must query the annotated Tag object",
-    "test \"$(gh api \"$annotated_api\" --jq '.object.type')\" = commit" =>
-      "draft verification must require the Tag object to target a commit",
-  }
-  required_tag_fragments.each do |fragment, message|
-    raise message unless draft_verification.include?(fragment)
-  end
-
-  expected_tag_head = [
-    "test",
-    "$(gh api $annotated_api --jq '.object.sha')",
-    "=",
-    "$(git rev-parse HEAD)",
-  ]
-  tag_head_assertions = commands.select do |command|
-    command.first == "test" &&
-      command.fetch(1, "").include?("$annotated_api") &&
-      command.fetch(1, "").include?(".object.sha")
-  end
-  unless tag_head_assertions.length == 1 && tag_head_assertions.first.first(4) == expected_tag_head
-    raise "draft verification must require the annotated Tag object to target HEAD"
-  end
-  unless tag_head_assertions == [expected_tag_head]
-    raise "draft verification Tag-to-HEAD assertion must propagate failures"
+  unless Digest::SHA256.hexdigest(promotion) == APPROVED_PROMOTION_SHA256
+    raise "release promotion run script must match approved template"
   end
 end
 
@@ -206,8 +111,183 @@ else
   abort "release status fixture was accepted: #{fixture}"
 end
 
+def write_executable(path, content)
+  File.write(path, content)
+  File.chmod(0o755, path)
+end
+
+def run_github_bash(run, env, chdir)
+  Open3.capture3(
+    env,
+    "/bin/bash",
+    "--noprofile",
+    "--norc",
+    "-e",
+    "-o",
+    "pipefail",
+    "-c",
+    run,
+    chdir: chdir,
+  )
+end
+
+def verify_release_status_behavior(workflow)
+  draft_run = release_step(workflow, "Verify draft asset set").fetch("run")
+  promotion_run = release_step(workflow, "Promote verified release").fetch("run")
+
+  Dir.mktmpdir("agent-studio-release-status.") do |root|
+    fake_bin = File.join(root, "bin")
+    dist = File.join(root, "dist")
+    runtime = File.join(root, "tmp")
+    FileUtils.mkdir_p([fake_bin, dist, runtime])
+    gh_log = File.join(root, "gh.log")
+    assets = %w[
+      agent-studio_v0.5.0-rc.1_darwin_amd64.tar.gz
+      agent-studio_v0.5.0-rc.1_darwin_amd64.tar.gz.spdx.json
+      agent-studio_v0.5.0-rc.1_darwin_arm64.tar.gz
+      agent-studio_v0.5.0-rc.1_darwin_arm64.tar.gz.spdx.json
+      agent-studio_v0.5.0-rc.1_linux_amd64.tar.gz
+      agent-studio_v0.5.0-rc.1_linux_amd64.tar.gz.spdx.json
+      agent-studio_v0.5.0-rc.1_linux_arm64.tar.gz
+      agent-studio_v0.5.0-rc.1_linux_arm64.tar.gz.spdx.json
+      checksums.txt
+    ]
+    assets.each { |name| File.write(File.join(dist, name), "verified fixture: #{name}\n") }
+
+    write_executable(File.join(fake_bin, "git"), <<~'SH')
+      #!/bin/sh
+      test "$*" = "rev-parse HEAD" || exit 64
+      printf '%s\n' expected-head
+    SH
+    write_executable(File.join(fake_bin, "sh"), <<~'SH')
+      #!/bin/sh
+      case "$1" in
+        *scripts/check-release-artifacts.sh) exit 0 ;;
+        *) exec /bin/sh "$@" ;;
+      esac
+    SH
+    write_executable(File.join(fake_bin, "gh"), <<~'SH')
+      #!/bin/sh
+      case "$1:$2" in
+        release:view)
+          test "$3" = "$GITHUB_REF_NAME" || exit 65
+          test "$4" = "--json" || exit 66
+          test "$6" = "--jq" || exit 67
+          case "$5|$7" in
+            'assets|.assets[].name')
+              printf '%s\n' \
+                "agent-studio_${GITHUB_REF_NAME}_darwin_amd64.tar.gz" \
+                "agent-studio_${GITHUB_REF_NAME}_darwin_amd64.tar.gz.spdx.json" \
+                "agent-studio_${GITHUB_REF_NAME}_darwin_arm64.tar.gz" \
+                "agent-studio_${GITHUB_REF_NAME}_darwin_arm64.tar.gz.spdx.json" \
+                "agent-studio_${GITHUB_REF_NAME}_linux_amd64.tar.gz" \
+                "agent-studio_${GITHUB_REF_NAME}_linux_amd64.tar.gz.spdx.json" \
+                "agent-studio_${GITHUB_REF_NAME}_linux_arm64.tar.gz" \
+                "agent-studio_${GITHUB_REF_NAME}_linux_arm64.tar.gz.spdx.json"
+              test "${FAKE_ASSET_MODE:-complete}" = missing || printf '%s\n' checksums.txt
+              ;;
+            'assets|[.assets[].size > 0] | all') printf '%s\n' true ;;
+            'isDraft|.isDraft') printf '%s\n' true ;;
+            'tagName|.tagName') printf '%s\n' "$GITHUB_REF_NAME" ;;
+            *) exit 68 ;;
+          esac
+          ;;
+        release:download)
+          test "$3" = "$GITHUB_REF_NAME" || exit 69
+          test "$4" = "--dir" || exit 70
+          mkdir -p "$5"
+          cp "$FAKE_DIST_DIR"/* "$5"/
+          ;;
+        release:edit)
+          printf '%s|%s\n' "$GH_TOKEN" "$*" >> "$FAKE_GH_LOG"
+          ;;
+        api:*)
+          test "$3" = "--jq" || exit 71
+          case "$4" in
+            .object.type)
+              case "$2" in
+                */git/ref/*) printf '%s\n' tag ;;
+                */git/tags/*) printf '%s\n' commit ;;
+                *) exit 72 ;;
+              esac
+              ;;
+            .object.sha)
+              case "$2" in
+                */git/ref/*) printf '%s\n' tag-object ;;
+                */git/tags/*) printf '%s\n' "$FAKE_TAG_SHA" ;;
+                *) exit 73 ;;
+              esac
+              ;;
+            *) exit 74 ;;
+          esac
+          ;;
+        *) exit 75 ;;
+      esac
+    SH
+
+    base_env = {
+      "BASH_ENV" => nil,
+      "ENV" => nil,
+      "FAKE_ASSET_MODE" => "complete",
+      "FAKE_DIST_DIR" => dist,
+      "FAKE_GH_LOG" => gh_log,
+      "FAKE_TAG_SHA" => "expected-head",
+      "GH_TOKEN" => "trusted-job-token",
+      "GITHUB_REF_NAME" => "v0.5.0-rc.1",
+      "GITHUB_REPOSITORY" => "owner/repo",
+      "PATH" => "#{fake_bin}:/usr/bin:/bin",
+      "TMPDIR" => runtime,
+    }
+
+    _stdout, stderr, status = run_github_bash(draft_run, base_env, root)
+    unless status.success?
+      raise "approved draft verification failed with controlled valid release data: #{stderr}"
+    end
+
+    _stdout, _stderr, asset_status = run_github_bash(
+      draft_run,
+      base_env.merge("FAKE_ASSET_MODE" => "missing"),
+      root,
+    )
+    unless asset_status.exitstatus == 1
+      raise "draft verification must propagate an asset-set assertion failure"
+    end
+
+    _stdout, _stderr, tag_status = run_github_bash(
+      draft_run,
+      base_env.merge("FAKE_TAG_SHA" => "wrong-head"),
+      root,
+    )
+    unless tag_status.exitstatus == 1
+      raise "draft verification must propagate a Tag-to-HEAD assertion failure"
+    end
+
+    File.write(gh_log, "")
+    _stdout, stderr, rc_status = run_github_bash(promotion_run, base_env, root)
+    unless rc_status.success?
+      raise "approved RC promotion failed with controlled gh: #{stderr}"
+    end
+    expected_rc = "trusted-job-token|release edit v0.5.0-rc.1 --draft=false --prerelease\n"
+    unless File.read(gh_log) == expected_rc
+      raise "RC promotion must preserve the job token and set prerelease state"
+    end
+
+    File.write(gh_log, "")
+    stable_env = base_env.merge("GITHUB_REF_NAME" => "v0.5.0")
+    _stdout, stderr, stable_status = run_github_bash(promotion_run, stable_env, root)
+    unless stable_status.success?
+      raise "approved stable promotion failed with controlled gh: #{stderr}"
+    end
+    expected_stable = "trusted-job-token|release edit v0.5.0 --draft=false --prerelease=false --latest\n"
+    unless File.read(gh_log) == expected_stable
+      raise "stable promotion must preserve the job token and set Latest"
+    end
+  end
+end
+
 begin
   verify_release_status(workflow)
+  verify_release_status_behavior(workflow)
 rescue RuntimeError => error
   abort "release status contract violation: #{error.message}"
 end
@@ -220,7 +300,7 @@ end
 expect_release_status_failure(
   fixed_selector_fixture,
   "fixed GA promotion selector",
-  "release promotion must select on GITHUB_REF_NAME with RC before stable",
+  "release promotion run script must match approved template",
 )
 
 reordered_branches_fixture = Marshal.load(Marshal.dump(workflow))
@@ -237,13 +317,17 @@ reordered_branches_run.replace(reordered_lines.join)
 expect_release_status_failure(
   reordered_branches_fixture,
   "stable promotion branch before RC",
-  "release promotion must select on GITHUB_REF_NAME with RC before stable",
+  "release promotion run script must match approved template",
 )
 
 rc_latest_fixture = Marshal.load(Marshal.dump(workflow))
 rc_latest_run = release_step(rc_latest_fixture, "Promote verified release").fetch("run")
 rc_latest_run.sub!("--draft=false --prerelease ;;", "--draft=false --prerelease --latest ;;")
-expect_release_status_failure(rc_latest_fixture, "RC marked Latest", "RC promotion must not set Latest")
+expect_release_status_failure(
+  rc_latest_fixture,
+  "RC marked Latest",
+  "release promotion run script must match approved template",
+)
 
 rc_not_prerelease_fixture = Marshal.load(Marshal.dump(workflow))
 rc_not_prerelease_run = release_step(rc_not_prerelease_fixture, "Promote verified release").fetch("run")
@@ -251,7 +335,7 @@ rc_not_prerelease_run.sub!("--draft=false --prerelease ;;", "--draft=false ;;")
 expect_release_status_failure(
   rc_not_prerelease_fixture,
   "RC missing prerelease",
-  "RC promotion must set prerelease state",
+  "release promotion run script must match approved template",
 )
 
 asset_count_fixture = Marshal.load(Marshal.dump(workflow))
@@ -260,7 +344,7 @@ asset_count_run.sub!("-eq 9", "-eq 8")
 expect_release_status_failure(
   asset_count_fixture,
   "eight draft assets",
-  "draft verification must require exactly nine assets",
+  "draft verification run script must match approved template",
 )
 
 extra_target_fixture = Marshal.load(Marshal.dump(workflow))
@@ -269,7 +353,7 @@ extra_target_run.sub!("linux_arm64; do", "linux_arm64 windows_amd64; do")
 expect_release_status_failure(
   extra_target_fixture,
   "extra draft target",
-  "draft verification must enumerate exactly four release targets",
+  "draft verification run script must match approved template",
 )
 
 missing_asset_diff_fixture = Marshal.load(Marshal.dump(workflow))
@@ -278,7 +362,7 @@ missing_asset_diff_run.sub!("diff -u expected-assets.txt actual-assets.txt", "tr
 expect_release_status_failure(
   missing_asset_diff_fixture,
   "missing exact asset set comparison",
-  "draft verification must compare the exact expected and actual asset sets",
+  "draft verification run script must match approved template",
 )
 
 masked_asset_diff_fixture = Marshal.load(Marshal.dump(workflow))
@@ -292,7 +376,7 @@ end
 expect_release_status_failure(
   masked_asset_diff_fixture,
   "masked exact asset set comparison",
-  "draft verification asset diff must propagate failures",
+  "draft verification run script must match approved template",
 )
 
 wrong_tag_target_fixture = Marshal.load(Marshal.dump(workflow))
@@ -301,7 +385,7 @@ wrong_tag_target_run.sub!("git rev-parse HEAD)", "git rev-parse HEAD^)")
 expect_release_status_failure(
   wrong_tag_target_fixture,
   "annotated Tag does not target HEAD",
-  "draft verification must require the annotated Tag object to target HEAD",
+  "draft verification run script must match approved template",
 )
 
 masked_tag_target_fixture = Marshal.load(Marshal.dump(workflow))
@@ -313,7 +397,7 @@ end
 expect_release_status_failure(
   masked_tag_target_fixture,
   "masked annotated Tag-to-HEAD assertion",
-  "draft verification Tag-to-HEAD assertion must propagate failures",
+  "draft verification run script must match approved template",
 )
 
 masked_exit_trap_fixture = Marshal.load(Marshal.dump(workflow))
@@ -325,7 +409,7 @@ end
 expect_release_status_failure(
   masked_exit_trap_fixture,
   "EXIT trap masks verification failure",
-  "draft verification trap must only clean remote_dist without changing exit status",
+  "draft verification run script must match approved template",
 )
 
 wrapped_second_trap_fixture = Marshal.load(Marshal.dump(workflow))
@@ -339,7 +423,20 @@ end
 expect_release_status_failure(
   wrapped_second_trap_fixture,
   "builtin registers a second EXIT trap",
-  "draft verification trap must only clean remote_dist without changing exit status",
+  "draft verification run script must match approved template",
+)
+
+dynamic_second_trap_fixture = Marshal.load(Marshal.dump(workflow))
+dynamic_second_trap_run = release_step(dynamic_second_trap_fixture, "Verify draft asset set").fetch("run")
+dynamic_second_trap_run.prepend(<<~SHELL)
+  trap_name=tr
+  trap_name="${trap_name}ap"
+  "$trap_name" 'exit 0' EXIT
+SHELL
+expect_release_status_failure(
+  dynamic_second_trap_fixture,
+  "dynamically registers a second EXIT trap",
+  "draft verification run script must match approved template",
 )
 RUBY
 
