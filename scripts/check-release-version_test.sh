@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-expected_version='v0.4.0-snapshot'
+expected_version='v0.5.0-snapshot'
 
 check_release_versions() {
 	repo_root=$1
@@ -52,22 +52,22 @@ test_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-studio-release-version-test.XXXXXX"
 trap 'rm -rf "$test_root"' EXIT HUP INT TERM
 workflow_old_root="$test_root/workflow-old"
 mkdir -p "$workflow_old_root/.github/workflows"
-printf '%s\n' 'snapshot:' '  version_template: "0.4.0-snapshot"' > "$workflow_old_root/.goreleaser.yaml"
+printf '%s\n' 'snapshot:' '  version_template: "0.5.0-snapshot"' > "$workflow_old_root/.goreleaser.yaml"
 printf '%s\n' \
 	'- name: Select dry-run artifact version' \
 	'  run: echo "value=v0.2.1-snapshot" >> "$GITHUB_OUTPUT"' \
 	'- name: Export artifact version' > "$workflow_old_root/.github/workflows/release.yml"
-printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh collection dist "v0.4.0-snapshot"' > "$workflow_old_root/Makefile"
+printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh collection dist "v0.5.0-snapshot"' > "$workflow_old_root/Makefile"
 expect_failure 'rendered snapshot version mismatch in .github/workflows/release.yml: got v0.2.1-snapshot' check_release_versions "$workflow_old_root"
 
 double_v_root="$test_root/double-v"
 mkdir -p "$double_v_root/.github/workflows"
-printf '%s\n' 'snapshot:' '  version_template: "v0.4.0-snapshot"' > "$double_v_root/.goreleaser.yaml"
+printf '%s\n' 'snapshot:' '  version_template: "v0.5.0-snapshot"' > "$double_v_root/.goreleaser.yaml"
 printf '%s\n' \
 	'- name: Select dry-run artifact version' \
-	'  run: echo "value=v0.4.0-snapshot" >> "$GITHUB_OUTPUT"' \
+	'  run: echo "value=v0.5.0-snapshot" >> "$GITHUB_OUTPUT"' \
 	'- name: Export artifact version' > "$double_v_root/.github/workflows/release.yml"
-printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh collection dist "v0.4.0-snapshot"' > "$double_v_root/Makefile"
-expect_failure 'rendered snapshot version mismatch in .goreleaser.yaml (rendered): got vv0.4.0-snapshot' check_release_versions "$double_v_root"
+printf '%s\n' 'release-snapshot:' '  sh scripts/check-release-artifacts.sh collection dist "v0.5.0-snapshot"' > "$double_v_root/Makefile"
+expect_failure 'rendered snapshot version mismatch in .goreleaser.yaml (rendered): got vv0.5.0-snapshot' check_release_versions "$double_v_root"
 
 printf '%s\n' 'check-release-version tests passed'

@@ -6,7 +6,7 @@ import (
 )
 
 const APIVersion = "agent-studio.dev/v1alpha1"
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 type Node interface {
 	Definition() Definition

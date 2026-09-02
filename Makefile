@@ -145,7 +145,7 @@ release-snapshot:
 	command -v "$(GORELEASER)" >/dev/null
 	command -v "$(SYFT)" >/dev/null
 	PATH="$(dir $(SYFT)):$$PATH" "$(GORELEASER)" release --clean --snapshot --skip=publish
-	sh scripts/check-release-artifacts.sh collection dist "v0.4.0-snapshot"
+	sh scripts/check-release-artifacts.sh collection dist "v0.5.0-snapshot"
 
 release-preflight:
 	@test -n "$(TAG)" || { printf '%s\n' 'usage: make release-preflight TAG=vX.Y.Z[-rc.N]' >&2; exit 2; }
