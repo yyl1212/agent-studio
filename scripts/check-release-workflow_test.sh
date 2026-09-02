@@ -30,9 +30,206 @@ APPROVED_PUBLISH_RUN_ENV = {
     "ARTIFACT_VERSION" => "${{ needs.build.outputs.artifact_version }}",
   },
 }.freeze
+APPROVED_BUILD_JOB_CONTEXT = {
+  "name" => "Build release artifacts",
+  "runs-on" => "ubuntu-24.04",
+  "timeout-minutes" => 30,
+  "permissions" => {"contents" => "read", "actions" => "read"},
+  "env" => {"CGO_ENABLED" => "0"},
+  "outputs" => {"artifact_version" => "${{ steps.version.outputs.value }}"},
+}.freeze
+APPROVED_BUILD_STEPS = [
+  {
+    "name" => "Checkout",
+    "uses" => "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "with" => {"fetch-depth" => 0},
+  },
+  {
+    "name" => "Verify main head",
+    "run-sha256" => APPROVED_MAIN_HEAD_SHA256,
+  },
+  {
+    "name" => "Verify successful main CI",
+    "env" => {"GH_TOKEN" => "${{ github.token }}"},
+    "run-sha256" => APPROVED_MAIN_CI_GATE_SHA256,
+  },
+  {
+    "name" => "Verify annotated release tag",
+    "if" => "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')",
+    "run-sha256" => "47aeef875b95e76f05ce6debc19ba2f7c4a9328b5e77df38264f97f44ff0d013",
+  },
+  {
+    "name" => "Select tag artifact version",
+    "id" => "tag-version",
+    "if" => "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')",
+    "run-sha256" => "a3f6743911c643339eeccad62e5bb4753550156eb33129b86b88df2aef5d057e",
+  },
+  {
+    "name" => "Select dry-run artifact version",
+    "id" => "dry-version",
+    "if" => "github.event_name == 'workflow_dispatch'",
+    "run-sha256" => "f52ad9d09d8651c847e65a32971683c416019a972ea5517c2d3cc4ee24be8895",
+  },
+  {
+    "name" => "Export artifact version",
+    "id" => "version",
+    "env" => {
+      "TAG_VERSION" => "${{ steps.tag-version.outputs.value }}",
+      "DRY_VERSION" => "${{ steps.dry-version.outputs.value }}",
+    },
+    "run-sha256" => "fc8dea07375d8b74f0c37763480c0f05d0aa105281e06d36afc6d9158a62a9c0",
+  },
+  {
+    "name" => "Set up Go",
+    "uses" => "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+    "with" => {"go-version-file" => "go.mod", "cache" => true},
+  },
+  {
+    "name" => "Set up pnpm",
+    "uses" => "pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86",
+    "with" => {"version" => "10.34.5", "run_install" => false},
+  },
+  {
+    "name" => "Set up Node.js",
+    "uses" => "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "with" => {
+      "node-version" => "24",
+      "cache" => "pnpm",
+      "cache-dependency-path" => "pnpm-lock.yaml",
+    },
+  },
+  {
+    "name" => "Enable Corepack",
+    "run-sha256" => "9a1f651215eb36db76b2012213dd57b363c495f93b0f3ff9e38cdc8a675d4233",
+  },
+  {
+    "name" => "Install dependencies",
+    "run-sha256" => "e934b31610059a0aa1e337ab20d7b0c94d40fe7c91163f01b175d21bb36d31ab",
+  },
+  {
+    "name" => "Verify source",
+    "run-sha256" => "5abcc14b19b6b9e6387111efea90a75867af38d70b788c2b78c95d4783755540",
+  },
+  {
+    "name" => "Download Syft",
+    "id" => "syft",
+    "uses" => "anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610",
+    "with" => {"syft-version" => "v1.51.0"},
+  },
+  {
+    "name" => "Add Syft to PATH",
+    "env" => {"SYFT_CMD" => "${{ steps.syft.outputs.cmd }}"},
+    "run-sha256" => "df9f18357fb0878d9bbdd002c245021d062dd18f71a20b01f43ba2fd1d79199e",
+  },
+  {
+    "name" => "Build tagged artifacts",
+    "if" => "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')",
+    "env" => {"GORELEASER_CURRENT_TAG" => "${{ github.ref_name }}"},
+    "uses" => "goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94",
+    "with" => {
+      "distribution" => "goreleaser",
+      "version" => "v2.17.1",
+      "args" => "release --clean --skip=publish",
+    },
+  },
+  {
+    "name" => "Build dry-run artifacts",
+    "if" => "github.event_name == 'workflow_dispatch'",
+    "uses" => "goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94",
+    "with" => {
+      "distribution" => "goreleaser",
+      "version" => "v2.17.1",
+      "args" => "release --clean --snapshot --skip=publish",
+    },
+  },
+  {
+    "name" => "Verify artifact collection",
+    "env" => {"ARTIFACT_VERSION" => "${{ steps.version.outputs.value }}"},
+    "run-sha256" => APPROVED_PUBLISH_RUN_SHA256.fetch("Reverify artifact collection"),
+  },
+  {
+    "name" => "Upload release candidate artifacts",
+    "uses" => "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "with" => {
+      "name" => "release-dist",
+      "if-no-files-found" => "error",
+      "retention-days" => 7,
+      "path" => "dist/*.tar.gz\ndist/*.spdx.json\ndist/checksums.txt\n",
+    },
+  },
+].freeze
+APPROVED_PUBLISH_JOB_CONTEXT = {
+  "name" => "Publish verified release",
+  "if" => "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')",
+  "needs" => ["build", "smoke"],
+  "runs-on" => "ubuntu-24.04",
+  "timeout-minutes" => 15,
+  "permissions" => {"contents" => "write"},
+  "env" => {"CGO_ENABLED" => "0", "GH_TOKEN" => "${{ github.token }}"},
+}.freeze
+APPROVED_PUBLISH_STEPS = [
+  {
+    "name" => "Checkout",
+    "uses" => "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "with" => {"fetch-depth" => 0, "ref" => "${{ github.sha }}"},
+  },
+  {
+    "name" => "Set up Go",
+    "uses" => "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+    "with" => {"go-version-file" => "go.mod", "cache" => true},
+  },
+  {
+    "name" => "Download verified release artifacts",
+    "uses" => "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "with" => {"name" => "release-dist", "path" => "dist"},
+  },
+  {
+    "name" => "Reverify artifact collection",
+    "env" => APPROVED_PUBLISH_RUN_ENV.fetch("Reverify artifact collection"),
+    "run-sha256" => APPROVED_PUBLISH_RUN_SHA256.fetch("Reverify artifact collection"),
+  },
+  {
+    "name" => "Assert release does not exist",
+    "run-sha256" => APPROVED_PUBLISH_RUN_SHA256.fetch("Assert release does not exist"),
+  },
+  {
+    "name" => "Create draft and upload tested assets",
+    "run-sha256" => APPROVED_PUBLISH_RUN_SHA256.fetch("Create draft and upload tested assets"),
+  },
+  {
+    "name" => "Verify draft asset set",
+    "run-sha256" => APPROVED_PUBLISH_RUN_SHA256.fetch("Verify draft asset set"),
+  },
+  {
+    "name" => "Promote verified release",
+    "run-sha256" => APPROVED_PUBLISH_RUN_SHA256.fetch("Promote verified release"),
+  },
+  {
+    "name" => "Verify published release state",
+    "run-sha256" => APPROVED_PUBLISH_RUN_SHA256.fetch("Verify published release state"),
+  },
+  {
+    "name" => "Verify immutable release",
+    "run-sha256" => APPROVED_PUBLISH_RUN_SHA256.fetch("Verify immutable release"),
+  },
+].freeze
 
 workflow_path = ARGV.fetch(0)
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
+
+def job_context_matches?(job, approved_context)
+  approved_keys = (approved_context.keys + ["steps"]).sort
+  job.keys.sort == approved_keys && job.reject { |key, _value| key == "steps" } == approved_context
+end
+
+def step_signatures(steps)
+  steps.map do |step|
+    signature = step.dup
+    run = signature.delete("run")
+    signature["run-sha256"] = Digest::SHA256.hexdigest(run) if run
+    signature
+  end
+end
 
 def verify_main_ci_gate(workflow)
   unless workflow.fetch("permissions", {}) == {"contents" => "read"}
@@ -117,6 +314,13 @@ def verify_main_ci_gate(workflow)
     index = step_names.index(name)
     raise "missing build step: #{name}" unless index
     raise "main CI gate must precede #{name}" unless gate_index < index
+  end
+
+  unless job_context_matches?(build_job, APPROVED_BUILD_JOB_CONTEXT)
+    raise "build job execution context must match approved template"
+  end
+  unless step_signatures(build_steps) == APPROVED_BUILD_STEPS
+    raise "build steps must match approved templates"
   end
 end
 
@@ -262,6 +466,13 @@ def verify_release_credentials(workflow)
     end
   end
 
+  unless job_context_matches?(publish_job, APPROVED_PUBLISH_JOB_CONTEXT)
+    raise "publish job execution context must match approved template"
+  end
+  unless step_signatures(publish_steps) == APPROVED_PUBLISH_STEPS
+    raise "publish steps must match approved templates"
+  end
+
   pending = [workflow]
   until pending.empty?
     value = pending.pop
@@ -288,6 +499,16 @@ rescue RuntimeError => error
   return
 else
   abort "release credentials fixture was accepted: #{fixture}"
+end
+
+def record_expected_failure(failures, workflow, fixture, expected)
+  yield workflow
+rescue RuntimeError => error
+  unless error.message == expected
+    failures << "fixture #{fixture} failed for the wrong reason: #{error.message}"
+  end
+else
+  failures << "fixture was accepted: #{fixture}"
 end
 
 def verify_tag_isolation(workflow)
@@ -585,6 +806,52 @@ expect_release_credentials_failure(
   "publish run dynamically exports GH_TOKEN",
   "publish run scripts must match approved templates",
 )
+
+round5_failures = []
+
+build_container_env_fixture = Marshal.load(Marshal.dump(workflow))
+build_container_env_fixture.fetch("jobs").fetch("build")["container"] = {
+  "image" => "ubuntu:24.04",
+  "env" => {"BASH_ENV" => "/github/workspace/scripts/attacker-build-env"},
+}
+record_expected_failure(
+  round5_failures,
+  build_container_env_fixture,
+  "build container BASH_ENV shadows jq",
+  "build job execution context must match approved template",
+) { |fixture| verify_main_ci_gate(fixture) }
+
+publish_container_env_fixture = Marshal.load(Marshal.dump(workflow))
+publish_container_env_fixture.fetch("jobs").fetch("publish")["container"] = {
+  "image" => "ubuntu:24.04",
+  "env" => {"BASH_ENV" => "/github/workspace/scripts/attacker-publish-env"},
+}
+record_expected_failure(
+  round5_failures,
+  publish_container_env_fixture,
+  "publish container BASH_ENV shadows trap",
+  "publish job execution context must match approved template",
+) { |fixture| verify_release_credentials(fixture) }
+
+publish_github_env_fixture = Marshal.load(Marshal.dump(workflow))
+publish_github_env_fixture.fetch("jobs").fetch("publish").fetch("steps").insert(
+  3,
+  {
+    "name" => "Override publish credentials",
+    "uses" => "actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+    "with" => {
+      "script" => "require('node:fs').appendFileSync(process.env.GITHUB_ENV, 'GH_TOKEN=attacker\\n')",
+    },
+  },
+)
+record_expected_failure(
+  round5_failures,
+  publish_github_env_fixture,
+  "extra uses step writes GH_TOKEN to GITHUB_ENV",
+  "publish steps must match approved templates",
+) { |fixture| verify_release_credentials(fixture) }
+
+abort round5_failures.join("\n") unless round5_failures.empty?
 
 workflow_env_fixture = Marshal.load(Marshal.dump(workflow))
 workflow_env_fixture["env"] = {"GORELEASER_CURRENT_TAG" => "v9.9.9"}
