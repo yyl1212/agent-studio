@@ -146,7 +146,9 @@ def verify_release_status(workflow)
     "INT",
     "TERM",
   ]
-  cleanup_traps = commands.select { |command| command.first == "trap" }
+  cleanup_traps = commands.select do |command|
+    command.any? { |token| token.match?(/\btrap\b/) }
+  end
   unless cleanup_traps == [expected_cleanup_trap]
     raise "draft verification trap must only clean remote_dist without changing exit status"
   end
@@ -323,6 +325,20 @@ end
 expect_release_status_failure(
   masked_exit_trap_fixture,
   "EXIT trap masks verification failure",
+  "draft verification trap must only clean remote_dist without changing exit status",
+)
+
+wrapped_second_trap_fixture = Marshal.load(Marshal.dump(workflow))
+wrapped_second_trap_run = release_step(wrapped_second_trap_fixture, "Verify draft asset set").fetch("run")
+unless wrapped_second_trap_run.sub!(
+    safe_cleanup_trap,
+    "#{safe_cleanup_trap}\nbuiltin trap 'exit 0' EXIT HUP INT TERM",
+  )
+  abort "failed to construct wrapped second EXIT trap fixture"
+end
+expect_release_status_failure(
+  wrapped_second_trap_fixture,
+  "builtin registers a second EXIT trap",
   "draft verification trap must only clean remote_dist without changing exit status",
 )
 RUBY

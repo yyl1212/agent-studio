@@ -75,10 +75,23 @@ def verify_main_ci_gate(workflow)
     raise "main CI gate run script must have valid shell quoting"
   end
 
-  expected_cleanup_trap = ["trap", "rm -f \"$ci_runs\"", "EXIT", "HUP", "INT", "TERM"]
-  trap_commands = run.lines.select { |line| line.strip.start_with?("trap ") }.map do |line|
-    Shellwords.split(line.strip)
+  critical_function = /(?:\A|\n)\s*(?:function\s+)?(?:jq|gh|git)\s*(?:\(\s*\))?\s*(?:\n\s*)?\{/
+  forbidden_shell_controls = %w[
+    alias unalias function eval source . builtin command enable hash export unset
+    declare typeset readonly set exit return break continue if then else elif fi
+    case esac while until for select do done time coproc env exec nice nohup timeout
+    stdbuf xargs sudo sh bash zsh
+  ]
+  redefines_critical_command = run.match?(critical_function) ||
+    shell_tokens.any? { |token| forbidden_shell_controls.include?(token) } ||
+    shell_tokens.any? { |token| token.match?(/\A(?:PATH|BASH_ENV|ENV|SHELLOPTS)=/) }
+  if redefines_critical_command
+    raise "main CI gate must not redefine or wrap critical commands"
   end
+
+  expected_cleanup_trap = ["trap", "rm -f \"$ci_runs\"", "EXIT", "HUP", "INT", "TERM"]
+  trap_commands = run.lines.select { |line| line.match?(/\btrap\b/) }
+    .map { |line| Shellwords.split(line.strip) }
   unless trap_commands == [expected_cleanup_trap]
     raise "main CI gate trap must only clean ci_runs without changing exit status"
   end
@@ -134,9 +147,29 @@ def verify_release_credentials(workflow)
 
   publish_job.fetch("steps").each do |step|
     token_env = step.fetch("env", {}).select { |name, _value| name.match?(/token/i) }
-    next if token_env.empty?
-    unless token_env == {"GH_TOKEN" => "${{ github.token }}"}
+    unless token_env.empty? || token_env == {"GH_TOKEN" => "${{ github.token }}"}
       raise "publish steps must not override release token credentials"
+    end
+
+    run = step.fetch("run", "")
+    begin
+      run_tokens = Shellwords.split(run)
+    rescue ArgumentError
+      raise "publish run scripts must have valid shell quoting"
+    end
+    token_identifier = /\b[A-Za-z_][A-Za-z0-9_]*TOKEN[A-Za-z0-9_]*\b/i
+    untrusted_expression = /\$\{\{\s*(?:vars|secrets)\b/
+    persistent_environment_channel = /\b(?:GITHUB_ENV|GITHUB_PATH|BASH_ENV)\b/
+    environment_mutators = %w[
+      export unset declare typeset readonly local read eval source . env set exec
+    ]
+    rewrites_environment = run_tokens.any? { |token| environment_mutators.include?(token) } ||
+      run_tokens.each_cons(2).any? { |command, option| command == "printf" && option == "-v" }
+    if run.match?(token_identifier) ||
+        run.match?(untrusted_expression) ||
+        run.match?(persistent_environment_channel) ||
+        rewrites_environment
+      raise "publish run scripts must not reference or rewrite token credentials"
     end
   end
 
@@ -311,6 +344,53 @@ expect_main_ci_gate_failure(
   "main CI gate jq assertion must execute directly without control operators",
 )
 
+shadowed_jq_fixture = Marshal.load(Marshal.dump(workflow))
+shadowed_jq_run = shadowed_jq_fixture.fetch("jobs").fetch("build").fetch("steps")
+  .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
+unless shadowed_jq_run.sub!(
+    "head_sha=$(git rev-parse HEAD)",
+    "jq(){ return 0; }\nhead_sha=$(git rev-parse HEAD)",
+  )
+  abort "failed to construct shadowed jq fixture"
+end
+expect_main_ci_gate_failure(
+  shadowed_jq_fixture,
+  "jq function shadows external command",
+  "main CI gate must not redefine or wrap critical commands",
+)
+
+aliased_jq_fixture = Marshal.load(Marshal.dump(workflow))
+aliased_jq_run = aliased_jq_fixture.fetch("jobs").fetch("build").fetch("steps")
+  .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
+aliased_jq_run.prepend("alias jq='true'\n")
+expect_main_ci_gate_failure(
+  aliased_jq_fixture,
+  "jq alias shadows external command",
+  "main CI gate must not redefine or wrap critical commands",
+)
+
+wrapped_jq_fixture = Marshal.load(Marshal.dump(workflow))
+wrapped_jq_run = wrapped_jq_fixture.fetch("jobs").fetch("build").fetch("steps")
+  .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
+unless wrapped_jq_run.sub!("jq -e", "command jq -e")
+  abort "failed to construct wrapped jq fixture"
+end
+expect_main_ci_gate_failure(
+  wrapped_jq_fixture,
+  "command wrapper invokes jq",
+  "main CI gate must not redefine or wrap critical commands",
+)
+
+early_exit_fixture = Marshal.load(Marshal.dump(workflow))
+early_exit_run = early_exit_fixture.fetch("jobs").fetch("build").fetch("steps")
+  .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
+early_exit_run.prepend("exit 0\n")
+expect_main_ci_gate_failure(
+  early_exit_fixture,
+  "gate exits before jq",
+  "main CI gate must not redefine or wrap critical commands",
+)
+
 masked_gate_trap_fixture = Marshal.load(Marshal.dump(workflow))
 masked_gate_trap_run = masked_gate_trap_fixture.fetch("jobs").fetch("build").fetch("steps")
   .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
@@ -361,6 +441,27 @@ expect_release_credentials_failure(
   step_token_override_fixture,
   "publish step overrides github.token",
   "publish steps must not override release token credentials",
+)
+
+run_token_override_fixture = Marshal.load(Marshal.dump(workflow))
+run_token_override = run_token_override_fixture.fetch("jobs").fetch("publish").fetch("steps")
+  .find { |step| step["name"] == "Promote verified release" }
+run_token_override["run"] =
+  "export GH_TOKEN=\"${{ vars.RELEASE_TOKEN }}\"\n#{run_token_override.fetch("run")}"
+expect_release_credentials_failure(
+  run_token_override_fixture,
+  "publish run exports vars token",
+  "publish run scripts must not reference or rewrite token credentials",
+)
+
+unset_token_fixture = Marshal.load(Marshal.dump(workflow))
+unset_token_step = unset_token_fixture.fetch("jobs").fetch("publish").fetch("steps")
+  .find { |step| step["name"] == "Promote verified release" }
+unset_token_step["run"] = "unset GH_TOKEN\n#{unset_token_step.fetch("run")}"
+expect_release_credentials_failure(
+  unset_token_fixture,
+  "publish run unsets inherited token",
+  "publish run scripts must not reference or rewrite token credentials",
 )
 
 workflow_env_fixture = Marshal.load(Marshal.dump(workflow))
