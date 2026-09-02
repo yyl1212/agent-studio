@@ -116,6 +116,7 @@ function NodePackageVersions({ displayName, detail }: { displayName: string; det
 							{assessment?.compatible ? '✓ 兼容当前运行时' : `不兼容：${(assessment?.reasons ?? []).map((reason) => reasonLabels[reason] ?? reason).join('、')}`}
 						</p>
 						<dl className="node-package-version-metadata">
+							<div><dt>运行时兼容范围</dt><dd>运行时 {version.manifest.compatibility.runtime.minVersion} 至 {version.manifest.compatibility.runtime.maxVersionExclusive}（不含）</dd></div>
 							<div><dt>来源仓库</dt><dd><ExternalRepositoryLink repository={version.source.repository} /></dd></div>
 							<div><dt>Tag</dt><dd><code>{version.source.tag}</code></dd></div>
 							<div><dt>模块目录</dt><dd><code>{version.source.moduleDir}</code></dd></div>

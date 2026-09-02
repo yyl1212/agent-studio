@@ -9,7 +9,7 @@ import (
 	"github.com/yyl1212/agent-studio/sdk/go/agentnode"
 )
 
-func TestRepositoryManifestSupportsV040Runtime(t *testing.T) {
+func TestRepositoryManifestSupportsV050Runtime(t *testing.T) {
 	root := repositoryRoot(t)
 	source := filepath.Join(root, nodepackage.Filename)
 	data, err := os.ReadFile(source)
@@ -23,10 +23,10 @@ func TestRepositoryManifestSupportsV040Runtime(t *testing.T) {
 	if got, want := manifest.Compatibility.Runtime.MinVersion, "v0.2.0"; got != want {
 		t.Fatalf("min runtime=%s want=%s", got, want)
 	}
-	if got, want := manifest.Compatibility.Runtime.MaxVersionExclusive, "v0.5.0"; got != want {
+	if got, want := manifest.Compatibility.Runtime.MaxVersionExclusive, "v0.6.0"; got != want {
 		t.Fatalf("max runtime=%s want=%s", got, want)
 	}
-	diagnostics := nodepackage.CheckCompatibility(manifest, "0.4.0-dev", "0.4.0", agentnode.APIVersion, "v0.4.0")
+	diagnostics := nodepackage.CheckCompatibility(manifest, "0.5.0-dev", "0.5.0", agentnode.APIVersion, "v0.5.0")
 	if nodepackage.HasErrors(diagnostics) {
 		t.Fatalf("diagnostics=%+v", diagnostics)
 	}

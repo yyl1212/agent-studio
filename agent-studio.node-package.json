@@ -12,7 +12,7 @@
     "nodeAPI": "agent-studio.dev/v1alpha1",
     "runtime": {
       "minVersion": "v0.2.0",
-      "maxVersionExclusive": "v0.5.0"
+      "maxVersionExclusive": "v0.6.0"
     }
   },
   "registrations": [
