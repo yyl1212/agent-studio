@@ -113,6 +113,12 @@ require_text docs/sdk/compatibility.md 'durable execution|耐久运行'
 require_text docs/sdk/compatibility.md 'backup schema|备份 schema|备份格式'
 require_text docs/sdk/compatibility.md 'runtime 状态|运行时状态'
 require_text docs/sdk/compatibility.md '不自动改变.*Node API.*生命周期|Node API.*生命周期.*不自动改变'
+require_text docs/sdk/compatibility.md '当前 v0\.5 边界内.*Capability.*展示.*审计.*声明元数据'
+require_text docs/sdk/compatibility.md 'Capability.*不是.*权限授予.*沙箱'
+if grep -Eq 'Capability.*v0\.4|v0\.4.*Capability' docs/sdk/compatibility.md; then
+  printf '%s\n' 'compatibility policy must describe the current v0.5 Capability boundary' >&2
+  exit 1
+fi
 
 require_text docs/upgrades/v0.5-d.md 'v0\.5\.0-rc\.1'
 require_text docs/upgrades/v0.5-d.md '版本矩阵'

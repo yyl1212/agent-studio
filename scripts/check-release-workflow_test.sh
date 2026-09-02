@@ -158,6 +158,50 @@ APPROVED_BUILD_STEPS = [
     },
   },
 ].freeze
+APPROVED_SMOKE_JOB_CONTEXT = {
+  "name" => "Smoke ${{ matrix.goos }}/${{ matrix.goarch }}",
+  "needs" => "build",
+  "strategy" => {
+    "fail-fast" => false,
+    "matrix" => {
+      "include" => [
+        {"runner" => "ubuntu-24.04", "goos" => "linux", "goarch" => "amd64"},
+        {"runner" => "ubuntu-24.04-arm", "goos" => "linux", "goarch" => "arm64"},
+        {"runner" => "macos-15-intel", "goos" => "darwin", "goarch" => "amd64"},
+        {"runner" => "macos-15", "goos" => "darwin", "goarch" => "arm64"},
+      ],
+    },
+  },
+  "runs-on" => "${{ matrix.runner }}",
+  "timeout-minutes" => 15,
+  "env" => {"CGO_ENABLED" => "0"},
+}.freeze
+APPROVED_SMOKE_STEPS = [
+  {
+    "name" => "Checkout",
+    "uses" => "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "with" => {"ref" => "${{ github.sha }}"},
+  },
+  {
+    "name" => "Set up Go",
+    "uses" => "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+    "with" => {"go-version-file" => "go.mod", "cache" => true},
+  },
+  {
+    "name" => "Download release candidate artifacts",
+    "uses" => "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "with" => {"name" => "release-dist", "path" => "dist"},
+  },
+  {
+    "name" => "Verify native artifact",
+    "env" => {
+      "ARTIFACT_VERSION" => "${{ needs.build.outputs.artifact_version }}",
+      "TARGET_GOOS" => "${{ matrix.goos }}",
+      "TARGET_GOARCH" => "${{ matrix.goarch }}",
+    },
+    "run-sha256" => "f109ce14db6327ca6c3dba5f4d15d07be5028bed15d633458f3120a47a969e19",
+  },
+].freeze
 APPROVED_PUBLISH_JOB_CONTEXT = {
   "name" => "Publish verified release",
   "if" => "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')",
@@ -228,6 +272,35 @@ def step_signatures(steps)
     run = signature.delete("run")
     signature["run-sha256"] = Digest::SHA256.hexdigest(run) if run
     signature
+  end
+end
+
+def verify_release_job_contract(workflow)
+  jobs = workflow.fetch("jobs")
+  unless jobs.keys.sort == %w[build publish smoke]
+    raise "release jobs must be exactly build, smoke, publish"
+  end
+
+  %w[build smoke].each do |job_name|
+    job = jobs.fetch(job_name)
+    permissions = job.fetch("permissions", workflow.fetch("permissions", {}))
+    has_write = permissions == "write-all" ||
+      (permissions.is_a?(Hash) && permissions.value?("write"))
+    raise "#{job_name} job must not have write permissions" if has_write
+  end
+
+  smoke_job = jobs.fetch("smoke")
+  if smoke_job.key?("if")
+    raise "release smoke job must run for every release trigger"
+  end
+  if smoke_job.key?("continue-on-error")
+    raise "release smoke job must propagate failures"
+  end
+  unless job_context_matches?(smoke_job, APPROVED_SMOKE_JOB_CONTEXT)
+    raise "smoke job execution context must match approved template"
+  end
+  unless step_signatures(smoke_job.fetch("steps")) == APPROVED_SMOKE_STEPS
+    raise "smoke steps must match approved templates"
   end
 end
 
@@ -322,6 +395,8 @@ def verify_main_ci_gate(workflow)
   unless step_signatures(build_steps) == APPROVED_BUILD_STEPS
     raise "build steps must match approved templates"
   end
+
+  verify_release_job_contract(workflow)
 end
 
 def write_executable(path, content)
@@ -558,6 +633,74 @@ begin
 rescue RuntimeError => error
   abort "release workflow contract violation: #{error.message}"
 end
+
+release_job_contract_failures = []
+
+extra_write_job_fixture = Marshal.load(Marshal.dump(workflow))
+extra_write_job_fixture.fetch("jobs")["publish-backdoor"] = {
+  "name" => "Publish without smoke verification",
+  "if" => "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')",
+  "runs-on" => "ubuntu-24.04",
+  "permissions" => {"contents" => "write"},
+  "steps" => [{"name" => "Publish unverified release", "run" => "true"}],
+}
+record_expected_failure(
+  release_job_contract_failures,
+  extra_write_job_fixture,
+  "extra tag-only contents: write job",
+  "release jobs must be exactly build, smoke, publish",
+) { |fixture| verify_main_ci_gate(fixture) }
+
+smoke_write_permission_fixture = Marshal.load(Marshal.dump(workflow))
+smoke_write_permission_fixture.fetch("jobs").fetch("smoke")["permissions"] = {"contents" => "write"}
+record_expected_failure(
+  release_job_contract_failures,
+  smoke_write_permission_fixture,
+  "smoke contents: write permission",
+  "smoke job must not have write permissions",
+) { |fixture| verify_main_ci_gate(fixture) }
+
+tolerant_smoke_fixture = Marshal.load(Marshal.dump(workflow))
+tolerant_smoke_fixture.fetch("jobs").fetch("smoke")["continue-on-error"] = true
+record_expected_failure(
+  release_job_contract_failures,
+  tolerant_smoke_fixture,
+  "continue-on-error smoke job",
+  "release smoke job must propagate failures",
+) { |fixture| verify_main_ci_gate(fixture) }
+
+conditional_smoke_fixture = Marshal.load(Marshal.dump(workflow))
+conditional_smoke_fixture.fetch("jobs").fetch("smoke")["if"] = "github.event_name == 'push'"
+record_expected_failure(
+  release_job_contract_failures,
+  conditional_smoke_fixture,
+  "push-only smoke job",
+  "release smoke job must run for every release trigger",
+) { |fixture| verify_main_ci_gate(fixture) }
+
+reduced_smoke_matrix_fixture = Marshal.load(Marshal.dump(workflow))
+reduced_smoke_matrix_fixture.fetch("jobs").fetch("smoke").fetch("strategy")
+  .fetch("matrix").fetch("include").pop
+record_expected_failure(
+  release_job_contract_failures,
+  reduced_smoke_matrix_fixture,
+  "smoke matrix missing darwin/arm64",
+  "smoke job execution context must match approved template",
+) { |fixture| verify_main_ci_gate(fixture) }
+
+extra_smoke_step_fixture = Marshal.load(Marshal.dump(workflow))
+extra_smoke_step_fixture.fetch("jobs").fetch("smoke").fetch("steps").insert(
+  3,
+  {"name" => "Pollute smoke context", "run" => "true"},
+)
+record_expected_failure(
+  release_job_contract_failures,
+  extra_smoke_step_fixture,
+  "extra smoke step",
+  "smoke steps must match approved templates",
+) { |fixture| verify_main_ci_gate(fixture) }
+
+abort release_job_contract_failures.join("\n") unless release_job_contract_failures.empty?
 
 missing_actions_fixture = Marshal.load(Marshal.dump(workflow))
 missing_actions_fixture.fetch("jobs").fetch("build").fetch("permissions").delete("actions")
