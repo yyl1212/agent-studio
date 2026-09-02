@@ -138,6 +138,19 @@ def verify_release_status(workflow)
   end
 
   commands = shell_commands(draft_verification)
+  expected_cleanup_trap = [
+    "trap",
+    "rm -rf \"$remote_dist\"",
+    "EXIT",
+    "HUP",
+    "INT",
+    "TERM",
+  ]
+  cleanup_traps = commands.select { |command| command.first == "trap" }
+  unless cleanup_traps == [expected_cleanup_trap]
+    raise "draft verification trap must only clean remote_dist without changing exit status"
+  end
+
   expected_diff = ["diff", "-u", "expected-assets.txt", "actual-assets.txt"]
   asset_diffs = commands.select { |command| command.first == "diff" }
   unless asset_diffs.length == 1 && asset_diffs.first.first(4) == expected_diff
@@ -299,6 +312,18 @@ expect_release_status_failure(
   masked_tag_target_fixture,
   "masked annotated Tag-to-HEAD assertion",
   "draft verification Tag-to-HEAD assertion must propagate failures",
+)
+
+masked_exit_trap_fixture = Marshal.load(Marshal.dump(workflow))
+masked_exit_trap_run = release_step(masked_exit_trap_fixture, "Verify draft asset set").fetch("run")
+safe_cleanup_trap = "trap 'rm -rf \"$remote_dist\"' EXIT HUP INT TERM"
+unless masked_exit_trap_run.sub!(safe_cleanup_trap, "trap 'exit 0' EXIT HUP INT TERM")
+  abort "failed to construct masked EXIT trap fixture"
+end
+expect_release_status_failure(
+  masked_exit_trap_fixture,
+  "EXIT trap masks verification failure",
+  "draft verification trap must only clean remote_dist without changing exit status",
 )
 RUBY
 

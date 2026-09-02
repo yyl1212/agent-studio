@@ -74,7 +74,21 @@ def verify_main_ci_gate(workflow)
   rescue ArgumentError
     raise "main CI gate run script must have valid shell quoting"
   end
+
+  expected_cleanup_trap = ["trap", "rm -f \"$ci_runs\"", "EXIT", "HUP", "INT", "TERM"]
+  trap_commands = run.lines.select { |line| line.strip.start_with?("trap ") }.map do |line|
+    Shellwords.split(line.strip)
+  end
+  unless trap_commands == [expected_cleanup_trap]
+    raise "main CI gate trap must only clean ci_runs without changing exit status"
+  end
+
   jq_index = shell_tokens.rindex("jq")
+  unless shell_tokens.count("jq") == 1 &&
+      jq_index && jq_index.positive? &&
+      shell_tokens[jq_index - 1] == ">$ci_runs"
+    raise "main CI gate jq assertion must execute directly without control operators"
+  end
   jq_tokens = jq_index ? shell_tokens[jq_index..] : []
   jq_prefix = ["jq", "-e", "--arg", "sha", "$head_sha"]
   unless jq_tokens.length == 8 &&
@@ -116,6 +130,14 @@ def verify_release_credentials(workflow)
   }
   unless publish_job.fetch("env", {}) == expected_publish_env
     raise "publish env must contain only CGO_ENABLED and github.token"
+  end
+
+  publish_job.fetch("steps").each do |step|
+    token_env = step.fetch("env", {}).select { |name, _value| name.match?(/token/i) }
+    next if token_env.empty?
+    unless token_env == {"GH_TOKEN" => "${{ github.token }}"}
+      raise "publish steps must not override release token credentials"
+    end
   end
 
   pending = [workflow]
@@ -277,6 +299,31 @@ expect_main_ci_gate_failure(
   "main CI gate jq assertion must be the final unmasked command",
 )
 
+negated_jq_fixture = Marshal.load(Marshal.dump(workflow))
+negated_jq_run = negated_jq_fixture.fetch("jobs").fetch("build").fetch("steps")
+  .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
+unless negated_jq_run.sub!("jq -e", "! jq -e")
+  abort "failed to construct negated jq fixture"
+end
+expect_main_ci_gate_failure(
+  negated_jq_fixture,
+  "negated jq assertion",
+  "main CI gate jq assertion must execute directly without control operators",
+)
+
+masked_gate_trap_fixture = Marshal.load(Marshal.dump(workflow))
+masked_gate_trap_run = masked_gate_trap_fixture.fetch("jobs").fetch("build").fetch("steps")
+  .find { |step| step["name"] == "Verify successful main CI" }.fetch("run")
+safe_gate_trap = "trap 'rm -f \"$ci_runs\"' EXIT HUP INT TERM"
+unless masked_gate_trap_run.sub!(safe_gate_trap, "trap 'exit 0' EXIT HUP INT TERM")
+  abort "failed to construct masked gate EXIT trap fixture"
+end
+expect_main_ci_gate_failure(
+  masked_gate_trap_fixture,
+  "EXIT trap masks jq failure",
+  "main CI gate trap must only clean ci_runs without changing exit status",
+)
+
 bracket_secret_fixture = Marshal.load(Marshal.dump(workflow))
 bracket_secret_step = bracket_secret_fixture.fetch("jobs").fetch("build").fetch("steps")
   .find { |step| step["name"] == "Checkout" }
@@ -304,6 +351,16 @@ expect_release_credentials_failure(
   extra_publish_token_fixture,
   "extra publish token environment variable",
   "publish env must contain only CGO_ENABLED and github.token",
+)
+
+step_token_override_fixture = Marshal.load(Marshal.dump(workflow))
+step_token_override = step_token_override_fixture.fetch("jobs").fetch("publish").fetch("steps")
+  .find { |step| step["name"] == "Promote verified release" }
+step_token_override["env"] = {"GH_TOKEN" => "${{ vars.RELEASE_TOKEN }}"}
+expect_release_credentials_failure(
+  step_token_override_fixture,
+  "publish step overrides github.token",
+  "publish steps must not override release token credentials",
 )
 
 workflow_env_fixture = Marshal.load(Marshal.dump(workflow))
