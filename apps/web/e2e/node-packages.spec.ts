@@ -30,6 +30,7 @@ test('只通过本地 API 搜索并查看节点包', async ({ page }) => {
 	await page.getByRole('button', { name: '查看 Future Integration Nodes 版本详情' }).click()
 	const futureDetails = page.getByRole('region', { name: 'Future Integration Nodes 版本详情' })
 	await expect(futureDetails.getByText('不兼容：当前运行时版本过低')).toBeVisible()
+	await expect(futureDetails.getByText('运行时 v0.6.0 至 v0.7.0（不含）')).toBeVisible()
 
 	expect(remoteRequests).toEqual([])
 	await expect(page.getByRole('button', { name: /刷新|安装/ })).toHaveCount(0)

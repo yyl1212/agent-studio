@@ -44,6 +44,15 @@ describe('NodePackageCard', () => {
 		expect(screen.queryByText(/推荐 v/)).not.toBeInTheDocument()
 	})
 
+	it('展开详情时显示每个版本的运行时兼容范围', async () => {
+		vi.spyOn(api, 'getNodePackage').mockResolvedValue(detailFixture())
+		render(<NodePackageCard item={summaryFixture()} />)
+
+		fireEvent.click(screen.getByRole('button', { name: '查看 Example Nodes 版本详情' }))
+		const details = await screen.findByRole('region', { name: 'Example Nodes 版本详情' })
+		expect(within(details).getAllByText('运行时 v0.3.0 至 v0.4.0（不含）')).toHaveLength(3)
+	})
+
 	it('首次展开时加载详情，折叠后复用缓存', async () => {
 		const pending = deferred<NodePackageDetail>()
 		const get = vi.spyOn(api, 'getNodePackage').mockReturnValue(pending.promise)

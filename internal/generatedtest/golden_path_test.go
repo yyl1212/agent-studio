@@ -37,7 +37,7 @@ replace github.com/yyl1212/agent-studio => %s
 		"--license", "Apache-2.0",
 		"--repository", "https://example.com/sdkfixture",
 		"--runtime-min", "v0.2.0",
-		"--runtime-max-exclusive", "v0.5.0",
+		"--runtime-max-exclusive", "v0.6.0",
 	)
 	run(t, fixture, nil, cliBinary, "node", "init", "echo")
 	run(t, fixture, nil, cliBinary, "node", "test", "./extensions/echo")
@@ -64,7 +64,8 @@ replace github.com/yyl1212/agent-studio => %s
 	}
 	if !strings.Contains(string(packageManifest), "example.com/sdkfixture/extensions/echo") ||
 		!strings.Contains(string(packageManifest), `"type": "extension.echo"`) ||
-		!strings.Contains(string(packageManifest), `"version": "1.0.0"`) {
+		!strings.Contains(string(packageManifest), `"version": "1.0.0"`) ||
+		!strings.Contains(string(packageManifest), `"maxVersionExclusive": "v0.6.0"`) {
 		t.Fatalf("package manifest=%s", packageManifest)
 	}
 	generated, err := os.ReadFile(filepath.Join(fixture, "apps/api/internal/generated/nodes_gen.go"))

@@ -17,21 +17,21 @@ flowchart LR
 
 ## 开发者预览版本
 
-当前开发者预览版本为 `v0.4.0`，面向源码使用者、工作流作者和节点包开发者。它集中交付调试回放与安全局部重跑、Studio 聚焦工作台、工作流与运行管理恢复、聚焦式 Agent 页面和工作流版本治理；仍不是生产稳定版，也不提供 v1 兼容承诺。本次发布准备不预先声明远端 Tag 或 GitHub Release 已存在；源码安装和附件下载仅在标签工作流成功公开正式 Release 后可用，使用时以远端状态为准。完整边界见 [v0.4.0 Release Notes](docs/releases/v0.4.0.md)。
+当前开发者预览目标为 `v0.5.0-rc.1`，面向源码使用者、工作流作者、节点包开发者和运维人员在隔离环境验证。它集中交付 v0.5-A 可观测性、v0.5-B 画布体验、v0.5-C 备份恢复与 v0.5-D 持久运行；仍是非生产稳定版，也不提供 v1 兼容承诺。标签和附件只有在标签工作流成功后才能使用，执行安装或下载前应核对远端状态。完整边界、制品核验和限制见 [v0.5.0-rc.1 RC 说明](docs/releases/v0.5.0-rc.1.md)。
 
-标签创建后的源码安装命令：
+标签工作流成功后的源码安装命令：
 
 ```bash
-CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.4.0
+CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.5.0-rc.1
 agent-studio version
 ```
 
 ### 预编译 CLI 附件
 
-`v0.4.0` 仅在标签工作流全部成功并公开 GitHub Release 后提供 Linux/macOS 的 amd64、arm64 CLI 归档、SHA-256 校验和与逐归档 SPDX JSON SBOM。下载示例：
+`v0.5.0-rc.1` 仅在标签工作流全部成功后提供 Linux/macOS 的 amd64、arm64 CLI 归档、SHA-256 校验和与逐归档 SPDX JSON SBOM。下载示例：
 
 ```bash
-VERSION=v0.4.0
+VERSION=v0.5.0-rc.1
 OS=darwin
 ARCH=arm64
 ARCHIVE="agent-studio_${VERSION}_${OS}_${ARCH}.tar.gz"
@@ -142,7 +142,16 @@ Studio 顶部“版本历史”已支持发布版本时间线、任意两个快�
 
 顶部“运行”导航提供全局筛选、3 秒智能刷新、协作取消和安全完整重试；操作步骤、幂等语义与秘密边界见[运行管理与恢复](docs/run-management.md)。
 
-运行由 Worker 从 PostgreSQL 队列领取。API 或浏览器断开不会中止后台执行；Worker 异常退出后，纯节点可按租约自动接管，只读或有副作用的不确定节点会暂停为“等待人工恢复”。管理员可在“运行”详情的恢复入口逐个确认重试或终止运行，公开 Agent 页面不会暴露这些管理操作。
+运行由 Worker 从 PostgreSQL 队列领取。API 或浏览器断开不会中止后台执行；Worker 异常退出后，纯节点可按租约自动接管，只读或有副作用的不确定节点会暂停为“等待人工恢复”。管理员可在“运行”详情的恢复入口逐个确认重试或终止运行，公开 Agent 页面不会暴露这些管理操作。Worker 内的队列采样会记录队列深度和最老排队时间；它用于观察当前实例，不代替容量规划。
+
+RC 容量基线固定为 1 API、1 Worker、Worker concurrency 4、500 Mock runs 和 10 分钟命令上限。该演练不是 SLA；它只检查本地隔离 Compose 环境中运行、租约和队列是否收敛。只在隔离的非生产环境运行；先确认 Docker、Compose、curl、jq、Ruby 和 Go 可用，再导出专用测试密钥（不要使用真实或固定密钥）：
+
+```bash
+export RUN_PAYLOAD_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+make test-rc-capacity-e2e
+```
+
+升级到 migration 7 前必须在维护窗口停止旧 API、旧 Worker 和写库工具，使用同版本 API/Worker、同一数据库和相同 `RUN_PAYLOAD_ENCRYPTION_KEY` 重启。回滚仅恢复升级前备份和旧制品，不能逆迁移或混跑；完整步骤见 [v0.5-D 升级与回滚](docs/upgrades/v0.5-d.md)。
 
 健康检查：`GET http://localhost:8080/healthz`；就绪检查还会验证 PostgreSQL 与最新 migration：`GET http://localhost:8080/readyz`。
 
@@ -182,7 +191,7 @@ DATABASE_URL='postgres://user:password@target-host:5432/agent_studio?sslmode=dis
 import "github.com/yyl1212/agent-studio/sdk/go/agentnode"
 ```
 
-公开 SDK 当前为 v0.4 / `agent-studio.dev/v1alpha1`。完整生命周期与可编译示例见 [Go 节点 SDK API](docs/sdk/api.md)，版本承诺见 [兼容性策略](docs/sdk/compatibility.md)，开发入口见 [节点扩展指南](docs/node-development.md)。
+公开 SDK 当前为 v0.5 / `agent-studio.dev/v1alpha1`。完整生命周期与可编译示例见 [Go 节点 SDK API](docs/sdk/api.md)，版本承诺见 [兼容性策略](docs/sdk/compatibility.md)，开发入口见 [节点扩展指南](docs/node-development.md)。
 
 节点仍在 API 进程内运行。Capability 只用于展示和审计，不提供沙箱隔离；生产环境只应加载可信扩展，并用容器、系统权限和网络策略建立安全边界。
 
@@ -203,7 +212,7 @@ CGO_ENABLED=0 go run ./cmd/agent-studio generate
 CGO_ENABLED=0 go run ./cmd/agent-studio version
 ```
 
-源码开发构建显示 `0.4.0-dev`；从版本标签安装时显示对应 tag。
+源码开发构建显示 `0.5.0-dev`；从版本标签安装时显示对应 tag。
 
 完整步骤见 [30 分钟创建第一个扩展节点](docs/sdk/quickstart.md)，错误处理见 [节点开发排错](docs/sdk/debugging.md)。扩展与 API 同进程运行，只应加载可信源码。
 
