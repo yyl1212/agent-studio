@@ -32,7 +32,7 @@ vi.mock('./WorkflowCanvas', async () => {
         }))
         return (
           <div aria-label="工作流画布">
-            {props.placement && <span>点击画布放置，Esc 取消</span>}
+            {props.placement && <span>点击画布或使用确认放置，Esc 取消</span>}
             <button type="button" onClick={() => props.onPlacementConfirm?.()}>
               确认预览位置
             </button>
@@ -117,7 +117,7 @@ describe('Studio node creation', () => {
     renderStudio()
     await openLibraryAndChoose()
 
-    expect(screen.getByText('点击画布放置，Esc 取消')).toBeVisible()
+    expect(screen.getByText('点击画布或使用确认放置，Esc 取消')).toBeVisible()
     expect(api.saveWorkflow).not.toHaveBeenCalled()
     expect(localStorage.getItem(RECENT_NODE_STORAGE_KEY)).toBeNull()
 
@@ -126,6 +126,57 @@ describe('Studio node creation', () => {
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
     expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
     expect(JSON.parse(localStorage.getItem(RECENT_NODE_STORAGE_KEY) ?? '[]')).toEqual(['template@1'])
+  })
+
+  it('显式确认只创建一个节点并保存一次', async () => {
+    renderStudio()
+    await openLibraryAndChoose()
+
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: '确认放置' }))
+
+    await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledOnce(), { timeout: 2000 })
+    const graph = vi.mocked(api.saveWorkflow).mock.calls[0][1].graph
+    expect(graph.nodes.filter((candidate) => candidate.type === 'template')).toHaveLength(1)
+    expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+    expect(JSON.parse(localStorage.getItem(RECENT_NODE_STORAGE_KEY) ?? '[]')).toEqual(['template@1'])
+  })
+
+  it('显式取消不保存且焦点回到添加入口', async () => {
+    renderStudio()
+    const addButton = await screen.findByRole('button', { name: '添加节点' })
+    await openLibraryAndChoose()
+
+    await userEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(screen.queryByRole('button', { name: '确认放置' })).not.toBeInTheDocument()
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+    expect(localStorage.getItem(RECENT_NODE_STORAGE_KEY)).toBeNull()
+    await vi.waitFor(() => expect(addButton).toHaveFocus())
+  })
+
+  it('预览后目录定义失效时显式确认不会创建节点', async () => {
+    const catalog = [...definitions]
+    vi.mocked(api.listNodeTypes).mockResolvedValue(catalog)
+    renderStudio()
+    await openLibraryAndChoose()
+    catalog.pop()
+
+    await userEvent.click(screen.getByRole('button', { name: '确认放置' }))
+
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
+    expect(localStorage.getItem(RECENT_NODE_STORAGE_KEY)).toBeNull()
+    expect(screen.getByRole('dialog', { name: '节点库' })).toBeVisible()
+    expect(screen.getByRole('alert')).toHaveTextContent('节点定义已更新，请重新选择')
+  })
+
+  it('归档工作流不提供放置入口', async () => {
+    vi.mocked(api.getWorkflow).mockResolvedValue({ ...workflow, archivedAt: '2026-08-18T00:00:00Z' })
+    renderStudio()
+
+    expect(await screen.findByRole('button', { name: '添加节点' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: '确认放置' })).not.toBeInTheDocument()
+    expect(api.saveWorkflow).not.toHaveBeenCalled()
   })
 
   it('连线末端选择端口后原子创建节点和一条边', async () => {
@@ -149,7 +200,7 @@ describe('Studio node creation', () => {
 
     await userEvent.keyboard('{Escape}')
 
-    expect(screen.queryByText('点击画布放置，Esc 取消')).not.toBeInTheDocument()
+    expect(screen.queryByText('点击画布或使用确认放置，Esc 取消')).not.toBeInTheDocument()
     expect(api.saveWorkflow).not.toHaveBeenCalled()
   })
 

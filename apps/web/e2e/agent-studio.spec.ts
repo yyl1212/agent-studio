@@ -2,14 +2,22 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, openMoreActions, placeNodePreview, saveDraftGraph, type AgentPresentationSettings } from './helpers'
 
-test('点击预览可取消并在确认后只创建一次', async ({ page }) => {
+test('放置预览可显式取消并确认创建一次', async ({ page }) => {
   await createWorkflow(page, `placement-${Date.now()}`, '放置预览')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^提示词模板/ }).click()
-  await expect(page.getByText('点击画布放置，Esc 取消')).toBeVisible()
-  await page.keyboard.press('Escape')
+  await expect(page.getByText('点击画布或使用确认放置，Esc 取消')).toBeVisible()
+  await page.getByRole('button', { name: '取消' }).click()
   await expect(page.getByTestId('node-template')).toHaveCount(0)
 
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await page.getByRole('button', { name: '确认放置' }).click()
+  await expect(page.getByTestId('node-template')).toHaveCount(1)
+})
+
+test('画布点击仍可确认预览', async ({ page }) => {
+  await createWorkflow(page, `placement-canvas-${Date.now()}`, '画布放置')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^提示词模板/ }).click()
   await placeNodePreview(page)
@@ -27,19 +35,34 @@ test('节点目录和结构化卡片在三档视口无溢出', async ({ page }) 
     await page.setViewportSize(viewport)
     await page.getByRole('button', { name: '添加节点' }).click()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.getByRole('button', { name: /^提示词模板/ }).click()
+    const confirmBox = await page.getByRole('button', { name: '确认放置' }).boundingBox()
+    const cancelBox = await page.getByRole('button', { name: '取消' }).boundingBox()
+    if (!confirmBox || !cancelBox) throw new Error('无法读取放置操作按钮尺寸')
+    expect(confirmBox.height).toBeGreaterThanOrEqual(44)
+    expect(cancelBox.height).toBeGreaterThanOrEqual(44)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     await page.keyboard.press('Escape')
   }
 })
 
-test('节点库键盘路径可浏览并取消预览', async ({ page }) => {
+test('节点库键盘路径可取消或确认预览', async ({ page }) => {
   await createWorkflow(page, `keyboard-${Date.now()}`, '键盘添加')
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K')
   await page.getByLabel('搜索节点').fill('提示词')
   await page.keyboard.press('ArrowDown')
   await page.keyboard.press('Enter')
-  await expect(page.getByText('点击画布放置，Esc 取消')).toBeVisible()
+  await expect(page.getByText('点击画布或使用确认放置，Esc 取消')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('node-template')).toHaveCount(0)
+
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K')
+  await page.getByLabel('搜索节点').fill('提示词')
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: '确认放置' })).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('node-template')).toHaveCount(1)
 })
 
 test('新建工作流保护唯一边界并显示首节点引导', async ({ page }) => {
