@@ -65,6 +65,12 @@
 .studio-archive-banner { position: absolute; z-index: 9; top: 90px; left: 50%; max-width: calc(100% - 32px); padding: 9px 14px; transform: translateX(-50%); border: 1px solid #fedf89; border-radius: var(--as-radius-sm); color: #7a2e0e; background: #fffaeb; font-size: 13px; font-weight: 700; }
 .studio-canvas-status { position: fixed; z-index: 30; max-width: min(280px, calc(100vw - 16px)); padding: 8px 11px; transform: translate(12px, 12px); border: 1px solid color-mix(in srgb, var(--as-danger) 28%, var(--as-border)); border-radius: var(--as-radius-sm); color: var(--as-danger); background: var(--as-surface); box-shadow: var(--as-shadow-panel); font-size: 13px; font-weight: 650; }
 .studio-canvas-notice { top: auto; right: auto; bottom: 20px; left: 50%; max-width: min(520px, calc(100vw - 24px)); transform: translateX(-50%); text-align: center; }
+.studio-placement-actions { position: absolute; z-index: 19; bottom: 76px; left: 50%; display: flex; width: min(600px, calc(100% - 32px)); align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; transform: translateX(-50%); border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-surface); box-shadow: var(--as-shadow-panel); }
+.studio-placement-copy { display: grid; min-width: 0; gap: 3px; }
+.studio-placement-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-placement-copy span { color: var(--as-text-muted); font-size: 12px; }
+.studio-placement-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.studio-placement-buttons .ui-button { min-height: 44px; white-space: nowrap; }
 .boundary-repair-banner { position: absolute; z-index: 19; top: 90px; left: 50%; display: flex; width: min(680px, calc(100% - 32px)); align-items: center; justify-content: space-between; gap: 18px; padding: 12px 14px; transform: translateX(-50%); border: 1px solid color-mix(in srgb, var(--as-warning) 34%, var(--as-border)); border-radius: var(--as-radius-md); color: var(--as-warning); background: color-mix(in srgb, var(--as-warning) 8%, var(--as-surface)); box-shadow: var(--as-shadow-panel); }
 .boundary-repair-banner > div { display: grid; gap: 3px; }
 .boundary-repair-banner span { color: var(--as-text-muted); font-size: 12px; }
@@ -300,6 +306,8 @@
 }
 
 @media (max-width: 639px) {
+  .studio-placement-actions { bottom: 76px; display: grid; width: calc(100% - 24px); }
+  .studio-placement-buttons .ui-button { flex: 1 1 120px; }
   .studio-shell-library, .studio-shell-workbench { inset: 8px; width: auto; height: auto; max-height: none; }
   .studio-shell-library, .studio-shell-workbench { z-index: 21; }
   .workbench-panel { top: 8px; right: 8px; bottom: 8px; left: 8px; max-height: none; }
