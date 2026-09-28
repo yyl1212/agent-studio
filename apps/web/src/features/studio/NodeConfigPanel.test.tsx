@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { NodeDefinition } from '../../lib/api/client'
 import type { InvalidEdgeImpact } from './configDraft'
 import { NodeConfigPanel } from './NodeConfigPanel'
+import type { SaveState } from './saveQueue'
 import type { StudioNode } from './types'
 import type { NodeConfigStatus, UseNodeConfigDraftResult } from './useNodeConfigDraft'
 
@@ -32,7 +33,7 @@ const impact: InvalidEdgeImpact = {
 }
 
 it('无配置字段显示明确空状态并聚焦标题', async () => {
-  render(<NodeConfigPanel titleId="config-title" node={emptyNode} draft={idleDraft} onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
+  render(<NodeConfigPanel titleId="config-title" node={emptyNode} draft={idleDraft} saveState="saved" onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
   expect(screen.getByText('此节点无需配置')).toBeVisible()
   expect(screen.queryByRole('button', { name: '应用配置' })).not.toBeInTheDocument()
   await vi.waitFor(() => expect(screen.getByRole('heading', { name: '动态节点' })).toHaveFocus())
@@ -45,14 +46,49 @@ it.each([
   ['ready', '可以应用'],
   ['error', '需要处理'],
 ] as const)('%s 状态展示中文文字语义', (status, label) => {
-  render(<NodeConfigPanel titleId="config-title" node={node} draft={draftFor(status)} onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
-  expect(screen.getByRole('status')).toHaveTextContent(label)
+  render(<NodeConfigPanel titleId="config-title" node={node} draft={draftFor(status)} saveState="saved" onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
+  expect(screen.getByRole('status', { name: '配置草稿状态' })).toHaveTextContent(label)
+})
+
+it.each([
+  ['saved', '工作流已保存'],
+  ['pending', '等待保存'],
+  ['saving', '正在保存'],
+  ['error', '工作流保存失败'],
+  ['conflict', '工作流保存冲突'],
+] as const)('工作流保存状态 %s 与草稿状态分开显示', (saveState: SaveState, label) => {
+  render(<NodeConfigPanel titleId="config-title" node={node} draft={idleDraft} saveState={saveState} onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
+
+  expect(screen.getByRole('status', { name: '配置草稿状态' })).toHaveTextContent('已应用')
+  expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent(label)
+})
+
+it('未应用草稿与已保存工作流可以同时存在', () => {
+  render(<NodeConfigPanel titleId="config-title" node={node} draft={draftFor('dirty')} saveState="saved" onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
+
+  expect(screen.getByRole('status', { name: '配置草稿状态' })).toHaveTextContent('有未应用更改')
+  expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent('工作流已保存')
+})
+
+it('已应用草稿与保存失败可以同时存在并指向现有重试入口', () => {
+  render(<NodeConfigPanel titleId="config-title" node={node} draft={idleDraft} saveState="error" onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
+
+  expect(screen.getByRole('status', { name: '配置草稿状态' })).toHaveTextContent('已应用')
+  expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent('工作流保存失败')
+  expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent('重试保存')
+})
+
+it('保存冲突提示刷新工作流而不是重试覆盖', () => {
+  render(<NodeConfigPanel titleId="config-title" node={node} draft={idleDraft} saveState="conflict" onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
+
+  expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent('刷新工作流')
+  expect(screen.getByRole('status', { name: '工作流保存状态' })).not.toHaveTextContent('重试保存')
 })
 
 it('边界锁、重置和解析重试均有独立操作', async () => {
   const boundaryNode = { ...node, data: { ...node.data, nodeType: 'start' } }
   const draft = { ...draftFor('error'), errorKind: 'resolve' as const, error: '解析失败' }
-  render(<NodeConfigPanel titleId="config-title" node={boundaryNode} draft={draft} onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
+  render(<NodeConfigPanel titleId="config-title" node={boundaryNode} draft={draft} saveState="saved" onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
   expect(screen.getByText('工作流唯一节点，不可删除')).toBeVisible()
   await userEvent.click(screen.getByRole('button', { name: '重置' }))
   await userEvent.click(screen.getByRole('button', { name: '重试端口解析' }))
@@ -62,20 +98,20 @@ it('边界锁、重置和解析重试均有独立操作', async () => {
 
 it('就绪草稿提供应用并试运行动作', async () => {
   const onApplyAndTest = vi.fn()
-  render(<NodeConfigPanel titleId="config-title" node={node} draft={readyDraft} onApply={vi.fn()} onApplyAndTest={onApplyAndTest} />)
+  render(<NodeConfigPanel titleId="config-title" node={node} draft={readyDraft} saveState="saved" onApply={vi.fn()} onApplyAndTest={onApplyAndTest} />)
   await userEvent.click(screen.getByRole('button', { name: '应用并试运行' }))
   expect(onApplyAndTest).toHaveBeenCalledWith({ mode: 'new' }, readyDraft.preview?.ports)
 })
 
 it('节点配置打开后聚焦首个可编辑字段', async () => {
-  render(<NodeConfigPanel titleId="config-title" node={node} draft={readyDraft} onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
+  render(<NodeConfigPanel titleId="config-title" node={node} draft={readyDraft} saveState="saved" onApply={vi.fn()} onApplyAndTest={vi.fn()} />)
   await vi.waitFor(() => expect(screen.getByLabelText('模式')).toHaveFocus())
 })
 
 it('展示端口变化并用快捷键应用已就绪草稿', async () => {
   const onApply = vi.fn()
   const draft: UseNodeConfigDraftResult = { ...readyDraft, preview: { ports: { inputs: [], outputs: [] }, added: ['output:new'], removed: ['output:old'], invalidEdges: [impact] } }
-  render(<NodeConfigPanel titleId="config-title" node={node} draft={draft} onApply={onApply} onApplyAndTest={vi.fn()} />)
+  render(<NodeConfigPanel titleId="config-title" node={node} draft={draft} saveState="saved" onApply={onApply} onApplyAndTest={vi.fn()} />)
   expect(screen.getByText('新增 output:new')).toBeInTheDocument()
   expect(screen.getByText('移除 output:old')).toBeInTheDocument()
   expect(screen.getByText('1 条连线将失效')).toBeInTheDocument()

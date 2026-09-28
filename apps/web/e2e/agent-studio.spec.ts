@@ -403,10 +403,12 @@ test('保存失败后保留草稿并可重试', async ({ page }) => {
   await page.getByRole('button', { name: '提示词模板' }).click()
   await placeNodePreview(page)
   await expect(page.getByRole('button', { name: '重试保存' })).toBeVisible()
+  await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流保存失败')
   await expect(page.getByRole('button', { name: '测试运行' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '发布' })).toBeDisabled()
   await page.getByRole('button', { name: '重试保存' }).click()
-  await expect(page.getByText('已保存')).toBeVisible()
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
+  await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流已保存')
   await expect(page.getByTestId('node-template')).toBeVisible()
 })
 
@@ -617,7 +619,7 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
 
   const draft = await saveDraftGraph(page, workflowID, versionGraph('研究主题', 'Draft：{{topic}}'))
   await page.goto(workflowURL)
-  await expect(page.getByText('已保存')).toBeVisible()
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
   await openMoreActions(page)
   await page.getByRole('button', { name: '版本历史' }).click()
   await expect(page.getByRole('heading', { name: '版本历史' })).toBeFocused()

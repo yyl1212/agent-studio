@@ -637,12 +637,14 @@ describe('StudioPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /^提示词模板/ }))
     confirmPendingPlacement()
     const retry = await screen.findByRole('button', { name: '重试保存' }, { timeout: 2500 })
+    expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent('工作流保存失败')
     expect(screen.getByRole('button', { name: '测试运行' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '发布' })).toBeDisabled()
     expect(screen.getByTestId('node-template')).toBeInTheDocument()
     await userEvent.click(retry)
     await vi.waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(2), { timeout: 2500 })
     expect(await screen.findByText('已保存', {}, { timeout: 2500 })).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent('工作流已保存')
     expect(screen.getByTestId('node-template')).toBeInTheDocument()
   })
 
@@ -737,6 +739,8 @@ describe('StudioPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('草稿冲突')
     expect(screen.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+    expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent('工作流保存冲突')
+    expect(screen.getByRole('status', { name: '工作流保存状态' })).toHaveTextContent('刷新工作流')
     expect(screen.queryByRole('dialog', { name: '测试运行' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '刷新工作流' })).toBeVisible()
   })

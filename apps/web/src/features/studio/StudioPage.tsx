@@ -904,6 +904,7 @@ export function StudioPage() {
             titleId="studio-workbench-title"
             node={selectedNode}
             draft={configDraft}
+            saveState={saveState}
             onApply={(config, ports) => { if (configDraft.preview) requestConfigApplication({ mode: 'apply', nodeId: selectedNode.id, config, ports, preview: configDraft.preview }) }}
             onApplyAndTest={(config, ports) => { if (configDraft.preview) requestConfigApplication({ mode: 'apply-and-test', nodeId: selectedNode.id, config, ports, preview: configDraft.preview }) }}
           />}
