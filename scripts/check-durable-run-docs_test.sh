@@ -143,7 +143,10 @@ require_text "$ga_notes" '旧制品'
 require_text "$ga_notes" '禁止.*逆迁移'
 require_text "$ga_notes" '禁止.*混跑'
 
-require_text README.md 'v0\.5\.0-rc\.1'
+require_text README.md '当前开发者预览目标为 `v0\.5\.0`'
+require_text README.md 'docs/releases/v0\.5\.0\.md'
+require_text README.md 'CGO_ENABLED=0 go install github\.com/yyl1212/agent-studio/cmd/agent-studio@v0\.5\.0$'
+require_text README.md '^VERSION=v0\.5\.0$'
 require_text README.md '0\.5\.0-dev'
 require_text README.md 'SDK 当前为 v0\.5'
 require_text README.md 'agent-studio\.dev/v1alpha1'
@@ -171,13 +174,23 @@ if grep -Eq 'Capability.*v0\.4|v0\.4.*Capability' docs/sdk/compatibility.md; the
   exit 1
 fi
 
-require_text docs/upgrades/v0.5-d.md 'v0\.5\.0-rc\.1'
+require_text docs/upgrades/v0.5-d.md '^\| GA 目标 \| `v0\.5\.0` \|$'
+require_text docs/upgrades/v0.5-d.md 'docs/releases/v0\.5\.0\.md|\.\./releases/v0\.5\.0\.md'
 require_text docs/upgrades/v0.5-d.md '版本矩阵'
 require_text docs/upgrades/v0.5-d.md '官方 manifest Runtime 范围.*\[v0\.2\.0, v0\.6\.0\)'
 require_text docs/upgrades/v0.5-d.md 'make test-v05-upgrade-rollback-e2e'
 require_text docs/upgrades/v0.5-d.md '10 分钟'
 require_text docs/upgrades/v0.5-d.md 'v1alpha2.*v1alpha1|v1alpha1.*v1alpha2'
 require_text docs/upgrades/v0.5-d.md '升级前.*dump|升级前.*数据库备份'
+
+if grep -Eq '当前开发者预览目标为.*v0\.5\.0-rc\.1|VERSION=v0\.5\.0-rc\.1' README.md; then
+  printf '%s\n' 'README still points to the RC as the current version' >&2
+  exit 1
+fi
+if grep -Eq '^\| RC 目标 \|' docs/upgrades/v0.5-d.md; then
+  printf '%s\n' 'upgrade guide still labels the RC as the current target' >&2
+  exit 1
+fi
 
 for document in "$release_notes" "$ga_notes" README.md docs/sdk/compatibility.md docs/upgrades/v0.5-d.md; do
   if grep -Eq '已发布|已公开|Latest' "$document"; then
