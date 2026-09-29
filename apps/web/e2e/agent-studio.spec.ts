@@ -20,7 +20,7 @@ test('画布点击仍可确认预览', async ({ page }) => {
   await createWorkflow(page, `placement-canvas-${Date.now()}`, '画布放置')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^提示词模板/ }).click()
-  await placeNodePreview(page)
+  await placeNodePreview(page, 'canvas')
   await expect(page.getByTestId('node-template')).toHaveCount(1)
 })
 
@@ -410,6 +410,34 @@ test('保存失败后保留草稿并可重试', async ({ page }) => {
   await expect(page.getByText('已保存', { exact: true })).toBeVisible()
   await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流已保存')
   await expect(page.getByTestId('node-template')).toBeVisible()
+})
+
+test('保存冲突时不误报已保存或自动重复提交', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const workflowURL = await createWorkflow(page, `save-conflict-${suffix}`, `保存冲突 ${suffix}`)
+  const workflowID = new URL(workflowURL).pathname.split('/').at(-1)
+  if (!workflowID) throw new Error('创建后未获得工作流 ID')
+  let saveAttempts = 0
+  await page.route(`**/api/workflows/${workflowID}`, async (route) => {
+    if (route.request().method() === 'PUT') {
+      saveAttempts += 1
+      await route.fulfill({ status: 409, contentType: 'application/json', body: '{"code":"REVISION_CONFLICT","message":"草稿冲突"}' })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: '提示词模板' }).click()
+  await placeNodePreview(page)
+
+  await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流保存冲突')
+  await expect(page.getByRole('button', { name: '刷新工作流' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '重试保存' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '测试运行' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '发布' })).toBeDisabled()
+  await expect(page.getByText('已保存', { exact: true })).toHaveCount(0)
+  expect(saveAttempts).toBe(1)
 })
 
 test('创建、测试、发布并运行 Agent', async ({ page }) => {
