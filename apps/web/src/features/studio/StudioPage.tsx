@@ -36,6 +36,7 @@ import {
   previewNodePosition,
 } from './nodePlacement'
 import type { NodePlacementState } from './NodePlacementPreview'
+import { NodePlacementActions } from './NodePlacementActions'
 import { PublishDialog } from './PublishDialog'
 import { SaveQueue, type SaveState } from './saveQueue'
 import { StudioCommandBar } from './StudioCommandBar'
@@ -269,6 +270,10 @@ export function StudioPage() {
     )
     if (!currentDefinition) {
       setNodeLibraryError('节点定义已更新，请重新选择')
+      if (placement) {
+        setPlacement(undefined)
+        setLibraryOpen(true)
+      }
       return undefined
     }
     const position = dropNodePosition(options.requestedPosition, nodes)
@@ -899,6 +904,7 @@ export function StudioPage() {
             titleId="studio-workbench-title"
             node={selectedNode}
             draft={configDraft}
+            saveState={saveState}
             onApply={(config, ports) => { if (configDraft.preview) requestConfigApplication({ mode: 'apply', nodeId: selectedNode.id, config, ports, preview: configDraft.preview }) }}
             onApplyAndTest={(config, ports) => { if (configDraft.preview) requestConfigApplication({ mode: 'apply-and-test', nodeId: selectedNode.id, config, ports, preview: configDraft.preview }) }}
           />}
@@ -906,6 +912,11 @@ export function StudioPage() {
           {workbench.mode.kind === 'versions' && <VersionGovernancePanel titleId="studio-workbench-title" workflow={workflow} saveState={saveState} editSerial={draftEditSerial} archived={archived} onApplyWorkflow={applyVersionWorkflow} onLockChange={setVersionLocked} />}
         </WorkbenchPanel> : undefined}
       />
+      {placement && <NodePlacementActions
+        nodeTitle={placement.definition.title}
+        onConfirm={confirmPlacement}
+        onCancel={() => setPlacement(undefined)}
+      />}
       <BoundaryRepairBanner
         diagnosis={boundaryDiagnosis}
         nodes={nodes}

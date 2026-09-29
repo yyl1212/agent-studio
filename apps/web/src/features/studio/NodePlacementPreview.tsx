@@ -25,7 +25,7 @@ export function NodePlacementPreview({ state }: NodePlacementPreviewProps) {
         <strong>{state.definition.title}</strong>
       </span>
       <small>{state.definition.type}@{state.definition.version}</small>
-      <span>点击画布放置，Esc 取消</span>
+      <span>点击画布或使用确认放置，Esc 取消</span>
     </div>
   )
 }

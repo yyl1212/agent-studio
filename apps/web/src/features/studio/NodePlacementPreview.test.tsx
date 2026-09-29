@@ -32,7 +32,7 @@ describe('NodePlacementPreview', () => {
     )
 
     expect(screen.getByText('提示词模板')).toBeVisible()
-    expect(screen.getByText('点击画布放置，Esc 取消')).toBeVisible()
+    expect(screen.getByText('点击画布或使用确认放置，Esc 取消')).toBeVisible()
     expect(container.querySelector('.react-flow__node')).not.toBeInTheDocument()
     expect(container.querySelector('.react-flow__edge')).not.toBeInTheDocument()
   })

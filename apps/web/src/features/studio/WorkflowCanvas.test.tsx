@@ -197,7 +197,7 @@ it('placement 指针移动转换坐标，画布点击确认且预览不进入节
   fireEvent.pointerMove(screen.getByLabelText('工作流画布'), { clientX: 440, clientY: 260 })
   expect(onPlacementMove).toHaveBeenCalledWith({ x: 420, y: 260 })
   expect(screen.getAllByTestId(/flow-node-/)).toHaveLength(1)
-  expect(screen.getByText('点击画布放置，Esc 取消')).toBeVisible()
+  expect(screen.getByText('点击画布或使用确认放置，Esc 取消')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: '点击画布空白' }))
   expect(onPlacementConfirm).toHaveBeenCalledOnce()
 })

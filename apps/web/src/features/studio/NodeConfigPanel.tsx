@@ -4,6 +4,7 @@ import { SchemaForm } from '../../components/schema-form/SchemaForm'
 import type { JSONSchema } from '../../components/schema-form/types'
 import type { ResolvedPorts } from '../../lib/api/client'
 import { NodeIcon } from './NodeIcon'
+import type { SaveState } from './saveQueue'
 import type { StudioNode } from './types'
 import type { UseNodeConfigDraftResult } from './useNodeConfigDraft'
 
@@ -11,11 +12,20 @@ interface NodeConfigPanelProps {
   titleId: string
   node: StudioNode
   draft: UseNodeConfigDraftResult
+  saveState: SaveState
   onApply: (config: Record<string, unknown>, ports: ResolvedPorts) => void | Promise<void>
   onApplyAndTest: (config: Record<string, unknown>, ports: ResolvedPorts) => void | Promise<void>
 }
 
-export function NodeConfigPanel({ titleId, node, draft, onApply, onApplyAndTest }: NodeConfigPanelProps) {
+const workflowSaveStatus: Record<SaveState, { label: string; guidance?: string }> = {
+  saved: { label: '工作流已保存' },
+  pending: { label: '等待保存' },
+  saving: { label: '正在保存' },
+  error: { label: '工作流保存失败', guidance: '请在顶部命令条点击“重试保存”' },
+  conflict: { label: '工作流保存冲突', guidance: '请在顶部命令条点击“刷新工作流”' },
+}
+
+export function NodeConfigPanel({ titleId, node, draft, saveState, onApply, onApplyAndTest }: NodeConfigPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLHeadingElement>(null)
   const schema = node.data.definition?.configSchema as JSONSchema ?? { type: 'object', properties: {} }
@@ -44,6 +54,7 @@ export function NodeConfigPanel({ titleId, node, draft, onApply, onApplyAndTest 
     idle: '已应用', dirty: '有未应用更改', resolving: '正在解析端口', ready: '可以应用', error: '需要处理',
   }[draft.status]
   const statusIcon = { idle: '✓', dirty: '●', resolving: '◌', ready: '✓', error: '!' }[draft.status]
+  const saveStatus = workflowSaveStatus[saveState]
   const firstValidationError = Object.keys(draft.validation.errors)[0]
   const focusValidationError = () => document.getElementById(`field-${firstValidationError.slice(1).replace(/[^a-zA-Z0-9_-]/g, '-')}`)?.focus()
   return <div ref={panelRef} className="node-config-panel">
@@ -52,7 +63,8 @@ export function NodeConfigPanel({ titleId, node, draft, onApply, onApplyAndTest 
       <span className="node-category">节点配置</span>
       <h2 ref={titleRef} id={titleId} tabIndex={-1}>{node.data.definition?.title ?? node.data.nodeType}</h2>
       <small>{node.data.nodeType}@{node.data.typeVersion} · {node.id}</small>
-      <span className={`node-config-status ${draft.status}`} role="status" aria-live="polite"><span aria-hidden="true">{statusIcon}</span>{statusLabel}</span>
+      <span className={`node-config-status ${draft.status}`} role="status" aria-label="配置草稿状态" aria-live="polite"><span aria-hidden="true">{statusIcon}</span>{statusLabel}</span>
+      <span className={`node-workflow-save-status ${saveState}`} role="status" aria-label="工作流保存状态" aria-live="polite"><strong>{saveStatus.label}</strong>{saveStatus.guidance && <span>{saveStatus.guidance}</span>}</span>
       {boundary && <span className="node-boundary-note">工作流唯一节点，不可删除</span>}
     </header>
     <div className="node-config-body">

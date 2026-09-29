@@ -2,18 +2,56 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { applyNodeConfig, configureAgentPresentation, configureStartTextField, connectPorts, createWorkflow, openMoreActions, placeNodePreview, saveDraftGraph, type AgentPresentationSettings } from './helpers'
 
-test('点击预览可取消并在确认后只创建一次', async ({ page }) => {
+test('放置预览可显式取消并确认创建一次', async ({ page }) => {
   await createWorkflow(page, `placement-${Date.now()}`, '放置预览')
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^提示词模板/ }).click()
-  await expect(page.getByText('点击画布放置，Esc 取消')).toBeVisible()
-  await page.keyboard.press('Escape')
+  await expect(page.getByText('点击画布或使用确认放置，Esc 取消')).toBeVisible()
+  await page.getByRole('button', { name: '取消' }).click()
   await expect(page.getByTestId('node-template')).toHaveCount(0)
 
   await page.getByRole('button', { name: '添加节点' }).click()
   await page.getByRole('button', { name: /^提示词模板/ }).click()
-  await placeNodePreview(page)
+  await page.getByRole('button', { name: '确认放置' }).click()
   await expect(page.getByTestId('node-template')).toHaveCount(1)
+})
+
+test('画布点击仍可确认预览', async ({ page }) => {
+  await createWorkflow(page, `placement-canvas-${Date.now()}`, '画布放置')
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: /^提示词模板/ }).click()
+  await placeNodePreview(page, 'canvas')
+  await expect(page.getByTestId('node-template')).toHaveCount(1)
+})
+
+test.describe('触屏节点放置', () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } })
+
+  test('触摸取消不保存，确认只创建并保存一次', async ({ page }) => {
+    const workflowURL = await createWorkflow(page, `placement-touch-${Date.now()}`, '触屏放置')
+    const workflowID = new URL(workflowURL).pathname.split('/').at(-1)
+    if (!workflowID) throw new Error('创建后未获得工作流 ID')
+    let saveRequests = 0
+    await page.route(`**/api/workflows/${workflowID}`, async (route) => {
+      if (route.request().method() === 'PUT') saveRequests += 1
+      await route.continue()
+    })
+
+    await page.getByRole('button', { name: '添加节点' }).tap()
+    await page.getByRole('button', { name: /^提示词模板/ }).tap()
+    await page.getByRole('button', { name: '取消' }).tap()
+    await expect(page.getByTestId('node-template')).toHaveCount(0)
+    expect(saveRequests).toBe(0)
+
+    await page.getByRole('button', { name: '添加节点' }).tap()
+    await page.getByRole('button', { name: /^提示词模板/ }).tap()
+    await page.getByRole('button', { name: '确认放置' }).tap()
+    await expect(page.getByTestId('node-template')).toHaveCount(1)
+    await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+    await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流已保存')
+    expect(saveRequests).toBe(1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  })
 })
 
 test('节点目录和结构化卡片在三档视口无溢出', async ({ page }) => {
@@ -27,19 +65,34 @@ test('节点目录和结构化卡片在三档视口无溢出', async ({ page }) 
     await page.setViewportSize(viewport)
     await page.getByRole('button', { name: '添加节点' }).click()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.getByRole('button', { name: /^提示词模板/ }).click()
+    const confirmBox = await page.getByRole('button', { name: '确认放置' }).boundingBox()
+    const cancelBox = await page.getByRole('button', { name: '取消' }).boundingBox()
+    if (!confirmBox || !cancelBox) throw new Error('无法读取放置操作按钮尺寸')
+    expect(confirmBox.height).toBeGreaterThanOrEqual(44)
+    expect(cancelBox.height).toBeGreaterThanOrEqual(44)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     await page.keyboard.press('Escape')
   }
 })
 
-test('节点库键盘路径可浏览并取消预览', async ({ page }) => {
+test('节点库键盘路径可取消或确认预览', async ({ page }) => {
   await createWorkflow(page, `keyboard-${Date.now()}`, '键盘添加')
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K')
   await page.getByLabel('搜索节点').fill('提示词')
   await page.keyboard.press('ArrowDown')
   await page.keyboard.press('Enter')
-  await expect(page.getByText('点击画布放置，Esc 取消')).toBeVisible()
+  await expect(page.getByText('点击画布或使用确认放置，Esc 取消')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('node-template')).toHaveCount(0)
+
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K')
+  await page.getByLabel('搜索节点').fill('提示词')
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: '确认放置' })).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('node-template')).toHaveCount(1)
 })
 
 test('新建工作流保护唯一边界并显示首节点引导', async ({ page }) => {
@@ -380,11 +433,41 @@ test('保存失败后保留草稿并可重试', async ({ page }) => {
   await page.getByRole('button', { name: '提示词模板' }).click()
   await placeNodePreview(page)
   await expect(page.getByRole('button', { name: '重试保存' })).toBeVisible()
+  await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流保存失败')
   await expect(page.getByRole('button', { name: '测试运行' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '发布' })).toBeDisabled()
   await page.getByRole('button', { name: '重试保存' }).click()
-  await expect(page.getByText('已保存')).toBeVisible()
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
+  await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流已保存')
   await expect(page.getByTestId('node-template')).toBeVisible()
+})
+
+test('保存冲突时不误报已保存或自动重复提交', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const workflowURL = await createWorkflow(page, `save-conflict-${suffix}`, `保存冲突 ${suffix}`)
+  const workflowID = new URL(workflowURL).pathname.split('/').at(-1)
+  if (!workflowID) throw new Error('创建后未获得工作流 ID')
+  let saveAttempts = 0
+  await page.route(`**/api/workflows/${workflowID}`, async (route) => {
+    if (route.request().method() === 'PUT') {
+      saveAttempts += 1
+      await route.fulfill({ status: 409, contentType: 'application/json', body: '{"code":"REVISION_CONFLICT","message":"草稿冲突"}' })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.getByRole('button', { name: '添加节点' }).click()
+  await page.getByRole('button', { name: '提示词模板' }).click()
+  await placeNodePreview(page)
+
+  await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流保存冲突')
+  await expect(page.getByRole('button', { name: '刷新工作流' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '重试保存' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '测试运行' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '发布' })).toBeDisabled()
+  await expect(page.getByText('已保存', { exact: true })).toHaveCount(0)
+  expect(saveAttempts).toBe(1)
 })
 
 test('创建、测试、发布并运行 Agent', async ({ page }) => {
@@ -594,7 +677,7 @@ test('版本比较、恢复草稿和撤销保持线上版本不变', async ({ pa
 
   const draft = await saveDraftGraph(page, workflowID, versionGraph('研究主题', 'Draft：{{topic}}'))
   await page.goto(workflowURL)
-  await expect(page.getByText('已保存')).toBeVisible()
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
   await openMoreActions(page)
   await page.getByRole('button', { name: '版本历史' }).click()
   await expect(page.getByRole('heading', { name: '版本历史' })).toBeFocused()

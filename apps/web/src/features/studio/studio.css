@@ -12,7 +12,7 @@
 .workbench-close { position: absolute; z-index: 6; top: 10px; right: 10px; width: 44px; min-height: 44px; padding: 5px; font-size: 20px; }
 .workbench-panel:has(.node-config-panel) { overflow: hidden; }
 .node-config-panel { display: grid; height: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
-.node-config-header { position: sticky; z-index: 5; top: -22px; display: grid; min-width: 0; grid-template: "icon category status" auto "icon title status" auto "meta meta meta" auto "boundary boundary boundary" auto / 40px minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; margin: -22px -22px 0; padding: 18px 58px 16px 22px; border-bottom: 1px solid var(--as-border); background: color-mix(in srgb, var(--as-surface) 97%, transparent); backdrop-filter: blur(12px); }
+.node-config-header { position: sticky; z-index: 5; top: -22px; display: grid; min-width: 0; grid-template: "icon category status" auto "icon title status" auto "meta meta meta" auto "save save save" auto "boundary boundary boundary" auto / 40px minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; margin: -22px -22px 0; padding: 18px 58px 16px 22px; border-bottom: 1px solid var(--as-border); background: color-mix(in srgb, var(--as-surface) 97%, transparent); backdrop-filter: blur(12px); }
 .node-config-icon { grid-area: icon; display: grid; width: 40px; height: 40px; place-items: center; border-radius: 11px; color: var(--as-primary); background: color-mix(in srgb, var(--as-primary) 9%, var(--as-surface)); }
 .node-config-icon .node-icon { width: 22px; height: 22px; }
 .node-config-header .node-category { grid-area: category; }
@@ -22,6 +22,10 @@
 .node-config-status.ready, .node-config-status.idle { color: #067647; background: #ecfdf3; }
 .node-config-status.dirty, .node-config-status.resolving { color: #9c2a10; background: #fff7ed; }
 .node-config-status.error { color: var(--as-danger); background: #fef3f2; }
+.node-workflow-save-status { grid-area: save; display: flex; min-width: 0; flex-wrap: wrap; gap: 4px 8px; margin-top: 8px; padding: 7px 9px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); color: var(--as-text-muted); background: var(--as-surface-muted); font-size: 12px; line-height: 1.4; }
+.node-workflow-save-status strong { color: var(--as-text); }
+.node-workflow-save-status.error, .node-workflow-save-status.conflict { border-color: color-mix(in srgb, var(--as-danger) 30%, var(--as-border)); color: var(--as-danger); background: #fef3f2; }
+.node-workflow-save-status.error strong, .node-workflow-save-status.conflict strong { color: var(--as-danger); }
 .node-boundary-note { grid-area: boundary; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--as-border); border-radius: var(--as-radius-sm); color: var(--as-text-muted); background: var(--as-surface-muted); font-size: 12px; }
 .node-config-body { min-width: 0; min-height: 0; margin: 0 -22px -22px; padding: 18px 22px 22px; overflow: auto; overscroll-behavior: contain; }
 .node-config-body > *:first-child { margin-top: 0; }
@@ -65,6 +69,12 @@
 .studio-archive-banner { position: absolute; z-index: 9; top: 90px; left: 50%; max-width: calc(100% - 32px); padding: 9px 14px; transform: translateX(-50%); border: 1px solid #fedf89; border-radius: var(--as-radius-sm); color: #7a2e0e; background: #fffaeb; font-size: 13px; font-weight: 700; }
 .studio-canvas-status { position: fixed; z-index: 30; max-width: min(280px, calc(100vw - 16px)); padding: 8px 11px; transform: translate(12px, 12px); border: 1px solid color-mix(in srgb, var(--as-danger) 28%, var(--as-border)); border-radius: var(--as-radius-sm); color: var(--as-danger); background: var(--as-surface); box-shadow: var(--as-shadow-panel); font-size: 13px; font-weight: 650; }
 .studio-canvas-notice { top: auto; right: auto; bottom: 20px; left: 50%; max-width: min(520px, calc(100vw - 24px)); transform: translateX(-50%); text-align: center; }
+.studio-placement-actions { position: absolute; z-index: 19; bottom: 76px; left: 50%; display: flex; width: min(600px, calc(100% - 32px)); align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; transform: translateX(-50%); border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-surface); box-shadow: var(--as-shadow-panel); }
+.studio-placement-copy { display: grid; min-width: 0; gap: 3px; }
+.studio-placement-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-placement-copy span { color: var(--as-text-muted); font-size: 12px; }
+.studio-placement-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.studio-placement-buttons .ui-button { min-height: 44px; white-space: nowrap; }
 .boundary-repair-banner { position: absolute; z-index: 19; top: 90px; left: 50%; display: flex; width: min(680px, calc(100% - 32px)); align-items: center; justify-content: space-between; gap: 18px; padding: 12px 14px; transform: translateX(-50%); border: 1px solid color-mix(in srgb, var(--as-warning) 34%, var(--as-border)); border-radius: var(--as-radius-md); color: var(--as-warning); background: color-mix(in srgb, var(--as-warning) 8%, var(--as-surface)); box-shadow: var(--as-shadow-panel); }
 .boundary-repair-banner > div { display: grid; gap: 3px; }
 .boundary-repair-banner span { color: var(--as-text-muted); font-size: 12px; }
@@ -300,6 +310,8 @@
 }
 
 @media (max-width: 639px) {
+  .studio-placement-actions { bottom: 76px; display: grid; width: calc(100% - 24px); }
+  .studio-placement-buttons .ui-button { flex: 1 1 120px; }
   .studio-shell-library, .studio-shell-workbench { inset: 8px; width: auto; height: auto; max-height: none; }
   .studio-shell-library, .studio-shell-workbench { z-index: 21; }
   .workbench-panel { top: 8px; right: 8px; bottom: 8px; left: 8px; max-height: none; }
@@ -315,7 +327,7 @@
   .boundary-repair-dialog { width: calc(100% - 16px); max-height: calc(100vh - 16px); padding: 20px; }
   .boundary-repair-dialog .dialog-actions { align-items: stretch; flex-direction: column; }
   .boundary-repair-dialog .dialog-actions .ui-button { width: 100%; }
-  .node-config-header { grid-template: "icon category" auto "icon title" auto "meta meta" auto "status status" auto "boundary boundary" auto / 40px minmax(0, 1fr); padding-right: 58px; }
+  .node-config-header { grid-template: "icon category" auto "icon title" auto "meta meta" auto "status status" auto "save save" auto "boundary boundary" auto / 40px minmax(0, 1fr); padding-right: 58px; }
   .node-config-status { justify-self: start; margin-top: 7px; }
   .node-config-panel .schema-form-actions { align-items: stretch; flex-direction: column; }
   .node-config-panel .schema-form-actions button { width: 100%; }
