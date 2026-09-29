@@ -24,6 +24,36 @@ test('画布点击仍可确认预览', async ({ page }) => {
   await expect(page.getByTestId('node-template')).toHaveCount(1)
 })
 
+test.describe('触屏节点放置', () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } })
+
+  test('触摸取消不保存，确认只创建并保存一次', async ({ page }) => {
+    const workflowURL = await createWorkflow(page, `placement-touch-${Date.now()}`, '触屏放置')
+    const workflowID = new URL(workflowURL).pathname.split('/').at(-1)
+    if (!workflowID) throw new Error('创建后未获得工作流 ID')
+    let saveRequests = 0
+    await page.route(`**/api/workflows/${workflowID}`, async (route) => {
+      if (route.request().method() === 'PUT') saveRequests += 1
+      await route.continue()
+    })
+
+    await page.getByRole('button', { name: '添加节点' }).tap()
+    await page.getByRole('button', { name: /^提示词模板/ }).tap()
+    await page.getByRole('button', { name: '取消' }).tap()
+    await expect(page.getByTestId('node-template')).toHaveCount(0)
+    expect(saveRequests).toBe(0)
+
+    await page.getByRole('button', { name: '添加节点' }).tap()
+    await page.getByRole('button', { name: /^提示词模板/ }).tap()
+    await page.getByRole('button', { name: '确认放置' }).tap()
+    await expect(page.getByTestId('node-template')).toHaveCount(1)
+    await expect(page.getByRole('dialog', { name: '提示词模板' })).toBeVisible()
+    await expect(page.getByRole('status', { name: '工作流保存状态' })).toContainText('工作流已保存')
+    expect(saveRequests).toBe(1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  })
+})
+
 test('节点目录和结构化卡片在三档视口无溢出', async ({ page }) => {
   await createWorkflow(page, `visual-${Date.now()}`, '节点视觉')
   await expect(page.getByTestId('node-start')).toContainText('工作流唯一')
