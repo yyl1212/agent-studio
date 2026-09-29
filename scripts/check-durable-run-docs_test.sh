@@ -92,7 +92,61 @@ require_text "$release_notes" '旧制品'
 require_text "$release_notes" '禁止.*逆迁移'
 require_text "$release_notes" '禁止.*混跑'
 
-require_text README.md 'v0\.5\.0-rc\.1'
+ga_notes=docs/releases/v0.5.0.md
+require_text "$ga_notes" 'Agent Studio v0\.5\.0'
+require_text "$ga_notes" '正式开发者预览'
+require_text "$ga_notes" '0\.5\.0-dev'
+require_text "$ga_notes" 'Go Node SDK.*0\.5\.0'
+require_text "$ga_notes" 'agent-studio\.dev/v1alpha1'
+require_text "$ga_notes" '官方 manifest Runtime 范围.*\[v0\.2\.0, v0\.6\.0\)'
+require_text "$ga_notes" 'v0\.5-A'
+require_text "$ga_notes" 'v0\.5-B'
+require_text "$ga_notes" 'v0\.5-C'
+require_text "$ga_notes" 'v0\.5-D'
+require_text "$ga_notes" '确认放置'
+require_text "$ga_notes" '工作流.*保存状态|保存状态.*工作流'
+require_text "$ga_notes" '同版本.*API.*Worker|API.*Worker.*同版本'
+require_text "$ga_notes" '同一数据库|相同数据库'
+require_text "$ga_notes" '相同密钥|同一密钥'
+require_text "$ga_notes" 'migration 7'
+require_text "$ga_notes" 'v1alpha2'
+require_text "$ga_notes" 'v1alpha1'
+require_text "$ga_notes" '人工恢复'
+require_text "$ga_notes" '1 API'
+require_text "$ga_notes" '1 Worker'
+require_text "$ga_notes" 'concurrency 4|并发 4'
+require_text "$ga_notes" '500 Mock runs'
+require_text "$ga_notes" '10 分钟'
+require_text "$ga_notes" '不是 SLA'
+require_text "$ga_notes" '隔离.*非生产|非生产.*隔离'
+require_text "$ga_notes" '专用.*测试密钥|测试密钥.*专用'
+require_text "$ga_notes" 'RUN_PAYLOAD_ENCRYPTION_KEY.*openssl rand -base64 32'
+require_text "$ga_notes" 'Docker.*Compose.*curl.*jq.*Ruby.*Go.*可用'
+require_text "$ga_notes" 'CGO_ENABLED=0 go install github\.com/yyl1212/agent-studio/cmd/agent-studio@v0\.5\.0$'
+require_text "$ga_notes" '^VERSION=v0\.5\.0$'
+require_text "$ga_notes" 'darwin_amd64'
+require_text "$ga_notes" 'darwin_arm64'
+require_text "$ga_notes" 'linux_amd64'
+require_text "$ga_notes" 'linux_arm64'
+require_text "$ga_notes" '9 件'
+require_text "$ga_notes" 'checksum|checksums'
+require_text "$ga_notes" 'SPDX.*SBOM|SBOM.*SPDX'
+require_text "$ga_notes" '单租户'
+require_text "$ga_notes" '本地优先'
+require_text "$ga_notes" '无容器制品'
+require_text "$ga_notes" '无本地 RAG'
+require_text "$ga_notes" '无自动业务重试'
+require_text "$ga_notes" '无签名/公证'
+require_text "$ga_notes" '不提供 v1 兼容承诺'
+require_text "$ga_notes" '升级前.*备份|备份.*升级前'
+require_text "$ga_notes" '旧制品'
+require_text "$ga_notes" '禁止.*逆迁移'
+require_text "$ga_notes" '禁止.*混跑'
+
+require_text README.md '当前开发者预览目标为 `v0\.5\.0`'
+require_text README.md 'docs/releases/v0\.5\.0\.md'
+require_text README.md 'CGO_ENABLED=0 go install github\.com/yyl1212/agent-studio/cmd/agent-studio@v0\.5\.0$'
+require_text README.md '^VERSION=v0\.5\.0$'
 require_text README.md '0\.5\.0-dev'
 require_text README.md 'SDK 当前为 v0\.5'
 require_text README.md 'agent-studio\.dev/v1alpha1'
@@ -120,7 +174,8 @@ if grep -Eq 'Capability.*v0\.4|v0\.4.*Capability' docs/sdk/compatibility.md; the
   exit 1
 fi
 
-require_text docs/upgrades/v0.5-d.md 'v0\.5\.0-rc\.1'
+require_text docs/upgrades/v0.5-d.md '^\| GA 目标 \| `v0\.5\.0` \|$'
+require_text docs/upgrades/v0.5-d.md 'docs/releases/v0\.5\.0\.md|\.\./releases/v0\.5\.0\.md'
 require_text docs/upgrades/v0.5-d.md '版本矩阵'
 require_text docs/upgrades/v0.5-d.md '官方 manifest Runtime 范围.*\[v0\.2\.0, v0\.6\.0\)'
 require_text docs/upgrades/v0.5-d.md 'make test-v05-upgrade-rollback-e2e'
@@ -128,7 +183,16 @@ require_text docs/upgrades/v0.5-d.md '10 分钟'
 require_text docs/upgrades/v0.5-d.md 'v1alpha2.*v1alpha1|v1alpha1.*v1alpha2'
 require_text docs/upgrades/v0.5-d.md '升级前.*dump|升级前.*数据库备份'
 
-for document in "$release_notes" README.md docs/sdk/compatibility.md docs/upgrades/v0.5-d.md; do
+if grep -Eq '当前开发者预览目标为.*v0\.5\.0-rc\.1|VERSION=v0\.5\.0-rc\.1' README.md; then
+  printf '%s\n' 'README still points to the RC as the current version' >&2
+  exit 1
+fi
+if grep -Eq '^\| RC 目标 \|' docs/upgrades/v0.5-d.md; then
+  printf '%s\n' 'upgrade guide still labels the RC as the current target' >&2
+  exit 1
+fi
+
+for document in "$release_notes" "$ga_notes" README.md docs/sdk/compatibility.md docs/upgrades/v0.5-d.md; do
   if grep -Eq '已发布|已公开|Latest' "$document"; then
     printf '%s\n' "forbidden remote release status in $document" >&2
     exit 1

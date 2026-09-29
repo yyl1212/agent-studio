@@ -17,21 +17,21 @@ flowchart LR
 
 ## 开发者预览版本
 
-当前开发者预览目标为 `v0.5.0-rc.1`，面向源码使用者、工作流作者、节点包开发者和运维人员在隔离环境验证。它集中交付 v0.5-A 可观测性、v0.5-B 画布体验、v0.5-C 备份恢复与 v0.5-D 持久运行；仍是非生产稳定版，也不提供 v1 兼容承诺。标签和附件只有在标签工作流成功后才能使用，执行安装或下载前应核对远端状态。完整边界、制品核验和限制见 [v0.5.0-rc.1 RC 说明](docs/releases/v0.5.0-rc.1.md)。
+当前开发者预览目标为 `v0.5.0`，面向源码使用者、工作流作者、节点包开发者和运维人员在隔离环境验证。它集中交付 v0.5-A 可观测性、v0.5-B 画布体验、v0.5-C 备份恢复与 v0.5-D 持久运行，并收口节点放置和配置保存反馈；仍是非生产稳定版，也不提供 v1 兼容承诺。标签和附件只有在标签工作流成功后才能使用，执行安装或下载前应核对远端状态。完整边界、制品核验和限制见 [v0.5.0 GA 说明](docs/releases/v0.5.0.md)。
 
 标签工作流成功后的源码安装命令：
 
 ```bash
-CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.5.0-rc.1
+CGO_ENABLED=0 go install github.com/yyl1212/agent-studio/cmd/agent-studio@v0.5.0
 agent-studio version
 ```
 
 ### 预编译 CLI 附件
 
-`v0.5.0-rc.1` 仅在标签工作流全部成功后提供 Linux/macOS 的 amd64、arm64 CLI 归档、SHA-256 校验和与逐归档 SPDX JSON SBOM。下载示例：
+`v0.5.0` 仅在标签工作流全部成功后提供 Linux/macOS 的 amd64、arm64 CLI 归档、SHA-256 校验和与逐归档 SPDX JSON SBOM。下载示例：
 
 ```bash
-VERSION=v0.5.0-rc.1
+VERSION=v0.5.0
 OS=darwin
 ARCH=arm64
 ARCHIVE="agent-studio_${VERSION}_${OS}_${ARCH}.tar.gz"
@@ -144,7 +144,7 @@ Studio 顶部“版本历史”已支持发布版本时间线、任意两个快�
 
 运行由 Worker 从 PostgreSQL 队列领取。API 或浏览器断开不会中止后台执行；Worker 异常退出后，纯节点可按租约自动接管，只读或有副作用的不确定节点会暂停为“等待人工恢复”。管理员可在“运行”详情的恢复入口逐个确认重试或终止运行，公开 Agent 页面不会暴露这些管理操作。Worker 内的队列采样会记录队列深度和最老排队时间；它用于观察当前实例，不代替容量规划。
 
-RC 容量基线固定为 1 API、1 Worker、Worker concurrency 4、500 Mock runs 和 10 分钟命令上限。该演练不是 SLA；它只检查本地隔离 Compose 环境中运行、租约和队列是否收敛。只在隔离的非生产环境运行；先确认 Docker、Compose、curl、jq、Ruby 和 Go 可用，再导出专用测试密钥（不要使用真实或固定密钥）：
+v0.5 容量基线固定为 1 API、1 Worker、Worker concurrency 4、500 Mock runs 和 10 分钟命令上限。该演练不是 SLA；它只检查本地隔离 Compose 环境中运行、租约和队列是否收敛。只在隔离的非生产环境运行；先确认 Docker、Compose、curl、jq、Ruby 和 Go 可用，再导出专用测试密钥（不要使用真实或固定密钥）：
 
 ```bash
 export RUN_PAYLOAD_ENCRYPTION_KEY="$(openssl rand -base64 32)"
